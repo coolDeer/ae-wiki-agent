@@ -1,0 +1,20 @@
+{
+  "research_id": "69ddd33876600b40d795f1c8",
+  "research_type": "meeting_minutes",
+  "title": "260413 GS IT Tanaka",
+  "md_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/meeting_minutes/260413 GS IT Tanaka_260414120044.md",
+  "fetched_at": "2026-04-14T21:11:01+08:00",
+  "raw": {
+    "reportUrl": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/meeting_minutes/260413 GS IT Tanaka_260414120044.docx",
+    "mdReportUrl": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/meeting_minutes/260413 GS IT Tanaka_260414120044.md",
+    "reportContent": null,
+    "metadata": {
+      "title": "260413 GS IT Tanaka",
+      "researchId": "69ddd33876600b40d795f1c8",
+      "researchType": 8,
+      "researchTypeName": "meeting_minutes",
+      "createTime": "2026-04-14 05:40:06",
+      "updateTime": "2026-04-14 05:40:06"
+    }
+  }
+}

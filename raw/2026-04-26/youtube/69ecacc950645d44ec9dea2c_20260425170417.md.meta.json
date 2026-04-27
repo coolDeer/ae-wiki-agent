@@ -1,0 +1,26 @@
+{
+  "research_id": "69ecacc950645d44ec9dea2c",
+  "research_type": "youtube",
+  "title": "Beware the Power of Prediction | Carissa Véliz | TED",
+  "md_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecacc950645d44ec9dea2c/69ecf319e935482f0d70c1a0/69ecacc950645d44ec9dea2c_20260425170417.md",
+  "fetched_at": "2026-04-26T09:53:56+08:00",
+  "record_id": "69ecf319e935482f0d70c1a0",
+  "parse_status": "completed",
+  "report_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/youtube/20260424%20-%20Beware%20the%20Power%20of%20Prediction%20%7C%20Carissa%20V%C3%A9liz%20%7C%20TED_260425170009.docx",
+  "parsed_content_list_s3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecacc950645d44ec9dea2c/69ecf319e935482f0d70c1a0/69ecacc950645d44ec9dea2c_20260425170417_content_list.json",
+  "update_time": "2026-04-26 01:00:09",
+  "create_time": "2026-04-26 01:00:09",
+  "raw": {
+    "id": "69ecf319e935482f0d70c1a0",
+    "researchId": "69ecacc950645d44ec9dea2c",
+    "researchType": 5,
+    "researchTypeName": "youtube",
+    "title": "Beware the Power of Prediction | Carissa Véliz | TED",
+    "reportUrl": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/youtube/20260424%20-%20Beware%20the%20Power%20of%20Prediction%20%7C%20Carissa%20V%C3%A9liz%20%7C%20TED_260425170009.docx",
+    "parsedMarkdownS3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecacc950645d44ec9dea2c/69ecf319e935482f0d70c1a0/69ecacc950645d44ec9dea2c_20260425170417.md",
+    "parsedContentListS3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecacc950645d44ec9dea2c/69ecf319e935482f0d70c1a0/69ecacc950645d44ec9dea2c_20260425170417_content_list.json",
+    "parseStatus": "completed",
+    "createTime": "2026-04-26 01:00:09",
+    "updateTime": "2026-04-26 01:00:09"
+  }
+}

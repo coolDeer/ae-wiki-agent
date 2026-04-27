@@ -1,0 +1,20 @@
+{
+  "research_id": "69dde62e76600b40d795f1eb",
+  "research_type": "meeting_minutes",
+  "title": "260414 - GS Topkey Corporation",
+  "md_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/meeting_minutes/260414 - GS Topkey Corporation_260414120051.md",
+  "fetched_at": "2026-04-14T21:10:27+08:00",
+  "raw": {
+    "reportUrl": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/meeting_minutes/260414 - GS Topkey Corporation_260414120051.docx",
+    "mdReportUrl": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/meeting_minutes/260414 - GS Topkey Corporation_260414120051.md",
+    "reportContent": null,
+    "metadata": {
+      "title": "260414 - GS Topkey Corporation",
+      "researchId": "69dde62e76600b40d795f1eb",
+      "researchType": 8,
+      "researchTypeName": "meeting_minutes",
+      "createTime": "2026-04-14 07:00:59",
+      "updateTime": "2026-04-14 07:00:59"
+    }
+  }
+}

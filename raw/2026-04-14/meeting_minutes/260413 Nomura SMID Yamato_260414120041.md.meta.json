@@ -1,0 +1,20 @@
+{
+  "research_id": "69ddd16576600b40d795f1c1",
+  "research_type": "meeting_minutes",
+  "title": "260413 Nomura SMID Yamato",
+  "md_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/meeting_minutes/260413 Nomura SMID Yamato_260414120041.md",
+  "fetched_at": "2026-04-14T21:11:19+08:00",
+  "raw": {
+    "reportUrl": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/meeting_minutes/260413 Nomura SMID Yamato_260414120041.docx",
+    "mdReportUrl": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/meeting_minutes/260413 Nomura SMID Yamato_260414120041.md",
+    "reportContent": null,
+    "metadata": {
+      "title": "260413 Nomura SMID Yamato",
+      "researchId": "69ddd16576600b40d795f1c1",
+      "researchType": 8,
+      "researchTypeName": "meeting_minutes",
+      "createTime": "2026-04-14 05:32:18",
+      "updateTime": "2026-04-14 05:32:18"
+    }
+  }
+}

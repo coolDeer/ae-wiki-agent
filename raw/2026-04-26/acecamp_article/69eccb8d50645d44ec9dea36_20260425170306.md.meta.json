@@ -1,0 +1,26 @@
+{
+  "research_id": "69eccb8d50645d44ec9dea36",
+  "research_type": "acecamp_article",
+  "title": "Flash才是DeepSeek V4的杀手锏",
+  "md_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69eccb8d50645d44ec9dea36/69ecf318e935482f0d70c182/69eccb8d50645d44ec9dea36_20260425170306.md",
+  "fetched_at": "2026-04-26T09:54:03+08:00",
+  "record_id": "69ecf318e935482f0d70c182",
+  "parse_status": "completed",
+  "report_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/acecamp_article/260425%20-%20Flash%E6%89%8D%E6%98%AFDeepSeek%20V4%E7%9A%84%E6%9D%80%E6%89%8B%E9%94%8F_260425170007.docx",
+  "parsed_content_list_s3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69eccb8d50645d44ec9dea36/69ecf318e935482f0d70c182/69eccb8d50645d44ec9dea36_20260425170306_content_list.json",
+  "update_time": "2026-04-26 01:00:08",
+  "create_time": "2026-04-26 01:00:08",
+  "raw": {
+    "id": "69ecf318e935482f0d70c182",
+    "researchId": "69eccb8d50645d44ec9dea36",
+    "researchType": 1,
+    "researchTypeName": "acecamp_article",
+    "title": "Flash才是DeepSeek V4的杀手锏",
+    "reportUrl": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/acecamp_article/260425%20-%20Flash%E6%89%8D%E6%98%AFDeepSeek%20V4%E7%9A%84%E6%9D%80%E6%89%8B%E9%94%8F_260425170007.docx",
+    "parsedMarkdownS3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69eccb8d50645d44ec9dea36/69ecf318e935482f0d70c182/69eccb8d50645d44ec9dea36_20260425170306.md",
+    "parsedContentListS3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69eccb8d50645d44ec9dea36/69ecf318e935482f0d70c182/69eccb8d50645d44ec9dea36_20260425170306_content_list.json",
+    "parseStatus": "completed",
+    "createTime": "2026-04-26 01:00:08",
+    "updateTime": "2026-04-26 01:00:08"
+  }
+}

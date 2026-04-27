@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ae-wiki fetch-reports launchd job
+  每天 08:00 (Asia/Shanghai) 跑一次 fetch-reports
+
+  安装：
+    cp infra/launchd/com.ae-wiki.fetch-reports.plist ~/Library/LaunchAgents/
+    sed -i '' "s|__PROJECT_DIR__|$PWD/ae-wiki-agent|g" ~/Library/LaunchAgents/com.ae-wiki.fetch-reports.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ae-wiki.fetch-reports.plist
+
+  查看：
+    launchctl print gui/$(id -u)/com.ae-wiki.fetch-reports
+    tail -f ~/Library/Logs/ae-wiki/fetch-reports.log
+
+  立刻跑一次（不等到下个调度点）：
+    launchctl kickstart -p gui/$(id -u)/com.ae-wiki.fetch-reports
+
+  停止 / 卸载：
+    launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.ae-wiki.fetch-reports.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ae-wiki.fetch-reports</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PROJECT_DIR__/scripts/cron/fetch-reports.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__PROJECT_DIR__</string>
+
+  <!-- 每天 08:00 跑（系统时区） -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>8</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <!-- log 输出 -->
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/ae-wiki/fetch-reports.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/ae-wiki/fetch-reports.err.log</string>
+
+  <!-- 防止 launchd "Throttle"：失败后立刻 retry 没意义，等下个调度即可 -->
+  <key>ThrottleInterval</key>
+  <integer>300</integer>
+</dict>
+</plist>

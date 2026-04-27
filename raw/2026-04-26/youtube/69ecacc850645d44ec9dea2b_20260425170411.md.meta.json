@@ -1,0 +1,26 @@
+{
+  "research_id": "69ecacc850645d44ec9dea2b",
+  "research_type": "youtube",
+  "title": "SpaceX-Cursor Deal, SaaS Debt Bomb, New Apple CEO, SPLC Indictment, Colon Cancer Spike",
+  "md_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecacc850645d44ec9dea2b/69ecf319e935482f0d70c19a/69ecacc850645d44ec9dea2b_20260425170411.md",
+  "fetched_at": "2026-04-26T09:53:58+08:00",
+  "record_id": "69ecf319e935482f0d70c19a",
+  "parse_status": "completed",
+  "report_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/youtube/20260424%20-%20SpaceX-Cursor%20Deal%2C%20SaaS%20Debt%20Bomb%2C%20New%20Apple%20CEO%2C%20SPLC%20Indictment%2C%20Colon%20Cancer%20Spike_260425170009.docx",
+  "parsed_content_list_s3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecacc850645d44ec9dea2b/69ecf319e935482f0d70c19a/69ecacc850645d44ec9dea2b_20260425170411_content_list.json",
+  "update_time": "2026-04-26 01:00:09",
+  "create_time": "2026-04-26 01:00:09",
+  "raw": {
+    "id": "69ecf319e935482f0d70c19a",
+    "researchId": "69ecacc850645d44ec9dea2b",
+    "researchType": 5,
+    "researchTypeName": "youtube",
+    "title": "SpaceX-Cursor Deal, SaaS Debt Bomb, New Apple CEO, SPLC Indictment, Colon Cancer Spike",
+    "reportUrl": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/youtube/20260424%20-%20SpaceX-Cursor%20Deal%2C%20SaaS%20Debt%20Bomb%2C%20New%20Apple%20CEO%2C%20SPLC%20Indictment%2C%20Colon%20Cancer%20Spike_260425170009.docx",
+    "parsedMarkdownS3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecacc850645d44ec9dea2b/69ecf319e935482f0d70c19a/69ecacc850645d44ec9dea2b_20260425170411.md",
+    "parsedContentListS3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecacc850645d44ec9dea2b/69ecf319e935482f0d70c19a/69ecacc850645d44ec9dea2b_20260425170411_content_list.json",
+    "parseStatus": "completed",
+    "createTime": "2026-04-26 01:00:09",
+    "updateTime": "2026-04-26 01:00:09"
+  }
+}

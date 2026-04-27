@@ -1,0 +1,231 @@
+#!/usr/bin/env bun
+/**
+ * ae-wiki MCP server
+ *
+ * 通过 stdio transport 暴露 5 个 wiki 查询工具给 Claude Code / 其他 MCP client。
+ *
+ * 启动方式（Claude Code 通过 .mcp.json 自动 spawn）：
+ *   bun run src/mcp/server.ts
+ */
+
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import {
+  search,
+  getPage,
+  queryFacts,
+  listEntities,
+  recentActivity,
+} from "./queries.ts";
+
+const server = new Server(
+  {
+    name: "ae-wiki",
+    version: "0.1.0",
+  },
+  {
+    capabilities: {
+      tools: {},
+    },
+  }
+);
+
+// ============================================================================
+// Tool 定义
+// ============================================================================
+
+const TOOLS = [
+  {
+    name: "search",
+    description:
+      "Hybrid search (keyword + semantic) over the investment research wiki. Returns ranked pages.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search query (中文 / English)" },
+        limit: { type: "number", description: "Max results (default 10)" },
+        type: {
+          type: "string",
+          description:
+            "Filter by page type: company / person / industry / source / thesis / concept / output",
+        },
+        date_from: {
+          type: "string",
+          description: "Only pages created on or after (ISO date)",
+        },
+        keyword_only: {
+          type: "boolean",
+          description: "Skip vector search, use only tsvector keyword (faster, no embedding cost)",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "get_page",
+    description:
+      "Fetch a complete page by id or slug. Returns content + frontmatter + tags + link counts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        identifier: {
+          type: "string",
+          description: "Page id (numeric) or slug (e.g. 'companies/NVIDIA')",
+        },
+      },
+      required: ["identifier"],
+    },
+  },
+  {
+    name: "query_facts",
+    description:
+      "Query structured facts (financial metrics) by entity / metric / period. Time-travel via current_only flag.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        entity: { type: "string", description: "Entity slug or ticker" },
+        metric: {
+          type: "string",
+          description: "e.g. 'revenue' / 'eps_non_gaap' / 'target_price' / 'gross_margin'",
+        },
+        period: { type: "string", description: "e.g. 'FY2027E' / '1Q26A' / 'current'" },
+        current_only: {
+          type: "boolean",
+          description: "Only return facts with valid_to IS NULL (latest)",
+        },
+        limit: { type: "number" },
+      },
+    },
+  },
+  {
+    name: "list_entities",
+    description:
+      "List entity pages (companies / persons / industries / etc.) with filters.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        type: {
+          type: "string",
+          description: "Filter by type: company / person / industry / concept",
+        },
+        sector: { type: "string" },
+        ticker: { type: "string" },
+        confidence: {
+          type: "string",
+          description: "high / medium / low (low = auto-created stubs)",
+        },
+        limit: { type: "number" },
+      },
+    },
+  },
+  {
+    name: "recent_activity",
+    description:
+      "Recent events / signals / new pages in the wiki. Default last 7 days.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        days: { type: "number", description: "Lookback window (default 7)" },
+        kinds: {
+          type: "array",
+          items: { type: "string", enum: ["event", "signal", "page"] },
+          description: "Default ['event', 'signal', 'page']",
+        },
+        limit: { type: "number" },
+      },
+    },
+  },
+];
+
+// ============================================================================
+// 路由
+// ============================================================================
+
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: TOOLS,
+}));
+
+server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  const { name, arguments: args } = req.params;
+
+  try {
+    let result: unknown;
+    switch (name) {
+      case "search":
+        result = await search((args as { query: string }).query, {
+          limit: (args as { limit?: number }).limit,
+          type: (args as { type?: string }).type,
+          dateFrom: (args as { date_from?: string }).date_from,
+          keywordOnly: (args as { keyword_only?: boolean }).keyword_only,
+        });
+        break;
+      case "get_page":
+        result = await getPage((args as { identifier: string }).identifier);
+        break;
+      case "query_facts":
+        result = await queryFacts({
+          entity: (args as { entity?: string }).entity,
+          metric: (args as { metric?: string }).metric,
+          period: (args as { period?: string }).period,
+          currentOnly: (args as { current_only?: boolean }).current_only,
+          limit: (args as { limit?: number }).limit,
+        });
+        break;
+      case "list_entities":
+        result = await listEntities(args as Parameters<typeof listEntities>[0]);
+        break;
+      case "recent_activity":
+        result = await recentActivity({
+          days: (args as { days?: number }).days,
+          kinds: (args as { kinds?: ("event" | "signal" | "page")[] }).kinds,
+          limit: (args as { limit?: number }).limit,
+        });
+        break;
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result, bigintReplacer, 2),
+        },
+      ],
+    };
+  } catch (e) {
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: `Error: ${(e as Error).message}\n${(e as Error).stack ?? ""}`,
+        },
+      ],
+    };
+  }
+});
+
+function bigintReplacer(_key: string, value: unknown): unknown {
+  return typeof value === "bigint" ? value.toString() : value;
+}
+
+// ============================================================================
+// 启动
+// ============================================================================
+
+async function main(): Promise<void> {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  // 注意：不要 console.log（污染 stdio JSON-RPC）。用 console.error 走 stderr。
+  console.error("[ae-wiki MCP] server started on stdio");
+}
+
+main().catch((e) => {
+  console.error("[ae-wiki MCP] fatal:", e);
+  process.exit(1);
+});

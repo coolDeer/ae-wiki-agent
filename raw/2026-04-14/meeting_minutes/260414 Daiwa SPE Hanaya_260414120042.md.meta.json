@@ -1,0 +1,20 @@
+{
+  "research_id": "69ddd25576600b40d795f1c6",
+  "research_type": "meeting_minutes",
+  "title": "260414 Daiwa SPE Hanaya",
+  "md_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/meeting_minutes/260414 Daiwa SPE Hanaya_260414120042.md",
+  "fetched_at": "2026-04-14T21:11:15+08:00",
+  "raw": {
+    "reportUrl": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/meeting_minutes/260414 Daiwa SPE Hanaya_260414120042.docx",
+    "mdReportUrl": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/meeting_minutes/260414 Daiwa SPE Hanaya_260414120042.md",
+    "reportContent": null,
+    "metadata": {
+      "title": "260414 Daiwa SPE Hanaya",
+      "researchId": "69ddd25576600b40d795f1c6",
+      "researchType": 8,
+      "researchTypeName": "meeting_minutes",
+      "createTime": "2026-04-14 05:36:18",
+      "updateTime": "2026-04-14 05:36:18"
+    }
+  }
+}

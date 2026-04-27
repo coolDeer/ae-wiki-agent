@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ae-wiki minion-worker daemon
+  常驻进程：跑 embed_chunks / detect_signals 等异步任务
+  KeepAlive=true 让进程崩溃后自动拉起
+
+  安装方式同 fetch-reports.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ae-wiki.worker</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PROJECT_DIR__/scripts/cron/run-worker.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__PROJECT_DIR__</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- 进程退出后自动重启 -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- 防止快速崩溃循环：5s 内崩了不立刻重启 -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/ae-wiki/worker.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/ae-wiki/worker.err.log</string>
+</dict>
+</plist>

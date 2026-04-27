@@ -1,0 +1,26 @@
+{
+  "research_id": "69ecacd550645d44ec9dea2f",
+  "research_type": "youtube",
+  "title": "Gary Vee Says the Smartest Investors Are Going Analog",
+  "md_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecacd550645d44ec9dea2f/69ecf319e935482f0d70c1b4/69ecacd550645d44ec9dea2f_20260425170430.md",
+  "fetched_at": "2026-04-26T09:53:51+08:00",
+  "record_id": "69ecf319e935482f0d70c1b4",
+  "parse_status": "completed",
+  "report_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/youtube/20260424%20-%20Gary%20Vee%20Says%20the%20Smartest%20Investors%20Are%20Going%20Analog_260425170009.docx",
+  "parsed_content_list_s3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecacd550645d44ec9dea2f/69ecf319e935482f0d70c1b4/69ecacd550645d44ec9dea2f_20260425170430_content_list.json",
+  "update_time": "2026-04-26 01:00:09",
+  "create_time": "2026-04-26 01:00:09",
+  "raw": {
+    "id": "69ecf319e935482f0d70c1b4",
+    "researchId": "69ecacd550645d44ec9dea2f",
+    "researchType": 5,
+    "researchTypeName": "youtube",
+    "title": "Gary Vee Says the Smartest Investors Are Going Analog",
+    "reportUrl": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/youtube/20260424%20-%20Gary%20Vee%20Says%20the%20Smartest%20Investors%20Are%20Going%20Analog_260425170009.docx",
+    "parsedMarkdownS3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecacd550645d44ec9dea2f/69ecf319e935482f0d70c1b4/69ecacd550645d44ec9dea2f_20260425170430.md",
+    "parsedContentListS3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecacd550645d44ec9dea2f/69ecf319e935482f0d70c1b4/69ecacd550645d44ec9dea2f_20260425170430_content_list.json",
+    "parseStatus": "completed",
+    "createTime": "2026-04-26 01:00:09",
+    "updateTime": "2026-04-26 01:00:09"
+  }
+}

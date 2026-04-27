@@ -1,0 +1,26 @@
+{
+  "research_id": "69ecc96a50645d44ec9dea32",
+  "research_type": "acecamp_article",
+  "title": "半导体洁净机器人分析—技术难点、市场规模、主要品牌",
+  "md_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecc96a50645d44ec9dea32/69ecf313e935482f0d70c152/69ecc96a50645d44ec9dea32_20260425170057.md",
+  "fetched_at": "2026-04-26T09:54:09+08:00",
+  "record_id": "69ecf313e935482f0d70c152",
+  "parse_status": "completed",
+  "report_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/acecamp_article/260425%20-%20%E5%8D%8A%E5%AF%BC%E4%BD%93%E6%B4%81%E5%87%80%E6%9C%BA%E5%99%A8%E4%BA%BA%E5%88%86%E6%9E%90%E2%80%94%E6%8A%80%E6%9C%AF%E9%9A%BE%E7%82%B9%E3%80%81%E5%B8%82%E5%9C%BA%E8%A7%84%E6%A8%A1%E3%80%81%E4%B8%BB%E8%A6%81%E5%93%81%E7%89%8C_260425170003.docx",
+  "parsed_content_list_s3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecc96a50645d44ec9dea32/69ecf313e935482f0d70c152/69ecc96a50645d44ec9dea32_20260425170057_content_list.json",
+  "update_time": "2026-04-26 01:00:03",
+  "create_time": "2026-04-26 01:00:03",
+  "raw": {
+    "id": "69ecf313e935482f0d70c152",
+    "researchId": "69ecc96a50645d44ec9dea32",
+    "researchType": 1,
+    "researchTypeName": "acecamp_article",
+    "title": "半导体洁净机器人分析—技术难点、市场规模、主要品牌",
+    "reportUrl": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/acecamp_article/260425%20-%20%E5%8D%8A%E5%AF%BC%E4%BD%93%E6%B4%81%E5%87%80%E6%9C%BA%E5%99%A8%E4%BA%BA%E5%88%86%E6%9E%90%E2%80%94%E6%8A%80%E6%9C%AF%E9%9A%BE%E7%82%B9%E3%80%81%E5%B8%82%E5%9C%BA%E8%A7%84%E6%A8%A1%E3%80%81%E4%B8%BB%E8%A6%81%E5%93%81%E7%89%8C_260425170003.docx",
+    "parsedMarkdownS3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecc96a50645d44ec9dea32/69ecf313e935482f0d70c152/69ecc96a50645d44ec9dea32_20260425170057.md",
+    "parsedContentListS3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecc96a50645d44ec9dea32/69ecf313e935482f0d70c152/69ecc96a50645d44ec9dea32_20260425170057_content_list.json",
+    "parseStatus": "completed",
+    "createTime": "2026-04-26 01:00:03",
+    "updateTime": "2026-04-26 01:00:03"
+  }
+}

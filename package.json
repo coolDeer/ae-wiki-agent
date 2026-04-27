@@ -1,0 +1,40 @@
+{
+  "name": "ae-wiki-agent",
+  "version": "0.1.0",
+  "description": "投资研究 wiki agent - Postgres + pgvector + MongoDB ingest + Claude MCP",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "ae-wiki": "src/cli.ts"
+  },
+  "scripts": {
+    "dev": "bun run src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "db:push": "drizzle-kit push",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio",
+    "fetch-reports": "bun run src/cli.ts fetch-reports",
+    "ingest": "bun run src/cli.ts ingest",
+    "worker": "bun run src/workers/minion-worker.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@node-rs/jieba": "^2.0.1",
+    "drizzle-orm": "^0.36.0",
+    "gray-matter": "^4.0.3",
+    "marked": "^14.0.0",
+    "mongodb": "^6.10.0",
+    "openai": "^4.70.0",
+    "pgvector": "^0.2.0",
+    "postgres": "^3.4.5",
+    "yaml": "^2.8.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "drizzle-kit": "^0.28.0",
+    "typescript": "^5.6.0"
+  }
+}

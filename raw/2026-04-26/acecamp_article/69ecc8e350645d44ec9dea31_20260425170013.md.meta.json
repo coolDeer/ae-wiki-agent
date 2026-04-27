@@ -1,0 +1,26 @@
+{
+  "research_id": "69ecc8e350645d44ec9dea31",
+  "research_type": "acecamp_article",
+  "title": "内存市场的分裂：HBM/DDR5高增长下的DDR4特种组件化",
+  "md_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecc8e350645d44ec9dea31/69ecf313e935482f0d70c146/69ecc8e350645d44ec9dea31_20260425170013.md",
+  "fetched_at": "2026-04-26T09:54:10+08:00",
+  "record_id": "69ecf313e935482f0d70c146",
+  "parse_status": "completed",
+  "report_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/acecamp_article/260425%20-%20%E5%86%85%E5%AD%98%E5%B8%82%E5%9C%BA%E7%9A%84%E5%88%86%E8%A3%82%EF%BC%9AHBM%7CDDR5%E9%AB%98%E5%A2%9E%E9%95%BF%E4%B8%8B%E7%9A%84DDR4%E7%89%B9%E7%A7%8D%E7%BB%84%E4%BB%B6%E5%8C%96_260425170001.docx",
+  "parsed_content_list_s3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecc8e350645d44ec9dea31/69ecf313e935482f0d70c146/69ecc8e350645d44ec9dea31_20260425170013_content_list.json",
+  "update_time": "2026-04-26 01:00:03",
+  "create_time": "2026-04-26 01:00:03",
+  "raw": {
+    "id": "69ecf313e935482f0d70c146",
+    "researchId": "69ecc8e350645d44ec9dea31",
+    "researchType": 1,
+    "researchTypeName": "acecamp_article",
+    "title": "内存市场的分裂：HBM/DDR5高增长下的DDR4特种组件化",
+    "reportUrl": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/acecamp_article/260425%20-%20%E5%86%85%E5%AD%98%E5%B8%82%E5%9C%BA%E7%9A%84%E5%88%86%E8%A3%82%EF%BC%9AHBM%7CDDR5%E9%AB%98%E5%A2%9E%E9%95%BF%E4%B8%8B%E7%9A%84DDR4%E7%89%B9%E7%A7%8D%E7%BB%84%E4%BB%B6%E5%8C%96_260425170001.docx",
+    "parsedMarkdownS3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecc8e350645d44ec9dea31/69ecf313e935482f0d70c146/69ecc8e350645d44ec9dea31_20260425170013.md",
+    "parsedContentListS3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecc8e350645d44ec9dea31/69ecf313e935482f0d70c146/69ecc8e350645d44ec9dea31_20260425170013_content_list.json",
+    "parseStatus": "completed",
+    "createTime": "2026-04-26 01:00:03",
+    "updateTime": "2026-04-26 01:00:03"
+  }
+}

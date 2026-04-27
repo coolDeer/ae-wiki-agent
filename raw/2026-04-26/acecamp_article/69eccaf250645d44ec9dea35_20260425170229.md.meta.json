@@ -1,0 +1,26 @@
+{
+  "research_id": "69eccaf250645d44ec9dea35",
+  "research_type": "acecamp_article",
+  "title": "警惕光模块行业竞争格局恶化风险",
+  "md_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69eccaf250645d44ec9dea35/69ecf317e935482f0d70c17a/69eccaf250645d44ec9dea35_20260425170229.md",
+  "fetched_at": "2026-04-26T09:54:04+08:00",
+  "record_id": "69ecf317e935482f0d70c17a",
+  "parse_status": "completed",
+  "report_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/acecamp_article/260425%20-%20%E8%AD%A6%E6%83%95%E5%85%89%E6%A8%A1%E5%9D%97%E8%A1%8C%E4%B8%9A%E7%AB%9E%E4%BA%89%E6%A0%BC%E5%B1%80%E6%81%B6%E5%8C%96%E9%A3%8E%E9%99%A9_260425170007.docx",
+  "parsed_content_list_s3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69eccaf250645d44ec9dea35/69ecf317e935482f0d70c17a/69eccaf250645d44ec9dea35_20260425170229_content_list.json",
+  "update_time": "2026-04-26 01:00:07",
+  "create_time": "2026-04-26 01:00:07",
+  "raw": {
+    "id": "69ecf317e935482f0d70c17a",
+    "researchId": "69eccaf250645d44ec9dea35",
+    "researchType": 1,
+    "researchTypeName": "acecamp_article",
+    "title": "警惕光模块行业竞争格局恶化风险",
+    "reportUrl": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/acecamp_article/260425%20-%20%E8%AD%A6%E6%83%95%E5%85%89%E6%A8%A1%E5%9D%97%E8%A1%8C%E4%B8%9A%E7%AB%9E%E4%BA%89%E6%A0%BC%E5%B1%80%E6%81%B6%E5%8C%96%E9%A3%8E%E9%99%A9_260425170007.docx",
+    "parsedMarkdownS3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69eccaf250645d44ec9dea35/69ecf317e935482f0d70c17a/69eccaf250645d44ec9dea35_20260425170229.md",
+    "parsedContentListS3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69eccaf250645d44ec9dea35/69ecf317e935482f0d70c17a/69eccaf250645d44ec9dea35_20260425170229_content_list.json",
+    "parseStatus": "completed",
+    "createTime": "2026-04-26 01:00:07",
+    "updateTime": "2026-04-26 01:00:07"
+  }
+}

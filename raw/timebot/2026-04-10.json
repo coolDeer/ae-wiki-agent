@@ -1,0 +1,307 @@
+{
+  "code": 200,
+  "data": [
+    {
+      "userId": 10021,
+      "realName": "SHU",
+      "weeklySummary": "",
+      "records": [
+        {
+          "id": "69d885de7fe7887cc45c1654",
+          "date": "2026-04-10",
+          "userId": 10021,
+          "realName": "SHU",
+          "category": 2,
+          "categoryName": "Research",
+          "nameOrTopic": [
+            "Tokyo Gas"
+          ],
+          "consensus": "Short",
+          "oneOnOne": null,
+          "attendee": null,
+          "hours": 5.0,
+          "notes": "Model, go through reports etc",
+          "weeklySummary": null,
+          "createBy": "10021",
+          "updateBy": "10021",
+          "createTime": "2026-04-10 13:08:46",
+          "updateTime": "2026-04-10 13:08:46",
+          "deleted": 0
+        },
+        {
+          "id": "69d885de7fe7887cc45c1655",
+          "date": "2026-04-10",
+          "userId": 10021,
+          "realName": "SHU",
+          "category": 3,
+          "categoryName": "Review",
+          "nameOrTopic": [
+            "SPE"
+          ],
+          "consensus": null,
+          "oneOnOne": null,
+          "attendee": null,
+          "hours": 5.0,
+          "notes": "SPE set up review and discussion",
+          "weeklySummary": null,
+          "createBy": "10021",
+          "updateBy": "10021",
+          "createTime": "2026-04-10 13:08:46",
+          "updateTime": "2026-04-10 13:08:46",
+          "deleted": 0
+        },
+        {
+          "id": "69d885de7fe7887cc45c1656",
+          "date": "2026-04-10",
+          "userId": 10021,
+          "realName": "SHU",
+          "category": 8,
+          "categoryName": "Org",
+          "nameOrTopic": [
+            "Ryan catch up"
+          ],
+          "consensus": null,
+          "oneOnOne": null,
+          "attendee": null,
+          "hours": 1.0,
+          "notes": null,
+          "weeklySummary": null,
+          "createBy": "10021",
+          "updateBy": "10021",
+          "createTime": "2026-04-10 13:08:46",
+          "updateTime": "2026-04-10 13:08:46",
+          "deleted": 0
+        },
+        {
+          "id": "69d885de7fe7887cc45c1657",
+          "date": "2026-04-10",
+          "userId": 10021,
+          "realName": "SHU",
+          "category": 2,
+          "categoryName": "Research",
+          "nameOrTopic": [
+            "STMicro"
+          ],
+          "consensus": "Long",
+          "oneOnOne": null,
+          "attendee": null,
+          "hours": 2.0,
+          "notes": null,
+          "weeklySummary": null,
+          "createBy": "10021",
+          "updateBy": "10021",
+          "createTime": "2026-04-10 13:08:46",
+          "updateTime": "2026-04-10 13:08:46",
+          "deleted": 0
+        }
+      ]
+    },
+    {
+      "userId": 10023,
+      "realName": "ACHOW",
+      "weeklySummary": "",
+      "records": [
+        {
+          "id": "69d52b1bfec2d32ab875b7d1",
+          "date": "2026-04-10",
+          "userId": 10023,
+          "realName": "ACHOW",
+          "category": 2,
+          "categoryName": "Research",
+          "nameOrTopic": [
+            "BE"
+          ],
+          "consensus": null,
+          "oneOnOne": null,
+          "attendee": null,
+          "hours": 10.0,
+          "notes": null,
+          "weeklySummary": null,
+          "createBy": "10023",
+          "updateBy": "10023",
+          "createTime": "2026-04-08 00:04:43",
+          "updateTime": "2026-04-13 09:03:16",
+          "deleted": 0
+        },
+        {
+          "id": "69d6773f02a1014b33eeacd6",
+          "date": "2026-04-10",
+          "userId": 10023,
+          "realName": "ACHOW",
+          "category": 11,
+          "categoryName": "Meeting",
+          "nameOrTopic": [
+            "Tosei"
+          ],
+          "consensus": null,
+          "oneOnOne": "Yes",
+          "attendee": null,
+          "hours": 1.0,
+          "notes": null,
+          "weeklySummary": null,
+          "createBy": "10023",
+          "updateBy": "10023",
+          "createTime": "2026-04-08 23:41:51",
+          "updateTime": "2026-04-13 09:03:16",
+          "deleted": 0
+        },
+        {
+          "id": "69d6773f02a1014b33eeacd7",
+          "date": "2026-04-10",
+          "userId": 10023,
+          "realName": "ACHOW",
+          "category": 4,
+          "categoryName": "Analyst",
+          "nameOrTopic": [
+            "NMR INTERNET"
+          ],
+          "consensus": null,
+          "oneOnOne": null,
+          "attendee": null,
+          "hours": 1.5,
+          "notes": "group lunch",
+          "weeklySummary": null,
+          "createBy": "10023",
+          "updateBy": "10023",
+          "createTime": "2026-04-08 23:41:51",
+          "updateTime": "2026-04-13 09:03:16",
+          "deleted": 0
+        },
+        {
+          "id": "69d6773f02a1014b33eeacd8",
+          "date": "2026-04-10",
+          "userId": 10023,
+          "realName": "ACHOW",
+          "category": 7,
+          "categoryName": "AI",
+          "nameOrTopic": [
+            "FMP"
+          ],
+          "consensus": null,
+          "oneOnOne": null,
+          "attendee": null,
+          "hours": 2.0,
+          "notes": null,
+          "weeklySummary": null,
+          "createBy": "10023",
+          "updateBy": "10023",
+          "createTime": "2026-04-08 23:41:51",
+          "updateTime": "2026-04-13 09:03:16",
+          "deleted": 0
+        },
+        {
+          "id": "69dc40d496aab61ca8ce443b",
+          "date": "2026-04-10",
+          "userId": 10023,
+          "realName": "ACHOW",
+          "category": 7,
+          "categoryName": "AI",
+          "nameOrTopic": [
+            "Platform"
+          ],
+          "consensus": null,
+          "oneOnOne": null,
+          "attendee": null,
+          "hours": 2.0,
+          "notes": null,
+          "weeklySummary": null,
+          "createBy": "10023",
+          "updateBy": "10023",
+          "createTime": "2026-04-13 09:03:16",
+          "updateTime": "2026-04-13 09:03:16",
+          "deleted": 0
+        },
+        {
+          "id": "69dc40d496aab61ca8ce443c",
+          "date": "2026-04-10",
+          "userId": 10023,
+          "realName": "ACHOW",
+          "category": 8,
+          "categoryName": "Org",
+          "nameOrTopic": [
+            "Weekly"
+          ],
+          "consensus": null,
+          "oneOnOne": null,
+          "attendee": null,
+          "hours": 2.0,
+          "notes": null,
+          "weeklySummary": null,
+          "createBy": "10023",
+          "updateBy": "10023",
+          "createTime": "2026-04-13 09:03:16",
+          "updateTime": "2026-04-13 09:03:16",
+          "deleted": 0
+        },
+        {
+          "id": "69dc40d496aab61ca8ce443d",
+          "date": "2026-04-10",
+          "userId": 10023,
+          "realName": "ACHOW",
+          "category": 2,
+          "categoryName": "Research",
+          "nameOrTopic": [
+            "FPS"
+          ],
+          "consensus": null,
+          "oneOnOne": null,
+          "attendee": null,
+          "hours": 5.0,
+          "notes": null,
+          "weeklySummary": null,
+          "createBy": "10023",
+          "updateBy": "10023",
+          "createTime": "2026-04-13 09:03:16",
+          "updateTime": "2026-04-13 09:03:16",
+          "deleted": 0
+        },
+        {
+          "id": "69dc40d496aab61ca8ce443e",
+          "date": "2026-04-10",
+          "userId": 10023,
+          "realName": "ACHOW",
+          "category": 11,
+          "categoryName": "Meeting",
+          "nameOrTopic": [
+            "Wuxi Taclink"
+          ],
+          "consensus": "Long",
+          "oneOnOne": "Yes",
+          "attendee": "CFO",
+          "hours": 1.0,
+          "notes": null,
+          "weeklySummary": null,
+          "createBy": "10023",
+          "updateBy": "10023",
+          "createTime": "2026-04-13 09:03:16",
+          "updateTime": "2026-04-13 09:03:16",
+          "deleted": 0
+        },
+        {
+          "id": "69dc40d496aab61ca8ce443f",
+          "date": "2026-04-10",
+          "userId": 10023,
+          "realName": "ACHOW",
+          "category": 11,
+          "categoryName": "Meeting",
+          "nameOrTopic": [
+            "STAR MICA"
+          ],
+          "consensus": null,
+          "oneOnOne": "Yes",
+          "attendee": "CEO",
+          "hours": 1.0,
+          "notes": null,
+          "weeklySummary": null,
+          "createBy": "10023",
+          "updateBy": "10023",
+          "createTime": "2026-04-13 09:03:16",
+          "updateTime": "2026-04-13 09:03:16",
+          "deleted": 0
+        }
+      ]
+    }
+  ],
+  "message": "操作成功",
+  "timestamp": 1776226358230
+}

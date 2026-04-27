@@ -1,0 +1,26 @@
+{
+  "research_id": "69ecca6c50645d44ec9dea34",
+  "research_type": "acecamp_article",
+  "title": "DeepSeek V4：从参数崇拜，转向百万上下文的成本战争",
+  "md_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecca6c50645d44ec9dea34/69ecf317e935482f0d70c16f/69ecca6c50645d44ec9dea34_20260425170109.md",
+  "fetched_at": "2026-04-26T09:54:06+08:00",
+  "record_id": "69ecf317e935482f0d70c16f",
+  "parse_status": "completed",
+  "report_url": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/acecamp_article/260425%20-%20DeepSeek%20V4%EF%BC%9A%E4%BB%8E%E5%8F%82%E6%95%B0%E5%B4%87%E6%8B%9C%EF%BC%8C%E8%BD%AC%E5%90%91%E7%99%BE%E4%B8%87%E4%B8%8A%E4%B8%8B%E6%96%87%E7%9A%84%E6%88%90%E6%9C%AC%E6%88%98%E4%BA%89_260425170003.docx",
+  "parsed_content_list_s3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecca6c50645d44ec9dea34/69ecf317e935482f0d70c16f/69ecca6c50645d44ec9dea34_20260425170109_content_list.json",
+  "update_time": "2026-04-26 01:00:07",
+  "create_time": "2026-04-26 01:00:07",
+  "raw": {
+    "id": "69ecf317e935482f0d70c16f",
+    "researchId": "69ecca6c50645d44ec9dea34",
+    "researchType": 1,
+    "researchTypeName": "acecamp_article",
+    "title": "DeepSeek V4：从参数崇拜，转向百万上下文的成本战争",
+    "reportUrl": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research/acecamp_article/260425%20-%20DeepSeek%20V4%EF%BC%9A%E4%BB%8E%E5%8F%82%E6%95%B0%E5%B4%87%E6%8B%9C%EF%BC%8C%E8%BD%AC%E5%90%91%E7%99%BE%E4%B8%87%E4%B8%8A%E4%B8%8B%E6%96%87%E7%9A%84%E6%88%90%E6%9C%AC%E6%88%98%E4%BA%89_260425170003.docx",
+    "parsedMarkdownS3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecca6c50645d44ec9dea34/69ecf317e935482f0d70c16f/69ecca6c50645d44ec9dea34_20260425170109.md",
+    "parsedContentListS3": "https://aecapllc.s3.ap-southeast-1.amazonaws.com/research-reports/parsed/69ecca6c50645d44ec9dea34/69ecf317e935482f0d70c16f/69ecca6c50645d44ec9dea34_20260425170109_content_list.json",
+    "parseStatus": "completed",
+    "createTime": "2026-04-26 01:00:07",
+    "updateTime": "2026-04-26 01:00:07"
+  }
+}
