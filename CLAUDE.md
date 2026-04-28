@@ -21,7 +21,7 @@
 ┌────────────────────────────────────────────────────┐
 │  输入层：MongoDB（团队既有 ResearchReportRecord）  │
 └────────┬───────────────────────────────────────────┘
-         │ scripts/cron + bun cli fetch-reports
+         │ bun cli fetch-reports（手动 / 内嵌调度入口）
          ↓
 ┌────────────────────────────────────────────────────┐
 │  raw_files 表 ─ 元数据 + markdown_url（S3 直链）   │
@@ -73,8 +73,7 @@ ae-wiki-agent/                # 项目根
 │
 ├── infra/                    # ⭐ schema + 部署
 │   ├── init-v2.sql           # schema 真相源
-│   ├── migrations/           # v2.1.0 / 2.2.0 / 2.3.0 ...
-│   └── launchd/              # macOS launchd plist
+│   └── migrations/           # v2.1.0 / 2.2.0 / 2.3.0 ...
 │
 ├── skills/                   # ⭐ Fat skill markdown（agent 工作流）
 │   ├── fetch-reports/SKILL.md
@@ -89,16 +88,12 @@ ae-wiki-agent/                # 项目根
 ├── doc/                      # 设计文档
 │   ├── architecture.md
 │   ├── llm-touchpoints.md
-│   ├── scheduling.md
 │   ├── gbrain-borrowings.md
 │   └── gbrain-vs-self-build.md
 │
 ├── scripts/
 │   ├── deploy-schema.ts
-│   ├── run-remove-jieba-tokens-migration.mjs
-│   └── cron/
-│       ├── fetch-reports.sh / run-worker.sh
-│       └── install-launchd.sh / uninstall-launchd.sh
+│   └── run-*-migration.mjs
 │
 ├── tests/                    # ⚠️ 目前空，待补
 │
@@ -517,14 +512,15 @@ aliases 已自动并入 `pages.tsv`（与 title 同权重 A），任何别名都
 
 ---
 
-## 调度（cron）
+## 调度
 
-详见 `./doc/scheduling.md`。两层：
+OS 层（launchd / systemd / cron）的脚本与 unit 文件已从仓库移除——不维护内部约定的部署器。运行时按需起：
 
-- **OS 层（macOS launchd）**：`fetch-reports` 每天 8 点 + `worker` 24/7 KeepAlive
-- **Agent 层（Claude Code `/schedule`）**：`$ae-research-ingest` 9 点 + `$ae-daily-review`/`$ae-daily-summarize` 17 点
+- **手动**：`bun src/cli.ts fetch-reports` / `bun src/cli.ts worker` / `bun src/cli.ts agent:run --skill ae-...`
+- **任意外部 scheduler**：cron / launchd / systemd / Airflow / GitHub Actions 等都可以直接 `cd ae-wiki-agent && bun src/cli.ts <cmd>` 触发；项目本身不绑定任何一种。
+- **Claude Code `/schedule`**：交互层把 `$ae-research-ingest` 等 skill 挂到固定时间，是上层 agent 端的事，不在 wiki core 范围。
 
-安装：`./scripts/cron/install-launchd.sh`（默认未启用）。
+后续若要把"定时任务"做进 wiki，应建 `schedules` 表 + worker poll，而不是 vendoring OS 启动脚本。
 
 ---
 
@@ -819,7 +815,6 @@ git commit -m "extract from llm-wiki"
 
 - `./doc/architecture.md` — ingest 8-stage 详解 + 设计决策
 - `./doc/llm-touchpoints.md` — LLM 调用点地图
-- `./doc/scheduling.md` — cron / launchd / Claude Code `/schedule`
 - `./doc/gbrain-borrowings.md` — gbrain 借鉴清单
 - `./skills/*/SKILL.md` — 每个 skill 的工作流（agent 读这些）
 - `./infra/init-v2.sql` — schema 真相源

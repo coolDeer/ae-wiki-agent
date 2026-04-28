@@ -136,7 +136,7 @@
 │   S3 parsedMarkdownS3 (mineru 解析后的 markdown，HTTP 直链)           │
 └─────────────────────────────────────────────────────────────────────┘
                    ▲
-                   │ ae-fetch-reports skill (launchd 每天 8 点)
+                   │ ae-fetch-reports skill (手动 / 任意外部 scheduler)
                    │ (1) 查 ResearchReportRecord WHERE parseStatus='completed'
                    │ (2) INSERT raw_files (markdown_url + research_id 去重)
                    │   raw 正文不落盘，ingest 时按需 fetch markdown_url
@@ -868,8 +868,8 @@ CREATE INDEX idx_jobs_status  ON minion_jobs(status, create_time);
 | `detect_signals` | ingest Stage 6 | 跨 source fact 偏离比对（>10% 写 info，>20% 写 warning） | 需 ≥1 条同 entity+metric+period 的 prior fact |
 | `enrich_entity` | Stage 4 自动建红链时 | 起一个 `agent_run` job 跑 ae-enrich skill | 红链补全的自动化入口 |
 | `agent_run` | enrich_entity / 用户显式 | OpenAI gpt-5-mini durable runtime（`src/agents/runtime.ts`） | 对话历史落 `agent_messages` / `agent_tool_executions` |
-| `lint_run` | cron / 手动 (`ae-wiki lint:run`) | 5 项健康检查写 `events(action='lint_run')` | 见 §6 维护任务 |
-| `facts_expire` | cron / 手动 (`ae-wiki facts:expire`) | 关闭 period_end 已过 N 天的 latest fact | 默认 90 天 |
+| `lint_run` | 外部 scheduler / 手动 (`ae-wiki lint:run`) | 5 项健康检查写 `events(action='lint_run')` | 见 §6 维护任务 |
+| `facts_expire` | 外部 scheduler / 手动 (`ae-wiki facts:expire`) | 关闭 period_end 已过 N 天的 latest fact | 默认 90 天 |
 
 `status` 状态机（v2.6.1 / v2.6.2 加 `cancelled` / `paused`）：
 ```
@@ -1039,7 +1039,7 @@ ON CONFLICT (id) DO NOTHING;
 ### 4.1 端到端流程
 
 ```
-[ae-fetch-reports skill]                          (launchd 每天 8 点 / 手动)
+[ae-fetch-reports skill]                          (手动 / 任意外部 scheduler)
     ↓ MongoDB 查 ResearchReportRecord WHERE parseStatus='completed'
     ↓ 对每条 record：partial unique 去重 ON CONFLICT (research_id) WHERE deleted=0 ...
     ↓ INSERT raw_files (markdown_url=parsedMarkdownS3, mongo_doc, research_type, tags, org_code...)
@@ -1122,7 +1122,7 @@ source 页正常应有 facts ≥ 1，brief 0 facts 是预期。
 - `ae-wiki lint:run` — 5 项健康检查（orphan_pages / stale_active_theses / unenriched_red_links / pending_raw_files / expired_latest_facts），写 `events(action='lint_run')`
 - `ae-wiki facts:expire [--age 90]` — 把 `period_end < CURRENT_DATE - 90d` 的 latest fact 标 `valid_to`
 - 实现：`src/skills/lint/index.ts` / `src/skills/facts/expire.ts`
-- 也可作为 minion job 由 cron 拉起
+- 也可作为 minion job 由外部 scheduler 拉起
 
 ---
 
@@ -1200,7 +1200,7 @@ LIMIT 10;
 
 | Skill | SKILL.md | OpenAI runtime | 触发 / 作用 |
 |---|---|---|---|
-| `ae-fetch-reports` | ✓ | ✓ | launchd 每天 8 点 / 手动 — MongoDB → raw_files |
+| `ae-fetch-reports` | ✓ | ✓ | 手动 / 外部 scheduler — MongoDB → raw_files |
 | `ae-research-ingest` | ✓ | ✓ | fetch 后 — Triage 三分 + 三段式 ingest |
 | `ae-enrich` | ✓ | ✓ | Stage 4 自动入队 / 手动 — 红链 entity 补全 |
 | `ae-thesis-track` | ✓ | ✓ | PM 表态 / ingest 后回看 — 论点状态机 |
@@ -1214,7 +1214,7 @@ LIMIT 10;
 | 自动 | 半自动（worker 可代跑） | 全人工（PM/agent 必须出席） |
 |---|---|---|
 | ingest Stage 6 入队 `embed_chunks` / `detect_signals` | `enrich_entity` job → `agent_run` 跑 ae-enrich（OpenAI durable runtime） | `thesis:open` / `thesis:update --mark-condition` / `thesis:close` |
-| ingest Stage 8 命中 active thesis 写 signal | `lint_run` cron / `facts_expire` cron | conviction bump / drop |
+| ingest Stage 8 命中 active thesis 写 signal | `lint_run` 外部触发 / `facts_expire` 外部触发 | conviction bump / drop |
 | Stage 5 fact YAML 直读 | | catalyst 命中判定 / stop_loss 触发 |
 
 worker (`bun src/cli.ts worker` 或 `jobs:supervisor`) 跑起来后，红链补全完全异步；不跑的话 agent 也可走三段式 CLI 手动 enrich。
@@ -1395,9 +1395,10 @@ Phase 2 进行中的开放问题：
    - 已发现 `companies/DeepSeek` / `companies/deepseek` 重复（slug 大小写不归一化）
    - 待补一个 hygiene 脚本或迁移规则
 
-4. **签到 worker 如何在 macOS 本地（launchd）+ Linux 生产（systemd）双轨部署**
-   - `infra/launchd/` 与 `infra/systemd/` 两套配置已存在
-   - 缺一份"挂了怎么办"的 supervisor README
+4. **是否在仓库里建 DB-backed 调度（`schedules` 表 + worker poll）**
+   - 现状：项目已不维护 OS 层调度脚本（launchd/systemd/cron 均移除），所有定时任务依赖外部 scheduler 触发 `bun src/cli.ts <cmd>`
+   - 候选：DB schedules 表 + minion worker 内置 cron-aware loop，让 `/scheduling` web 页可直接管 schedule
+   - 暂未决：先维持外部 scheduler 模式，等确实有 PM 想在 UI 上加任务再做
 
 ---
 

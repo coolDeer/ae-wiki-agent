@@ -1,6 +1,6 @@
 ---
 name: ae-fetch-reports
-description: 手动触发从上游 MongoDB ResearchReportRecord 同步已解析完成（parseStatus=completed）的研究报告元数据 + parsedMarkdownS3 直链到 raw_files 队列表（不下载正文），供后续 ae-research-ingest 按需 fetch。日常由 launchd 每天 8 点自动跑，本 skill 用于补抓 / 临时拉。
+description: 手动触发从上游 MongoDB ResearchReportRecord 同步已解析完成（parseStatus=completed）的研究报告元数据 + parsedMarkdownS3 直链到 raw_files 队列表（不下载正文），供后续 ae-research-ingest 按需 fetch。本 skill 是默认入口；外部 scheduler（cron / Airflow / GitHub Actions 等）也可直接调 `bun src/cli.ts fetch-reports`。
 metadata:
   short-description: 手动从 mongo 拉新研究报告元数据到 raw_files 队列
 ---
@@ -22,9 +22,9 @@ metadata:
 
 | 场景 | 是否用 skill |
 |---|---|
-| 日常自动拉 | ❌ 不用 — launchd `com.ae-wiki.fetch-reports` 每天 8:00 自动跑 |
-| launchd 没装好 / 失败补抓 | ✅ 用本 skill |
-| 想立刻看新增内容（不等 8 点）| ✅ 用本 skill |
+| 日常自动拉（外部 scheduler 已配） | ❌ scheduler 直接调 `bun src/cli.ts fetch-reports` |
+| 没接外部 scheduler / scheduler 失败补抓 | ✅ 用本 skill |
+| 想立刻看新增内容（手动触发） | ✅ 用本 skill |
 | 测试 / 限流（只想拉几篇看看）| ✅ 用本 skill 带数字参数 |
 
 ## 执行步骤
@@ -111,6 +111,4 @@ ae-research-ingest:peek 拿 raw_file → fetch(markdownUrl) → 处理
 - `src/skills/fetch-reports/index.ts` — 实现
 - `src/cli.ts` (case `fetch-reports`) — CLI 入口
 - `src/core/mongo.ts` — mongo client + ResearchReportRecord 类型 + researchType 枚举
-- `scripts/cron/fetch-reports.sh` — launchd 调用的 shell wrapper
-- `infra/launchd/com.ae-wiki.fetch-reports.plist` — 每天 8:00 调度配置（默认未安装）
-- `CLAUDE.md` §"4 个用户入口" / §"调度 (cron)" — 在整体流程里的位置
+- `CLAUDE.md` §"4 个用户入口" / §"调度" — 在整体流程里的位置
