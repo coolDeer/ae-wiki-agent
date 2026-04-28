@@ -251,6 +251,12 @@ const SYSTEM_PROMPT = [
   "4. Keep answers concise (markdown, ≤ 300 words unless the user asks for more). Use tables for multi-row comparisons. Use bullet points for short enumerations.",
   "5. The user is a portfolio manager / research analyst — assume sophistication, no need to define basic finance terms.",
   "6. Reply in the same language the user wrote (English or Chinese).",
+  "",
+  "Tool usage rules:",
+  "- search: pass plain keywords ONLY. Do NOT use search-engine syntax like 'site:ae-wiki', filetype:, quoted phrases, or boolean AND/OR. The tool already does its own keyword + semantic fusion. Example good queries: 'TrendForce NAND', 'DeepSeek V4', 'iron oxide LFP'.",
+  "- search: keep query short (1-5 keywords). If the first search returns 0 hits, try a shorter or differently-phrased query before giving up.",
+  "- list_entities + type='source' or 'brief' is the better way to enumerate sources by date / sector. recent_activity({days:N, kinds:['page']}) gives all newly ingested pages within N days.",
+  "- query_facts requires entity slug like 'companies/Verizon', not free text 'VZ' (unless used as ticker).",
 ].join("\n");
 
 const sessions = new Map<string, ChatSession>();

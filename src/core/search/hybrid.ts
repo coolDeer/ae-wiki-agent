@@ -24,6 +24,61 @@ import {
 
 const RRF_K = 60;
 
+const STOPWORDS = new Set([
+  // 英文常见
+  "the", "a", "an", "of", "to", "in", "for", "on", "and", "or",
+  "is", "are", "was", "were", "be", "been", "being",
+  // 自然语言查询常见无义词
+  "find", "search", "show", "give", "tell", "list", "all", "any", "some",
+  "what", "who", "which", "when", "where", "why", "how",
+  // 搜索引擎语法残留
+  "site", "filetype", "inurl", "intitle", "www", "com", "org", "io",
+  // 中文助词
+  "的", "了", "和", "与", "或", "是", "在", "有", "我", "你", "他", "它",
+]);
+
+/**
+ * 把用户自然语言查询转成 tsquery 表达式（OR 连接，前缀匹配）。
+ *
+ * 解决 plainto_tsquery 把所有 token 用 AND 串起来导致召回过严的问题
+ * （比如 "TrendForce 报告 site:ae-wiki" 在 plainto 下要 ALL token 都命中
+ * 才出结果；OR 模式下任一 token 命中即可）。
+ *
+ * - 删搜索引擎语法 (`site:` / `filetype:` / quoted phrases 等)
+ * - 删停用词
+ * - 单引号 escape，加 `:*` 前缀通配
+ * - 用 ` | ` 串成 OR 表达式
+ */
+export function buildTsQueryExpr(query: string): string {
+  if (!query) return "";
+  const cleaned = query
+    // 删 search-engine modifiers (site:foo, filetype:pdf, ...)
+    .replace(/\b(?:site|filetype|inurl|intitle|cache|info|related)\s*:\s*\S+/gi, " ")
+    // 留字母 / 数字 / 中文 / 下划线 / 短横线
+    .replace(/[^\p{L}\p{N}_\-\s]/gu, " ")
+    .toLowerCase()
+    .trim();
+  if (!cleaned) return "";
+
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+  for (const raw of cleaned.split(/\s+/)) {
+    if (!raw) continue;
+    // ASCII 词太短（如 "me" / "an"）会让 :* 前缀通配匹配大量无关 page
+    const isAscii = /^[a-z0-9_-]+$/.test(raw);
+    if (isAscii && raw.length < 3) continue;
+    // CJK / 其它 unicode：单字也保留（中文很多 1 字就有信息量）
+    if (!isAscii && raw.length < 1) continue;
+    if (STOPWORDS.has(raw)) continue;
+    if (seen.has(raw)) continue;
+    seen.add(raw);
+    // tsquery atom: 单引号包裹 + 内部单引号 escape；prefix 通配 :*
+    tokens.push(`'${raw.replace(/'/g, "''")}':*`);
+    if (tokens.length >= 16) break; // 防 token 爆炸
+  }
+  return tokens.join(" | ");
+}
+
 export interface SearchOpts {
   /** 召回上限（默认 10） */
   limit?: number;
@@ -94,6 +149,11 @@ export async function hybridSearch(
 
   const queryEmbLiteral = queryEmb ? `[${queryEmb.join(",")}]` : null;
 
+  // 用 OR 连接的 tsquery 表达式替代 plainto_tsquery（plainto 是 AND，召回过严）
+  const tsExpr = buildTsQueryExpr(query);
+  // 当 token 全被过滤干净（如 query 全是停用词）时，跳过 keyword 通道
+  const keywordEnabled = tsExpr.length > 0;
+
   // 2. 一条 SQL 跑完 keyword + semantic + RRF
   const rows = await db.execute(drizzleSql`
     WITH
@@ -101,10 +161,10 @@ export async function hybridSearch(
         SELECT
           p.id,
           ROW_NUMBER() OVER (
-            ORDER BY ts_rank(p.tsv, plainto_tsquery('simple', ${query})) * ${sourceFactorSql} DESC
+            ORDER BY ts_rank(p.tsv, to_tsquery('simple', ${tsExpr})) * ${sourceFactorSql} DESC
           ) AS rk
         FROM pages p
-        WHERE p.tsv @@ plainto_tsquery('simple', ${query})
+        WHERE ${keywordEnabled ? drizzleSql`p.tsv @@ to_tsquery('simple', ${tsExpr})` : drizzleSql`FALSE`}
           AND p.deleted = 0
           AND p.status != 'archived'
           ${excludeClauseSql ? drizzleSql`AND ${excludeClauseSql}` : drizzleSql``}
