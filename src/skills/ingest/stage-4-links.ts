@@ -74,7 +74,23 @@ export async function stage4Links(ctx: IngestContext): Promise<void> {
       autoCreate: true,
     });
     if (!targetId) continue;
-    if (!wasExisting) createdEntities++;
+    if (!wasExisting) {
+      createdEntities++;
+      await db.insert(schema.minionJobs).values(
+        withCreateAudit(
+          {
+            name: "enrich_entity",
+            status: "waiting",
+            data: {
+              pageId: targetId.toString(),
+              slug,
+              sourcePageId: ctx.pageId.toString(),
+            },
+          },
+          ctx.actor
+        )
+      );
+    }
 
     const inserted = await db
       .insert(schema.links)

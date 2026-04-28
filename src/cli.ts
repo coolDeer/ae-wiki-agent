@@ -7,7 +7,7 @@
  *   ae-wiki ingest:write <id> < file.md    # stdin 把 agent 写的 narrative 落库
  *   ae-wiki ingest:finalize <id>           # 跑 Stage 4-8 收尾
  *
- * 编排 skill：skills/research-ingest/SKILL.md（agent 读后执行）。
+ * 编排 skill：skills/ae-research-ingest/SKILL.md（agent 读后执行）。
  *
  * skill 模块按需 dynamic import，避免没填 env 时 help 也跑不起来。
  */
@@ -22,6 +22,13 @@ function getArg(name: string): string | undefined {
   const idx = args.indexOf(name);
   if (idx >= 0 && idx + 1 < args.length) return args[idx + 1];
   return undefined;
+}
+function jsonStringify(value: unknown): string {
+  return JSON.stringify(
+    value,
+    (_key, current) => (typeof current === "bigint" ? current.toString() : current),
+    2
+  );
 }
 
 function printHelp(): void {
@@ -43,7 +50,27 @@ function printHelp(): void {
   ae-wiki ingest:skip <page_id> --reason "..."
                                           # 兜底：commit 后才发现不对（清理 page + 标 raw_file）
 
-  ae-wiki worker                          # minion-worker 后台进程
+  ae-wiki worker                          # minion-worker 后台进程（兼容入口）
+
+  # —— Durable agent runtime ——
+  ae-wiki agent:run --skill <skill> [--prompt "..."] [--model X] [--max-turns N] [--follow]
+  ae-wiki agent:list [--status S] [--skill X] [--limit N]
+  ae-wiki agent:show <job_id>
+  ae-wiki agent:logs <job_id>
+  ae-wiki agent:replay <job_id> [--follow]
+  ae-wiki agent:pause <job_id> [--reason "..."]
+  ae-wiki agent:resume <job_id>
+  ae-wiki agent:cancel <job_id> [--reason "..."]
+  ae-wiki jobs:worker
+  ae-wiki jobs:supervisor start [--detach] [--pid-file PATH]
+  ae-wiki jobs:supervisor status [--pid-file PATH]
+  ae-wiki jobs:supervisor stop [--pid-file PATH]
+  ae-wiki jobs:list [--status S] [--name N] [--limit N]
+  ae-wiki jobs:get <job_id>
+  ae-wiki jobs:pause <job_id> [--reason "..."]
+  ae-wiki jobs:resume <job_id>
+  ae-wiki jobs:cancel <job_id> [--reason "..."]
+  ae-wiki jobs:retry <job_id>
 
   ae-wiki enrich:list [--type T] [--limit N]    # 列出待 enrich 的红链 entity
   ae-wiki enrich:next [--type T] [--skip N]     # 取下一个红链 + backlink 上下文
@@ -67,12 +94,17 @@ function printHelp(): void {
   ae-wiki facts:re-extract <page_id>      # 重跑 Stage 5（针对单页）
   ae-wiki links:re-extract <page_id>      # 重跑 Stage 4（针对单页）
 
+  # —— 维护任务（也可作为 minion job 跑：lint_run / facts_expire） ——
+  ae-wiki lint:run [--stale-days N] [--raw-age-days N] [--fact-age-days N] [--sample N]
+                                          # 跑 5 项健康检查 + 写 events(action='lint_run')
+  ae-wiki facts:expire [--age N]          # 把 period_end 已过 N 天 (默认 90) 的 latest fact 标 valid_to
+
   ae-wiki --help
 
 参考：
-  skills/research-ingest/SKILL.md  研报 ingest 编排
-  skills/enrich/SKILL.md           红链补全编排
-  skills/thesis-track/SKILL.md     投资论点状态机`);
+  skills/ae-research-ingest/SKILL.md  研报 ingest 编排
+  skills/ae-enrich/SKILL.md           红链补全编排
+  skills/ae-thesis-track/SKILL.md     投资论点状态机`);
 }
 
 async function main(): Promise<void> {
@@ -85,7 +117,6 @@ async function main(): Promise<void> {
     case "fetch-reports": {
       const { fetchReports } = await import("./skills/fetch-reports/index.ts");
       const limit = getArg("--limit");
-      // 位置参数（YYYY-MM-DD）= 日期；--date 优先；不识别 flag value 误当 positional
       const positional = args[0] && !args[0].startsWith("--") ? args[0] : undefined;
       const dateFlag = getArg("--date");
       const date = dateFlag ?? positional;
@@ -106,7 +137,7 @@ async function main(): Promise<void> {
     case "ingest": {
       console.error(
         "命令 `ingest` 已废弃。改用三段式：ingest:next → agent 写 narrative → ingest:write → ingest:finalize\n" +
-        "见 skills/research-ingest/SKILL.md"
+          "见 skills/ae-research-ingest/SKILL.md"
       );
       process.exit(1);
     }
@@ -118,18 +149,16 @@ async function main(): Promise<void> {
         console.log("(没有待处理的 raw_files)");
         process.exit(0);
       }
-      console.log(JSON.stringify(
-        {
+      console.log(
+        jsonStringify({
           rawFileId: result.rawFileId.toString(),
           markdownUrl: result.markdownUrl,
           title: result.title,
           researchType: result.researchType,
           rawCharCount: result.rawCharCount,
           preview: result.preview,
-        },
-        null,
-        2
-      ));
+        })
+      );
       break;
     }
 
@@ -141,7 +170,7 @@ async function main(): Promise<void> {
       }
       const reason = getArg("--reason");
       if (!reason) {
-        console.error("ingest:pass 需要 --reason \"...\"（说明为何跳过）");
+        console.error('ingest:pass 需要 --reason "..."（说明为何跳过）');
         process.exit(1);
       }
       const actor = getArg("--actor") ?? "agent:claude";
@@ -158,17 +187,15 @@ async function main(): Promise<void> {
       }
       const { ingestCommit } = await import("./skills/ingest/index.ts");
       const result = await ingestCommit(BigInt(rawFileIdStr));
-      console.log(JSON.stringify(
-        {
+      console.log(
+        jsonStringify({
           rawFileId: result.rawFileId.toString(),
           pageId: result.pageId.toString(),
           markdownUrl: result.markdownUrl,
           title: result.title,
           researchType: result.researchType,
-        },
-        null,
-        2
-      ));
+        })
+      );
       break;
     }
 
@@ -180,18 +207,16 @@ async function main(): Promise<void> {
       }
       const { ingestBrief } = await import("./skills/ingest/index.ts");
       const result = await ingestBrief(BigInt(rawFileIdStr));
-      console.log(JSON.stringify(
-        {
+      console.log(
+        jsonStringify({
           rawFileId: result.rawFileId.toString(),
           pageId: result.pageId.toString(),
           markdownUrl: result.markdownUrl,
           title: result.title,
           researchType: result.researchType,
           pageType: "brief",
-        },
-        null,
-        2
-      ));
+        })
+      );
       break;
     }
 
@@ -202,17 +227,15 @@ async function main(): Promise<void> {
         console.log("(没有待处理的 raw_files)");
         process.exit(0);
       }
-      console.log(JSON.stringify(
-        {
+      console.log(
+        jsonStringify({
           rawFileId: result.rawFileId.toString(),
           pageId: result.pageId.toString(),
           markdownUrl: result.markdownUrl,
           title: result.title,
           researchType: result.researchType,
-        },
-        null,
-        2
-      ));
+        })
+      );
       break;
     }
 
@@ -223,7 +246,6 @@ async function main(): Promise<void> {
         process.exit(1);
       }
       const { ingestWriteNarrative } = await import("./skills/ingest/index.ts");
-      // 从 stdin 读 narrative
       const narrative = await Bun.stdin.text();
       if (!narrative.trim()) {
         console.error("stdin 为空，请用管道传 narrative：bun cli ingest:write <id> < file.md");
@@ -252,44 +274,76 @@ async function main(): Promise<void> {
       }
       const reason = getArg("--reason");
       if (!reason) {
-        console.error("ingest:skip 需要 --reason \"...\"（说明为何跳过）");
+        console.error('ingest:skip 需要 --reason "..."（说明为何跳过）');
         process.exit(1);
       }
       const actor = getArg("--actor") ?? "agent:claude";
       const { ingestSkip } = await import("./skills/ingest/index.ts");
       const result = await ingestSkip(BigInt(pageIdStr), reason, actor);
-      console.log(JSON.stringify(
-        { pageId: pageIdStr, rawFileId: result.rawFileId?.toString() ?? null },
-        null,
-        2
-      ));
+      console.log(jsonStringify({ pageId: pageIdStr, rawFileId: result.rawFileId?.toString() ?? null }));
       break;
     }
 
     case "worker": {
-      const { runWorker } = await import("./workers/minion-worker.ts");
-      await runWorker();
+      const { runJobsCommand } = await import("./commands/jobs.ts");
+      await runJobsCommand(["worker"]);
+      break;
+    }
+
+    case "agent:run":
+    case "agent:list":
+    case "agent:show":
+    case "agent:logs":
+    case "agent:replay":
+    case "agent:pause":
+    case "agent:resume":
+    case "agent:cancel": {
+      const { runAgentCommand } = await import("./commands/agent.ts");
+      await runAgentCommand([cmd.slice("agent:".length), ...args]);
+      break;
+    }
+
+    case "jobs:worker":
+    case "jobs:supervisor":
+    case "jobs:list":
+    case "jobs:get":
+    case "jobs:pause":
+    case "jobs:resume":
+    case "jobs:cancel":
+    case "jobs:retry": {
+      const { runJobsCommand } = await import("./commands/jobs.ts");
+      await runJobsCommand([cmd.slice("jobs:".length), ...args]);
       break;
     }
 
     case "enrich:list": {
       const { enrichList } = await import("./skills/enrich/index.ts");
       const type = getArg("--type") as
-        | "company" | "person" | "industry" | "concept" | "thesis" | "output"
+        | "company"
+        | "person"
+        | "industry"
+        | "concept"
+        | "thesis"
+        | "output"
         | undefined;
       const limit = getArg("--limit");
       const rows = await enrichList({
         type,
         limit: limit ? parseInt(limit, 10) : undefined,
       });
-      console.log(JSON.stringify(rows.map((r) => ({ ...r, pageId: r.pageId.toString() })), null, 2));
+      console.log(jsonStringify(rows.map((row) => ({ ...row, pageId: row.pageId.toString() }))));
       break;
     }
 
     case "enrich:next": {
       const { enrichPrepareNext } = await import("./skills/enrich/index.ts");
       const type = getArg("--type") as
-        | "company" | "person" | "industry" | "concept" | "thesis" | "output"
+        | "company"
+        | "person"
+        | "industry"
+        | "concept"
+        | "thesis"
+        | "output"
         | undefined;
       const skipStr = getArg("--skip");
       const ctx = await enrichPrepareNext({
@@ -300,33 +354,43 @@ async function main(): Promise<void> {
         console.log("(没有 confidence='low' 的待 enrich 红链)");
         process.exit(0);
       }
-      console.log(JSON.stringify({
-        pageId: ctx.pageId.toString(),
-        slug: ctx.slug,
-        type: ctx.type,
-        title: ctx.title,
-        ticker: ctx.ticker,
-        backlinks: ctx.backlinks.map((b) => ({
-          ...b,
-          sourcePageId: b.sourcePageId.toString(),
-        })),
-      }, null, 2));
+      console.log(
+        jsonStringify({
+          pageId: ctx.pageId.toString(),
+          slug: ctx.slug,
+          type: ctx.type,
+          title: ctx.title,
+          ticker: ctx.ticker,
+          backlinks: ctx.backlinks.map((backlink) => ({
+            ...backlink,
+            sourcePageId: backlink.sourcePageId.toString(),
+          })),
+        })
+      );
       break;
     }
 
     case "thesis:list": {
       const { thesisList } = await import("./skills/thesis/index.ts");
       const status = getArg("--status") as
-        | "active" | "monitoring" | "closed" | "invalidated" | undefined;
+        | "active"
+        | "monitoring"
+        | "closed"
+        | "invalidated"
+        | undefined;
       const direction = getArg("--direction") as
-        | "long" | "short" | "pair" | "neutral" | undefined;
+        | "long"
+        | "short"
+        | "pair"
+        | "neutral"
+        | undefined;
       const limit = getArg("--limit");
       const rows = await thesisList({
         status,
         direction,
         limit: limit ? parseInt(limit, 10) : undefined,
       });
-      console.log(JSON.stringify(rows.map((r) => ({ ...r, pageId: r.pageId.toString() })), null, 2));
+      console.log(jsonStringify(rows.map((row) => ({ ...row, pageId: row.pageId.toString() }))));
       break;
     }
 
@@ -342,38 +406,43 @@ async function main(): Promise<void> {
         console.error(`thesis #${pageIdStr} 不存在`);
         process.exit(1);
       }
-      console.log(JSON.stringify({
-        pageId: result.thesis.pageId.toString(),
-        slug: result.page.slug,
-        title: result.page.title,
-        targetSlug: result.targetSlug,
-        direction: result.thesis.direction,
-        conviction: result.thesis.conviction,
-        status: result.thesis.status,
-        dateOpened: result.thesis.dateOpened,
-        dateClosed: result.thesis.dateClosed,
-        priceAtOpen: result.thesis.priceAtOpen,
-        priceAtClose: result.thesis.priceAtClose,
-        catalysts: result.thesis.catalysts,
-        validationConditions: result.thesis.validationConditions,
-        narrative_chars: result.page.content.length,
-        recentFacts: result.recentFacts,
-        signals: result.signals.map((s) => ({ ...s, id: s.id.toString() })),
-      }, null, 2));
+      console.log(
+        jsonStringify({
+          pageId: result.thesis.pageId.toString(),
+          slug: result.page.slug,
+          title: result.page.title,
+          targetSlug: result.targetSlug,
+          direction: result.thesis.direction,
+          conviction: result.thesis.conviction,
+          status: result.thesis.status,
+          dateOpened: result.thesis.dateOpened,
+          dateClosed: result.thesis.dateClosed,
+          priceAtOpen: result.thesis.priceAtOpen,
+          priceAtClose: result.thesis.priceAtClose,
+          catalysts: result.thesis.catalysts,
+          validationConditions: result.thesis.validationConditions,
+          narrative_chars: result.page.content.length,
+          recentFacts: result.recentFacts,
+          signals: result.signals.map((signal) => ({ ...signal, id: signal.id.toString() })),
+        })
+      );
       break;
     }
 
     case "thesis:open": {
       const target = getArg("--target");
       const direction = getArg("--direction") as
-        | "long" | "short" | "pair" | "neutral" | undefined;
+        | "long"
+        | "short"
+        | "pair"
+        | "neutral"
+        | undefined;
       const name = getArg("--name");
       if (!target || !direction || !name) {
         console.error("thesis:open 需要 --target <slug> --direction <long|short|pair|neutral> --name <title>");
         process.exit(1);
       }
-      const conviction = getArg("--conviction") as
-        | "high" | "medium" | "low" | undefined;
+      const conviction = getArg("--conviction") as "high" | "medium" | "low" | undefined;
       const { thesisOpen } = await import("./skills/thesis/index.ts");
       const result = await thesisOpen({
         targetSlug: target,
@@ -384,11 +453,13 @@ async function main(): Promise<void> {
         priceAtOpen: getArg("--price-open"),
         dateOpened: getArg("--date-opened"),
       });
-      console.log(JSON.stringify({
-        pageId: result.pageId.toString(),
-        slug: result.slug,
-        targetPageId: result.targetPageId.toString(),
-      }, null, 2));
+      console.log(
+        jsonStringify({
+          pageId: result.pageId.toString(),
+          slug: result.slug,
+          targetPageId: result.targetPageId.toString(),
+        })
+      );
       break;
     }
 
@@ -415,13 +486,18 @@ async function main(): Promise<void> {
         process.exit(1);
       }
       const { thesisUpdate } = await import("./skills/thesis/index.ts");
-      const conviction = getArg("--conviction") as
-        | "high" | "medium" | "low" | undefined;
+      const conviction = getArg("--conviction") as "high" | "medium" | "low" | undefined;
       const status = getArg("--status") as
-        | "active" | "monitoring" | "closed" | "invalidated" | undefined;
+        | "active"
+        | "monitoring"
+        | "closed"
+        | "invalidated"
+        | undefined;
       const addCatalystStr = getArg("--add-catalyst");
       const markConditionStr = getArg("--mark-condition");
-      let addCatalyst: { date: string; event: string; expected_impact: string } | undefined;
+      let addCatalyst:
+        | { date: string; event: string; expected_impact: string }
+        | undefined;
       if (addCatalystStr) {
         try {
           addCatalyst = JSON.parse(addCatalystStr);
@@ -430,7 +506,13 @@ async function main(): Promise<void> {
           process.exit(1);
         }
       }
-      let markCondition: { condition: string; status: "pending" | "met" | "unmet" | "invalidated"; evidence_signal_id?: string } | undefined;
+      let markCondition:
+        | {
+            condition: string;
+            status: "pending" | "met" | "unmet" | "invalidated";
+            evidence_signal_id?: string;
+          }
+        | undefined;
       if (markConditionStr) {
         const parts = markConditionStr.split(":");
         if (parts.length < 2) {
@@ -461,7 +543,11 @@ async function main(): Promise<void> {
         process.exit(1);
       }
       const reason = getArg("--reason") as
-        | "validated" | "invalidated" | "stop_loss" | "manual" | undefined;
+        | "validated"
+        | "invalidated"
+        | "stop_loss"
+        | "manual"
+        | undefined;
       if (!reason) {
         console.error("thesis:close 需要 --reason validated|invalidated|stop_loss|manual");
         process.exit(1);
@@ -500,7 +586,7 @@ async function main(): Promise<void> {
         subSector: getArg("--sub-sector"),
         country: getArg("--country"),
         exchange: getArg("--exchange"),
-        aliases: aliasesStr ? aliasesStr.split(",").map((s) => s.trim()) : undefined,
+        aliases: aliasesStr ? aliasesStr.split(",").map((item) => item.trim()) : undefined,
         confidence,
       });
       break;
@@ -521,6 +607,32 @@ async function main(): Promise<void> {
         contentListJson: undefined,
         actor: Actor.systemIngest,
       });
+      break;
+    }
+
+    case "lint:run": {
+      const { runLint } = await import("./skills/lint/index.ts");
+      const staleDays = getArg("--stale-days");
+      const rawAgeDays = getArg("--raw-age-days");
+      const factAgeDays = getArg("--fact-age-days");
+      const sampleSize = getArg("--sample");
+      const report = await runLint({
+        staleDays: staleDays ? parseInt(staleDays, 10) : undefined,
+        rawAgeDays: rawAgeDays ? parseInt(rawAgeDays, 10) : undefined,
+        factAgeDays: factAgeDays ? parseInt(factAgeDays, 10) : undefined,
+        sampleSize: sampleSize ? parseInt(sampleSize, 10) : undefined,
+      });
+      console.log(jsonStringify(report));
+      break;
+    }
+
+    case "facts:expire": {
+      const { expireFacts } = await import("./skills/facts/expire.ts");
+      const age = getArg("--age");
+      const result = await expireFacts({
+        ageDays: age ? parseInt(age, 10) : undefined,
+      });
+      console.log(jsonStringify(result));
       break;
     }
 

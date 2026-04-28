@@ -2,7 +2,7 @@
  * ingest skill — gbrain 风格的"thin harness"
  *
  * core 不做 LLM 推理，只做确定性落库。"理解原文 → 写 narrative" 由 agent 层
- * （`skills/research-ingest/SKILL.md`）执行，调多段式 CLI 串联：
+ * （`skills/ae-research-ingest/SKILL.md`）执行，调多段式 CLI 串联：
  *
  *   推荐流程（triage 一等公民）：
  *     1. ingest:peek                 — 列下一份候选 raw（不写库），返回 preview
@@ -14,7 +14,7 @@
  *   兜底：ingest:skip <pg> --reason  — 已 commit 后才发现不对（清理 page + 标 raw_file）
  *   兼容：ingest:next                — = peek + commit（直接建骨架，不走 triage；对短素材已不推荐）
  *
- * 详细见 doc/architecture.md §4.1 与 skills/research-ingest/SKILL.md。
+ * 详细见 doc/architecture.md §4.1 与 skills/ae-research-ingest/SKILL.md。
  */
 
 import { asc, eq, isNull, and, sql as drizzleSql } from "drizzle-orm";

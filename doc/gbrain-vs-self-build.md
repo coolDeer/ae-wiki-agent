@@ -104,9 +104,9 @@ cons: 缺 facts / theses / signals → 投资查询根本跑不起来
   - 部署 / 测试 / build:linux 全套
 增量加：
   - schema：facts / theses / signals / raw_files 4 张投资专属表
-  - skills/research-ingest/（替代 generic ingest，处理 mineru markdown）
-  - skills/fetch-reports/（aecapllc MongoDB → raw_files）
-  - skills/thesis-track/（长短仓状态机）
+  - skills/ae-research-ingest/（替代 generic ingest，处理 mineru markdown）
+  - skills/ae-fetch-reports/（aecapllc MongoDB → raw_files）
+  - skills/ae-thesis-track/（长短仓状态机）
   - skills/consensus-monitor/（跨 broker drift）
   - core/research/（投资场景的 fact 抽取 / consensus 计算）
 ```

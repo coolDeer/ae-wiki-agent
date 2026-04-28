@@ -18,6 +18,8 @@ import {
   search,
   getPage,
   queryFacts,
+  compareTableFacts,
+  getTableArtifact,
   listEntities,
   recentActivity,
 } from "./queries.ts";
@@ -46,7 +48,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Search query (中文 / English)" },
+        query: { type: "string", description: "Search query (English / Chinese)" },
         limit: { type: "number", description: "Max results (default 10)" },
         type: {
           type: "string",
@@ -83,7 +85,7 @@ const TOOLS = [
   {
     name: "query_facts",
     description:
-      "Query structured facts (financial metrics) by entity / metric / period. Time-travel via current_only flag.",
+      "Query structured facts (financial metrics) by entity / metric / period. Supports table_only, table_id, and include_raw_table.",
     inputSchema: {
       type: "object",
       properties: {
@@ -97,8 +99,73 @@ const TOOLS = [
           type: "boolean",
           description: "Only return facts with valid_to IS NULL (latest)",
         },
+        table_only: {
+          type: "boolean",
+          description: "Only return facts extracted from table artifacts",
+        },
+        table_id: {
+          type: "string",
+          description: "Filter facts to a specific table_id (e.g. 't1')",
+        },
+        include_raw_table: {
+          type: "boolean",
+          description: "Attach the matching raw table artifact to each fact",
+        },
         limit: { type: "number" },
       },
+    },
+  },
+  {
+    name: "get_table_artifact",
+    description:
+      "Fetch structured markdown table artifacts for a page. Optionally filter to one table_id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        identifier: {
+          type: "string",
+          description: "Page id (numeric) or slug (e.g. 'sources/foo-260428')",
+        },
+        table_id: {
+          type: "string",
+          description: "Optional table id such as 't1'",
+        },
+      },
+      required: ["identifier"],
+    },
+  },
+  {
+    name: "compare_table_facts",
+    description:
+      "Build a comparison matrix from table-derived facts by metric across entities / periods.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        metric: {
+          type: "string",
+          description: "Metric to compare, e.g. 'revenue' or 'gross_margin'",
+        },
+        entities: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional entity slugs or tickers",
+        },
+        periods: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional period list, e.g. ['FY2026E','FY2027E']",
+        },
+        source_identifier: {
+          type: "string",
+          description: "Optional source page id or slug to restrict comparison",
+        },
+        current_only: {
+          type: "boolean",
+          description: "Only compare facts with valid_to IS NULL",
+        },
+        limit: { type: "number" },
+      },
+      required: ["metric"],
     },
   },
   {
@@ -171,6 +238,25 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           entity: (args as { entity?: string }).entity,
           metric: (args as { metric?: string }).metric,
           period: (args as { period?: string }).period,
+          currentOnly: (args as { current_only?: boolean }).current_only,
+          tableOnly: (args as { table_only?: boolean }).table_only,
+          tableId: (args as { table_id?: string }).table_id,
+          includeRawTable: (args as { include_raw_table?: boolean }).include_raw_table,
+          limit: (args as { limit?: number }).limit,
+        });
+        break;
+      case "get_table_artifact":
+        result = await getTableArtifact(
+          (args as { identifier: string }).identifier,
+          (args as { table_id?: string }).table_id
+        );
+        break;
+      case "compare_table_facts":
+        result = await compareTableFacts({
+          metric: (args as { metric: string }).metric,
+          entities: (args as { entities?: string[] }).entities,
+          periods: (args as { periods?: string[] }).periods,
+          sourceIdentifier: (args as { source_identifier?: string }).source_identifier,
           currentOnly: (args as { current_only?: boolean }).current_only,
           limit: (args as { limit?: number }).limit,
         });

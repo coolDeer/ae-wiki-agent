@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fetch Reports"
+  short_description: "拉取每日研究报告并写入 raw/"
+  default_prompt: "Use $ae-fetch-reports to pull daily research files into raw/ before ingest."

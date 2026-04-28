@@ -14,7 +14,6 @@ import matter from "gray-matter";
 import { db, schema } from "~/core/db.ts";
 import { withAudit, withCreateAudit } from "~/core/audit.ts";
 import { splitBody } from "~/core/markdown.ts";
-import { tokenizeForIndex } from "~/core/tokenize.ts";
 
 export async function stage3WriteNarrative(
   pageId: bigint,
@@ -30,9 +29,6 @@ export async function stage3WriteNarrative(
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(narrative);
   const contentHash = hasher.digest("hex");
-
-  // jieba 切词：中文整词、英文穿过、cutForSearch 模式提升召回
-  const tokensZh = tokenizeForIndex(compiledTruth);
 
   await db.insert(schema.pageVersions).values(
     withCreateAudit(
@@ -67,7 +63,6 @@ export async function stage3WriteNarrative(
         {
           content: compiledTruth,
           timeline,
-          tokensZh,
           contentHash,
           frontmatter: mergedFrontmatter,
         },
@@ -77,7 +72,7 @@ export async function stage3WriteNarrative(
     .where(eq(schema.pages.id, pageId));
 
   console.log(
-    `  [stage3] narrative ${narrative.length} chars saved (tokens_zh ${tokensZh.length} chars` +
+    `  [stage3] narrative ${narrative.length} chars saved` +
       (timeline.trim().length > 0 ? `, timeline ${timeline.length} chars` : "") +
       (Object.keys(narrativeFrontmatter).length > 0
         ? `, frontmatter keys: ${Object.keys(narrativeFrontmatter).join(",")}`

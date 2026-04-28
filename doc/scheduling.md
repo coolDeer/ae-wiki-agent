@@ -99,7 +99,7 @@ OS 层无法跑 `$ae-research-ingest` 这种需要 agent 写 narrative 的任务
 也可以指定具体 skill 选项：
 
 ```
-/schedule 9:00 daily ingest 当天所有 pending raw_files，每篇都按 skills/research-ingest/SKILL.md 流程跑
+/schedule 9:00 daily ingest 当天所有 pending raw_files，每篇都按 skills/ae-research-ingest/SKILL.md 流程跑
 /schedule 17:00 daily 跑 daily-review 然后 daily-summarize
 ```
 

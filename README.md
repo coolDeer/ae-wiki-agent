@@ -13,7 +13,7 @@ bun install
 
 # 2. 配置 env
 cp .env.example .env
-# 填入实际的 DATABASE_URL / MONGODB_URI / OPENAI_API_KEY / ANTHROPIC_API_KEY
+# 填入实际的 DATABASE_URL / MONGODB_URI / OPENAI_API_KEY
 
 # 3. 部署 v2 schema（如未部署）
 psql "$DATABASE_URL" -f ../infra/init-v2.sql

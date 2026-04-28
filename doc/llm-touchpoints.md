@@ -5,7 +5,7 @@
 
 ## 核心设计原则
 
-**core 不调 LLM**（gbrain "thin harness, fat skill" 模式）。`ae-wiki-agent` 的 ingest 主路径全是确定性 SQL / 正则 / YAML 解析。"理解原文 → 写 narrative" 是 agent 层（`skills/research-ingest/SKILL.md`）的职责。
+**core 不调 LLM**（gbrain "thin harness, fat skill" 模式）。`ae-wiki-agent` 的 ingest 主路径全是确定性 SQL / 正则 / YAML 解析。"理解原文 → 写 narrative" 是 agent 层（`skills/ae-research-ingest/SKILL.md`）的职责。
 
 **为什么这样设计**：
 - prompt 在 skill 里随时可改，不用动代码 / 重部署
@@ -34,17 +34,17 @@
 | 7 timeline | 直读 YAML 块 | ❌ |
 | 8 thesis | active thesis 关联 SQL JOIN | ❌ |
 
-### Agent 层（`skills/research-ingest/SKILL.md`）：1 处推理
+### Agent 层（`skills/ae-research-ingest/SKILL.md`）：1 处推理
 
 唯一"理解原文 → 生成结构化 markdown"的 LLM 步骤由 agent 在 Step 1（`ingest:next`）和 Step 2（`ingest:write`）之间完成：阅读 raw markdown → 按 schema 写 narrative + 末尾 `<!-- facts -->` / `<!-- timeline -->` YAML 块。
 
-模型由 agent 当时的运行时决定（Claude Code 通常 = Sonnet 4.6 / Opus 4.7）。core 不再固定模型，env 也不再有 `ANTHROPIC_INGEST_MODEL`。
+模型由 agent 当时的运行时决定。当前 durable runtime 默认走 `OPENAI_AGENT_MODEL`，core 不再固定 ingest 模型。
 
 ### Core 内：设计了未实现的 LLM 兜底
 
 | 模块 | 模型（env） | 用途 |
 |---|---|---|
-| **Stage 5 Tier C** | `claude-haiku-4-5`（`ANTHROPIC_FACT_EXTRACT_MODEL`） | Tier A 抓不到时 LLM 兜底抽 fact（套 fail-improve 模式，先正则） |
+| **Stage 5 Tier C** | `gpt-5-mini`（`OPENAI_FACT_EXTRACT_MODEL`） | Tier A 抓不到时 LLM 兜底抽 fact（套 fail-improve 模式，先正则） |
 | **worker `enrich_entity`** | TBD | 红链 entity 补全市值 / 关键人 / 产品线 |
 
 这两个加起来仍然只是"core 内 ≤2 处 LLM 调用"，且都是 fallback 性质——主路径仍然走 agent。

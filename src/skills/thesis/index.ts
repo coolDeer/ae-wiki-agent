@@ -15,7 +15,6 @@
 import { eq, and, desc, inArray, sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { withAudit, withCreateAudit, Actor } from "~/core/audit.ts";
-import { tokenizeForIndex } from "~/core/tokenize.ts";
 
 export type ThesisDirection = "long" | "short" | "pair" | "neutral";
 export type ThesisConviction = "high" | "medium" | "low";
@@ -44,7 +43,7 @@ export interface ThesisOpenOpts {
   direction: ThesisDirection;
   conviction?: ThesisConviction;     // 默认 'medium'
   status?: ThesisStatus;             // 默认 'active'
-  /** 论点标题（中文 OK），用来生成 slug */
+  /** Thesis title, preferably English, used to generate the slug. */
   name: string;
   dateOpened?: string;               // YYYY-MM-DD，默认今天
   priceAtOpen?: string;
@@ -176,7 +175,6 @@ export async function thesisWrite(pageId: bigint, narrative: string): Promise<vo
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(narrative);
   const contentHash = hasher.digest("hex");
-  const tokensZh = tokenizeForIndex(narrative);
 
   await db.insert(schema.pageVersions).values(
     withCreateAudit(
@@ -194,7 +192,7 @@ export async function thesisWrite(pageId: bigint, narrative: string): Promise<vo
 
   await db
     .update(schema.pages)
-    .set(withAudit({ content: narrative, tokensZh, contentHash }, actor))
+    .set(withAudit({ content: narrative, contentHash }, actor))
     .where(eq(schema.pages.id, pageId));
 
   console.log(`[thesis:write] page #${pageId} narrative ${narrative.length} chars`);
@@ -339,7 +337,7 @@ export async function thesisClose(
         `\n\n## Retrospective（${today}，原因：${opts.reason}）\n\n${opts.note}\n`;
       await tx
         .update(schema.pages)
-        .set(withAudit({ content: newContent, tokensZh: tokenizeForIndex(newContent) }, actor))
+        .set(withAudit({ content: newContent }, actor))
         .where(eq(schema.pages.id, pageId));
     }
 

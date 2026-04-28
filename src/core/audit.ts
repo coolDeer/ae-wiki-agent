@@ -38,10 +38,12 @@ export function withCreateAudit<T extends Record<string, unknown>>(
 /** Actor 命名约定。 */
 export const Actor = {
   agentClaude: "agent:claude",
+  agentRuntime: "agent:runtime",
   agentSignalDetector: "agent:signal-detector",
   agentEnricher: "agent:enricher",
   systemFetch: "system:fetch-reports",
   systemIngest: "system:ingest",
+  systemJobs: "system:jobs",
   systemCron: "system:cron",
   systemInit: "system:init",
   human: (name: string) => `human:${name}`,

@@ -15,7 +15,6 @@ import { sql as drizzleSql } from "drizzle-orm";
 import { db } from "~/core/db.ts";
 import { embed } from "~/core/embedding.ts";
 import { getEnv } from "~/core/env.ts";
-import { tokenizeForQuery } from "~/core/tokenize.ts";
 import {
   buildHardExcludeClause,
   buildSourceFactorCase,
@@ -67,10 +66,6 @@ export async function hybridSearch(
 
   const env = getEnv();
 
-  // 中文分词：把 query 切完空格连接，再喂 plainto_tsquery
-  // 英文部分被 jieba 原样穿过；中文部分整词命中
-  const tokenizedQuery = tokenizeForQuery(query);
-
   // source-aware ranking 配置（env + 默认 + 调用方覆盖）
   const boosts = resolveSourceBoosts(env.WIKI_SOURCE_BOOST);
   const excludePrefixes = resolveExcludePrefixes(
@@ -106,10 +101,10 @@ export async function hybridSearch(
         SELECT
           p.id,
           ROW_NUMBER() OVER (
-            ORDER BY ts_rank(p.tsv, plainto_tsquery('simple', ${tokenizedQuery})) * ${sourceFactorSql} DESC
+            ORDER BY ts_rank(p.tsv, plainto_tsquery('simple', ${query})) * ${sourceFactorSql} DESC
           ) AS rk
         FROM pages p
-        WHERE p.tsv @@ plainto_tsquery('simple', ${tokenizedQuery})
+        WHERE p.tsv @@ plainto_tsquery('simple', ${query})
           AND p.deleted = 0
           AND p.status != 'archived'
           ${excludeClauseSql ? drizzleSql`AND ${excludeClauseSql}` : drizzleSql``}

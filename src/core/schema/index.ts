@@ -18,4 +18,6 @@ export * from "./raw-data.ts";
 export * from "./page-versions.ts";
 export * from "./events.ts";
 export * from "./minion-jobs.ts";
+export * from "./agent-messages.ts";
+export * from "./agent-tool-executions.ts";
 export * from "./config.ts";

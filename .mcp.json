@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ae-wiki": {
+      "command": "bun",
+      "args": ["src/mcp/server.ts"],
+      "cwd": "/Users/levin/project/agent/ae-wiki-agent"
+    }
+  }
+}

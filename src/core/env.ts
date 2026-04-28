@@ -13,18 +13,16 @@ const EnvSchema = z.object({
   MONGODB_DB: z.string(),
   MONGODB_COLLECTION: z.string().default("ResearchReportRecord"),
 
-  // OpenAI（embedding + 兜底 fact 抽取）
+  // OpenAI（embedding + durable agent runtime + 未来 fact 抽取）
   OPENAI_API_KEY: z.string(),
   OPENAI_EMBEDDING_MODEL: z.string().default("text-embedding-3-large"),
+  OPENAI_AGENT_MODEL: z.string().default("gpt-5-mini"),
+  OPENAI_FACT_EXTRACT_MODEL: z.string().default("gpt-5-mini"),
   // 关掉所有 embedding 调用：search 走纯 keyword，worker 跳过 embed_chunks
   EMBEDDING_DISABLED: z
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
-
-  // Anthropic（保留给 Stage 5 Tier C fact 抽取兜底；ingest 主路径不再调 LLM）
-  ANTHROPIC_API_KEY: z.string(),
-  ANTHROPIC_FACT_EXTRACT_MODEL: z.string().default("claude-haiku-4-5"),
 
   // 本地路径：workspace 根目录（用于 wiki/output/ 等派生产物）
   // raw_files 已不再落本地文件，markdown 通过 raw_files.markdown_url 按需 HTTP 拉

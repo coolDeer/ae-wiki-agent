@@ -20,6 +20,7 @@ export const minionJobs = pgTable(
     data: jsonb("data").notNull(),
     attempts: integer("attempts").notNull().default(0),
     maxAttempts: integer("max_attempts").notNull().default(3),
+    progress: jsonb("progress"),
     result: jsonb("result"),
     error: text("error"),
     startedAt: timestamp("started_at", { withTimezone: true }),
@@ -39,6 +40,9 @@ export type JobName =
   | "embed_chunks"
   | "extract_facts"
   | "enrich_entity"
-  | "detect_signals";
+  | "detect_signals"
+  | "agent_run"
+  | "lint_run"
+  | "facts_expire";
 
-export type JobStatus = "waiting" | "active" | "completed" | "failed";
+export type JobStatus = "waiting" | "active" | "paused" | "completed" | "failed" | "cancelled";

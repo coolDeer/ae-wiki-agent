@@ -40,7 +40,6 @@ export const pages = pgTable(
 
     // 内容
     content: text("content").notNull().default(""),
-    tokensZh: text("tokens_zh"),  // jieba 切词后的空格分隔串，喂 tsv 用
     timeline: text("timeline").notNull().default(""),
     frontmatter: jsonb("frontmatter").notNull().default({}),
     contentHash: text("content_hash"),

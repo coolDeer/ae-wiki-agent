@@ -8,13 +8,12 @@
  *   2. agent 读 backlinks，按模板写 narrative + frontmatter
  *   3. enrich:save   — stdin 写 narrative，bump confidence，更新可选字段（ticker/sector/aliases）
  *
- * core 不调 LLM——所有 narrative 由 agent 在 skills/enrich/SKILL.md 引导下生成。
+ * core 不调 LLM——所有 narrative 由 agent 在 skills/ae-enrich/SKILL.md 引导下生成。
  */
 
 import { eq, and, count, desc, ne } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { withAudit, withCreateAudit, Actor } from "~/core/audit.ts";
-import { tokenizeForIndex } from "~/core/tokenize.ts";
 import type { PageType } from "~/core/schema/pages.ts";
 
 export interface RedlinkContext {
@@ -31,6 +30,59 @@ export interface RedlinkContext {
     sourceType: string;
     sourceDate: string | null;
   }>;
+}
+
+async function loadRedlinkContextByPageId(pageId: bigint): Promise<RedlinkContext | null> {
+  const [target] = await db
+    .select({
+      id: schema.pages.id,
+      slug: schema.pages.slug,
+      type: schema.pages.type,
+      title: schema.pages.title,
+      ticker: schema.pages.ticker,
+      confidence: schema.pages.confidence,
+    })
+    .from(schema.pages)
+    .where(and(eq(schema.pages.id, pageId), eq(schema.pages.deleted, 0)))
+    .limit(1);
+
+  if (!target) return null;
+  if (target.type === "source") return null;
+  if (target.confidence !== "low") return null;
+
+  const backlinkSources = await db
+    .select({
+      pageId: schema.links.fromPageId,
+      slug: schema.pages.slug,
+      type: schema.pages.type,
+      title: schema.pages.title,
+      createTime: schema.pages.createTime,
+    })
+    .from(schema.links)
+    .innerJoin(schema.pages, eq(schema.pages.id, schema.links.fromPageId))
+    .where(
+      and(
+        eq(schema.links.toPageId, target.id),
+        eq(schema.links.deleted, 0),
+        eq(schema.pages.deleted, 0)
+      )
+    )
+    .orderBy(desc(schema.pages.createTime));
+
+  return {
+    pageId: target.id,
+    slug: target.slug,
+    type: target.type,
+    title: target.title,
+    ticker: target.ticker,
+    backlinks: backlinkSources.map((b) => ({
+      sourcePageId: b.pageId,
+      sourceSlug: b.slug,
+      sourceTitle: b.title,
+      sourceType: b.type,
+      sourceDate: b.createTime ? b.createTime.toISOString().slice(0, 10) : null,
+    })),
+  };
 }
 
 /**
@@ -82,40 +134,11 @@ export async function enrichPrepareNext(opts: {
   const target = candidates[candidates.length - 1];
   if (!target || target.type === "source") return null;
 
-  // 拿 backlink 来源的 page 元信息
-  const backlinkSources = await db
-    .select({
-      pageId: schema.links.fromPageId,
-      slug: schema.pages.slug,
-      type: schema.pages.type,
-      title: schema.pages.title,
-      createTime: schema.pages.createTime,
-    })
-    .from(schema.links)
-    .innerJoin(schema.pages, eq(schema.pages.id, schema.links.fromPageId))
-    .where(
-      and(
-        eq(schema.links.toPageId, target.id),
-        eq(schema.links.deleted, 0),
-        eq(schema.pages.deleted, 0)
-      )
-    )
-    .orderBy(desc(schema.pages.createTime));
+  return loadRedlinkContextByPageId(target.id);
+}
 
-  return {
-    pageId: target.id,
-    slug: target.slug,
-    type: target.type,
-    title: target.title,
-    ticker: target.ticker,
-    backlinks: backlinkSources.map((b) => ({
-      sourcePageId: b.pageId,
-      sourceSlug: b.slug,
-      sourceTitle: b.title,
-      sourceType: b.type,
-      sourceDate: b.createTime ? b.createTime.toISOString().slice(0, 10) : null,
-    })),
-  };
+export async function enrichLoadContext(pageId: bigint): Promise<RedlinkContext | null> {
+  return loadRedlinkContextByPageId(pageId);
 }
 
 export interface EnrichSaveOpts {
@@ -140,7 +163,7 @@ export interface EnrichSaveOpts {
 /**
  * 保存 enrich 后的 narrative。
  *   - 写 page_versions 快照（reason='enrich'）
- *   - 更新 pages.content / tokens_zh / content_hash
+ *   - 更新 pages.content / content_hash
  *   - 更新可选字段（ticker / sector / aliases ...）
  *   - 默认 bump confidence 到 'medium'
  */
@@ -154,7 +177,6 @@ export async function enrichSave(
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(narrative);
   const contentHash = hasher.digest("hex");
-  const tokensZh = tokenizeForIndex(narrative);
 
   // 拿现有 frontmatter 做 merge
   const [existing] = await db
@@ -185,7 +207,6 @@ export async function enrichSave(
   // 构造 update set —— 只更新提供的字段
   const updateSet: Record<string, unknown> = {
     content: narrative,
-    tokensZh,
     contentHash,
     confidence: opts.confidence ?? "medium",
     frontmatter: mergedFrontmatter,
