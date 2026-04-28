@@ -15,9 +15,14 @@ skills/
 
 | Skill | 用途 | 入口文件 |
 |-------|------|---------|
-| `fetch-reports` | 从 aecapllc 平台拉取每日研究报告到 `raw/` | [fetch-reports/SKILL.md](fetch-reports/SKILL.md) |
-| `daily-review` | 对当日 ingest 内容执行 7 问复盘，输出 `wiki/output/daily-review-{date}.md` | [daily-review/SKILL.md](daily-review/SKILL.md) |
-| `daily-summarize` | 把复盘转成 PM 简报，输出 `wiki/output/daily-summarize-{date}.md` | [daily-summarize/SKILL.md](daily-summarize/SKILL.md) |
+| `ae-fetch-reports` | 从 aecapllc 平台拉取每日研究报告到 `raw/` | [ae-fetch-reports/SKILL.md](ae-fetch-reports/SKILL.md) |
+| `ae-research-ingest` | Triage + 三段式 ingest（agent 写 narrative） | [ae-research-ingest/SKILL.md](ae-research-ingest/SKILL.md) |
+| `ae-enrich` | 补全红链 entity（confidence='low' → 正式 wiki 页） | [ae-enrich/SKILL.md](ae-enrich/SKILL.md) |
+| `ae-thesis-track` | 维护 active thesis 状态机 | [ae-thesis-track/SKILL.md](ae-thesis-track/SKILL.md) |
+| `ae-daily-review` | 对当日 ingest 内容执行 7 问复盘，输出 `wiki/output/daily-review-{date}.md` | [ae-daily-review/SKILL.md](ae-daily-review/SKILL.md) |
+| `ae-daily-summarize` | 把复盘转成 PM 简报，输出 `wiki/output/daily-summarize-{date}.md` | [ae-daily-summarize/SKILL.md](ae-daily-summarize/SKILL.md) |
+| `ae-analyze-ideabot` | 拉取单个 IdeaBot 详情并结合 wiki 做综合分析 | [ae-analyze-ideabot/SKILL.md](ae-analyze-ideabot/SKILL.md) |
+| `ae-analyze-timebot` | 拉取 TimeBot 周工时并为每位分析师生成 wiki 联动的研究建议 | [ae-analyze-timebot/SKILL.md](ae-analyze-timebot/SKILL.md) |
 
 ## 与 Codex / Claude 的关系
 

@@ -52,7 +52,7 @@ export async function stage1CreateSkeleton(
           frontmatter: {
             research_id: rawFile.researchId,
             research_type: rawFile.researchType,
-            raw_path: rawFile.rawPath,
+            markdown_url: rawFile.markdownUrl,
             tags: rawFile.tags ?? [],
           },
         },

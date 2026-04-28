@@ -149,7 +149,7 @@ export async function thesisOpen(opts: ThesisOpenOpts): Promise<ThesisOpenResult
           {
             fromPageId: page.id,
             toPageId: target.id,
-            linkType: "" as const,
+            linkType: "mention",
             linkSource: "manual",
             originPageId: page.id,
           },

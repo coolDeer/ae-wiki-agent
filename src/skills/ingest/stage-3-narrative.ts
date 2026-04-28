@@ -13,6 +13,7 @@ import { eq } from "drizzle-orm";
 import matter from "gray-matter";
 import { db, schema } from "~/core/db.ts";
 import { withAudit, withCreateAudit } from "~/core/audit.ts";
+import { splitBody } from "~/core/markdown.ts";
 import { tokenizeForIndex } from "~/core/tokenize.ts";
 
 export async function stage3WriteNarrative(
@@ -24,20 +25,21 @@ export async function stage3WriteNarrative(
   // gray-matter 容错：没有 frontmatter 时 data={} content=原文
   const parsed = matter(narrative);
   const narrativeFrontmatter = parsed.data ?? {};
+  const { compiledTruth, timeline } = splitBody(parsed.content);
 
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(narrative);
   const contentHash = hasher.digest("hex");
 
   // jieba 切词：中文整词、英文穿过、cutForSearch 模式提升召回
-  const tokensZh = tokenizeForIndex(narrative);
+  const tokensZh = tokenizeForIndex(compiledTruth);
 
   await db.insert(schema.pageVersions).values(
     withCreateAudit(
       {
         pageId,
-        content: narrative,
-        timeline: "",
+        content: compiledTruth,
+        timeline,
         frontmatter: narrativeFrontmatter,
         editedBy: actor,
         reason: "ingest",
@@ -46,7 +48,7 @@ export async function stage3WriteNarrative(
     )
   );
 
-  // pages.frontmatter 已有 stage1 写入的字段（research_id / raw_path 等），
+  // pages.frontmatter 已有 stage1 写入的字段（research_id / markdown_url 等），
   // narrative frontmatter 用 jsonb || 合并（narrative 优先覆盖同名 key）
   const [existing] = await db
     .select({ frontmatter: schema.pages.frontmatter })
@@ -63,7 +65,8 @@ export async function stage3WriteNarrative(
     .set(
       withAudit(
         {
-          content: narrative,
+          content: compiledTruth,
+          timeline,
           tokensZh,
           contentHash,
           frontmatter: mergedFrontmatter,
@@ -75,6 +78,7 @@ export async function stage3WriteNarrative(
 
   console.log(
     `  [stage3] narrative ${narrative.length} chars saved (tokens_zh ${tokensZh.length} chars` +
+      (timeline.trim().length > 0 ? `, timeline ${timeline.length} chars` : "") +
       (Object.keys(narrativeFrontmatter).length > 0
         ? `, frontmatter keys: ${Object.keys(narrativeFrontmatter).join(",")}`
         : "") +

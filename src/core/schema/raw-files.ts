@@ -17,7 +17,8 @@ export const rawFiles = pgTable(
       .primaryKey()
       .generatedByDefaultAsIdentity(),
     sourceId: text("source_id").notNull().default("default"),
-    rawPath: text("raw_path").notNull(),
+    /** 上游 parsedMarkdownS3 直链 — ingest 时按需 fetch（不再落本地） */
+    markdownUrl: text("markdown_url").notNull(),
     researchId: text("research_id"),
     researchType: text("research_type"),
     orgCode: text("org_code"),
@@ -25,6 +26,8 @@ export const rawFiles = pgTable(
     tags: text("tags").array(),
     mongoDoc: jsonb("mongo_doc"),
     parseStatus: text("parse_status"),
+    // 显式 triage 结果：pending | pass | commit | brief
+    triageDecision: text("triage_decision").notNull().default("pending"),
     ingestedPageId: bigint("ingested_page_id", { mode: "bigint" }),
     ingestedAt: timestamp("ingested_at", { withTimezone: true }),
     // triage 主动跳过：raw 不入 wiki（跟 deleted=1 语义分开）
@@ -33,14 +36,12 @@ export const rawFiles = pgTable(
     ...auditFields,
   },
   (t) => ({
-    rawPathUnique: uniqueIndex("uq_raw_files_path")
-      .on(t.rawPath)
-      .where(sql`deleted = 0`),
     researchIdUnique: uniqueIndex("uq_raw_files_research_id")
       .on(t.researchId)
       .where(sql`deleted = 0 AND research_id IS NOT NULL`),
     pendingIdx: index("idx_raw_files_pending").on(t.createTime),
     typeIdx: index("idx_raw_files_research_type").on(t.researchType),
+    triageIdx: index("idx_raw_files_triage_decision").on(t.triageDecision),
     orgIdx: index("idx_raw_files_org").on(t.orgCode),
     skippedIdx: index("idx_raw_files_skipped")
       .on(t.skippedAt)

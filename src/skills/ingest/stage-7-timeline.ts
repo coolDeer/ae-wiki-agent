@@ -1,8 +1,9 @@
 /**
  * Stage 7: timeline 提取
  *
- * 从 page.content 解析 <!-- timeline ... --> YAML block（与 facts block 同构），
- * 写入 timeline_entries。dedup 走 (entity_page_id, event_date, summary) 唯一索引。
+ * 从 page.timeline 解析 YAML 列表并写入 timeline_entries。
+ * page.timeline 由 Stage 3 在 narrative body 中通过 `<!-- timeline -->`
+ * sentinel 切出，dedup 走 (entity_page_id, event_date, summary) 唯一索引。
  *
  * 块格式：
  *   <!-- timeline
@@ -45,15 +46,15 @@ const VALID_EVENT_TYPES = new Set([
 
 export async function stage7Timeline(ctx: IngestContext): Promise<void> {
   const [page] = await db
-    .select({ content: schema.pages.content })
+    .select({ timeline: schema.pages.timeline })
     .from(schema.pages)
     .where(eq(schema.pages.id, ctx.pageId))
     .limit(1);
   if (!page) return;
 
-  const entries = extractTimelineBlock(page.content);
+  const entries = extractTimelineText(page.timeline);
   if (entries.length === 0) {
-    console.log(`  [stage7] no timeline block, skipped`);
+    console.log(`  [stage7] no timeline content, skipped`);
     return;
   }
 
@@ -107,13 +108,17 @@ export async function stage7Timeline(ctx: IngestContext): Promise<void> {
   console.log(`  [stage7] inserted=${inserted} skipped=${skipped}`);
 }
 
-function extractTimelineBlock(content: string): YamlTimeline[] {
-  const m = content.match(/<!--\s*timeline\s*\n([\s\S]+?)\n\s*-->/);
-  if (!m || !m[1]) return [];
+function extractTimelineText(timeline: string): YamlTimeline[] {
+  const trimmed = timeline.trim();
+  if (!trimmed) return [];
+  return parseTimelineYaml(trimmed, "timeline field");
+}
+
+function parseTimelineYaml(text: string, label: string): YamlTimeline[] {
   try {
-    const parsed = YAML.parse(m[1]);
+    const parsed = YAML.parse(text);
     if (!Array.isArray(parsed)) {
-      console.warn("  [stage7] timeline block 不是数组");
+      console.warn(`  [stage7] ${label} 不是数组`);
       return [];
     }
     return parsed.filter(
@@ -125,7 +130,7 @@ function extractTimelineBlock(content: string): YamlTimeline[] {
         "summary" in e
     );
   } catch (e) {
-    console.warn(`  [stage7] YAML 解析失败:`, (e as Error).message);
+    console.warn(`  [stage7] ${label} YAML 解析失败:`, (e as Error).message);
     return [];
   }
 }

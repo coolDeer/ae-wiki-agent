@@ -26,8 +26,8 @@ const EnvSchema = z.object({
   ANTHROPIC_API_KEY: z.string(),
   ANTHROPIC_FACT_EXTRACT_MODEL: z.string().default("claude-haiku-4-5"),
 
-  // 本地路径：workspace 根目录，raw/ 作为子目录存在其中
-  // raw_files.raw_path 存的是 'raw/...' 形式，相对此目录解析
+  // 本地路径：workspace 根目录（用于 wiki/output/ 等派生产物）
+  // raw_files 已不再落本地文件，markdown 通过 raw_files.markdown_url 按需 HTTP 拉
   WORKSPACE_DIR: z.string().default("."),
 
   // 搜索排序：source-aware ranking（见 core/search/source-boost.ts）

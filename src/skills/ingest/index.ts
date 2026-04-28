@@ -17,12 +17,10 @@
  * 详细见 doc/architecture.md §4.1 与 skills/research-ingest/SKILL.md。
  */
 
-import { eq, isNull, and, sql as drizzleSql } from "drizzle-orm";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
+import { asc, eq, isNull, and, sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { Actor } from "~/core/audit.ts";
-import { getEnv } from "~/core/env.ts";
+import { fetchRawMarkdown } from "~/core/raw-loader.ts";
 import type { IngestContext } from "~/core/types.ts";
 
 import { stage1CreateSkeleton } from "./stage-1-skeleton.ts";
@@ -51,19 +49,16 @@ const PEEK_PREVIEW_CHARS = 1500;
  */
 export async function ingestPeek(): Promise<{
   rawFileId: bigint;
-  rawMdPath: string;
-  rawMdAbsPath: string;
+  markdownUrl: string;
   title: string;
   researchType: string | null;
   rawCharCount: number;
   preview: string;
 } | null> {
-  const env = getEnv();
   const [rf] = await pickPending({ limit: 1 });
   if (!rf) return null;
 
-  const absPath = path.resolve(env.WORKSPACE_DIR, rf.rawPath);
-  const rawMarkdown = await readFile(absPath, "utf-8");
+  const rawMarkdown = await fetchRawMarkdown(rf);
   const preview =
     rawMarkdown.length > PEEK_PREVIEW_CHARS
       ? rawMarkdown.slice(0, PEEK_PREVIEW_CHARS) + "\n... [truncated]"
@@ -71,8 +66,7 @@ export async function ingestPeek(): Promise<{
 
   return {
     rawFileId: rf.id,
-    rawMdPath: rf.rawPath,
-    rawMdAbsPath: absPath,
+    markdownUrl: rf.markdownUrl,
     title: rf.title ?? "(untitled)",
     researchType: rf.researchType,
     rawCharCount: rawMarkdown.length,
@@ -90,7 +84,11 @@ export async function ingestPass(
   actor: string
 ): Promise<void> {
   const [rf] = await db
-    .select({ id: schema.rawFiles.id, ingestedAt: schema.rawFiles.ingestedAt, skippedAt: schema.rawFiles.skippedAt })
+    .select({
+      id: schema.rawFiles.id,
+      ingestedAt: schema.rawFiles.ingestedAt,
+      skippedAt: schema.rawFiles.skippedAt,
+    })
     .from(schema.rawFiles)
     .where(and(eq(schema.rawFiles.id, rawFileId), eq(schema.rawFiles.deleted, 0)))
     .limit(1);
@@ -103,6 +101,7 @@ export async function ingestPass(
   await db
     .update(schema.rawFiles)
     .set({
+      triageDecision: "pass",
       skippedAt: new Date(),
       skipReason: reason,
       updateBy: actor,
@@ -125,13 +124,12 @@ export async function ingestPass(
 
 /**
  * Commit：peek 后判定值得 ingest，跑 Stage 1+2 建 page 骨架 + chunks。
- * 返回 pageId / rawMdAbsPath，供 agent 接下来读 raw 写 narrative。
+ * 返回 pageId / markdownUrl，供 agent 接下来读 raw 写 narrative。
  */
 export async function ingestCommit(rawFileId: bigint): Promise<{
   rawFileId: bigint;
   pageId: bigint;
-  rawMdPath: string;
-  rawMdAbsPath: string;
+  markdownUrl: string;
   title: string;
   researchType: string | null;
 }> {
@@ -148,8 +146,7 @@ export async function ingestCommit(rawFileId: bigint): Promise<{
 export async function ingestBrief(rawFileId: bigint): Promise<{
   rawFileId: bigint;
   pageId: bigint;
-  rawMdPath: string;
-  rawMdAbsPath: string;
+  markdownUrl: string;
   title: string;
   researchType: string | null;
 }> {
@@ -162,12 +159,10 @@ async function commitInternal(
 ): Promise<{
   rawFileId: bigint;
   pageId: bigint;
-  rawMdPath: string;
-  rawMdAbsPath: string;
+  markdownUrl: string;
   title: string;
   researchType: string | null;
 }> {
-  const env = getEnv();
   const [rf] = await db
     .select()
     .from(schema.rawFiles)
@@ -182,11 +177,19 @@ async function commitInternal(
   ctx.pageId = await stage1CreateSkeleton(ctx, rf, { type });
   await stage2Chunk(ctx);
 
+  await db
+    .update(schema.rawFiles)
+    .set({
+      triageDecision: type === "source" ? "commit" : "brief",
+      updateBy: ctx.actor,
+      updateTime: new Date(),
+    })
+    .where(eq(schema.rawFiles.id, rawFileId));
+
   return {
     rawFileId: rf.id,
     pageId: ctx.pageId,
-    rawMdPath: rf.rawPath,
-    rawMdAbsPath: path.resolve(env.WORKSPACE_DIR, rf.rawPath),
+    markdownUrl: rf.markdownUrl,
     title: rf.title ?? "(untitled)",
     researchType: rf.researchType,
   };
@@ -204,12 +207,10 @@ async function commitInternal(
 export async function ingestPrepareNext(): Promise<{
   rawFileId: bigint;
   pageId: bigint;
-  rawMdPath: string;
-  rawMdAbsPath: string;
+  markdownUrl: string;
   title: string;
   researchType: string | null;
 } | null> {
-  const env = getEnv();
   const [rf] = await pickPending({ limit: 1 });
   if (!rf) return null;
 
@@ -218,12 +219,10 @@ export async function ingestPrepareNext(): Promise<{
   ctx.pageId = await stage1CreateSkeleton(ctx, rf);
   await stage2Chunk(ctx);
 
-  const rawMdAbsPath = path.resolve(env.WORKSPACE_DIR, rf.rawPath);
   return {
     rawFileId: rf.id,
     pageId: ctx.pageId,
-    rawMdPath: rf.rawPath,
-    rawMdAbsPath,
+    markdownUrl: rf.markdownUrl,
     title: rf.title ?? "(untitled)",
     researchType: rf.researchType,
   };
@@ -281,6 +280,7 @@ export async function ingestSkip(
     await db
       .update(schema.rawFiles)
       .set({
+        triageDecision: "pass",
         skippedAt: new Date(),
         skipReason: reason,
         updateBy: actor,
@@ -311,7 +311,7 @@ export async function ingestSkip(
 export async function ingestFinalize(pageId: bigint): Promise<void> {
   // 反查 raw_file（通过 ingested_page_id 还没被设置时不能用，所以从 events 找回 rawFileId）
   const linked = await db
-    .select({ id: schema.rawFiles.id, rawPath: schema.rawFiles.rawPath })
+    .select({ id: schema.rawFiles.id, markdownUrl: schema.rawFiles.markdownUrl })
     .from(schema.rawFiles)
     .where(
       and(
@@ -334,11 +334,7 @@ export async function ingestFinalize(pageId: bigint): Promise<void> {
     throw new Error(`无法定位 page #${pageId} 对应的 raw_file（events 中无 ingest_start 记录）`);
   }
 
-  const env = getEnv();
-  const rawMarkdown = await readFile(
-    path.resolve(env.WORKSPACE_DIR, rf.rawPath),
-    "utf-8"
-  );
+  const rawMarkdown = await fetchRawMarkdown(rf);
 
   const ctx: IngestContext = {
     rawFileId: rf.id,
@@ -368,19 +364,19 @@ async function pickPending(opts: IngestOptions): Promise<(typeof schema.rawFiles
     .where(
       and(
         eq(schema.rawFiles.deleted, 0),
+        eq(schema.rawFiles.triageDecision, "pending"),
         isNull(schema.rawFiles.skippedAt),
         opts.force ? undefined : isNull(schema.rawFiles.ingestedAt)
       )
     )
+    .orderBy(asc(schema.rawFiles.createTime), asc(schema.rawFiles.id))
     .limit(opts.limit ?? 100);
 }
 
 async function buildContext(
   rf: typeof schema.rawFiles.$inferSelect
 ): Promise<IngestContext> {
-  const env = getEnv();
-  const absPath = path.resolve(env.WORKSPACE_DIR, rf.rawPath);
-  const rawMarkdown = await readFile(absPath, "utf-8");
+  const rawMarkdown = await fetchRawMarkdown(rf);
   return {
     rawFileId: rf.id,
     pageId: 0n,

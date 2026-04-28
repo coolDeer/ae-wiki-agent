@@ -15,7 +15,7 @@
  *   - sources/vk-*          0.9  宏观快讯
  *   - sources/cb-*          0.6  chat brilliant 散点纪要
  *   - companies/* industries/* 1.4  策展页（人工 / agent enrich 过的）
- *   - thesis/*              1.5  投资论点
+ *   - theses/*              1.5  投资论点
  *
  * 可通过 env `WIKI_SOURCE_BOOST` 覆盖，格式 "prefix:mult,prefix:mult"。
  * 硬排除走 env `WIKI_SEARCH_EXCLUDE`，同格式但不带 multiplier，逗号分隔前缀。
@@ -44,7 +44,7 @@ export const DEFAULT_SOURCE_BOOST: Record<string, number> = {
   "sources/cb-": 0.6,
   "companies/": 1.4,
   "industries/": 1.4,
-  "thesis/": 1.5,
+  "theses/": 1.5,
   "concepts/": 1.2,
 };
 

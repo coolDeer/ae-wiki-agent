@@ -1,4 +1,0 @@
-interface:
-  display_name: "Daily Summarize"
-  short_description: "生成 PM 视角的每日决策简报"
-  default_prompt: "Use $daily-summarize to turn a daily review into a PM briefing for a given day."

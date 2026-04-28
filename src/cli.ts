@@ -26,7 +26,8 @@ function getArg(name: string): string | undefined {
 
 function printHelp(): void {
   console.log(`Usage:
-  ae-wiki fetch-reports [--limit N] [--dry-run]
+  ae-wiki fetch-reports [YYYY-MM-DD] [--date YYYY-MM-DD] [--all] [--limit N] [--dry-run]
+                                          # 默认拉昨天（按 createTime，本地时区）；--all 回到旧的全量模式
 
   # —— Triage 流程（推荐）：peek → pass | commit → write → finalize ——
   ae-wiki ingest:peek                     # 列下一份候选 raw 的预览（不写库）
@@ -84,9 +85,19 @@ async function main(): Promise<void> {
     case "fetch-reports": {
       const { fetchReports } = await import("./skills/fetch-reports/index.ts");
       const limit = getArg("--limit");
+      // 位置参数（YYYY-MM-DD）= 日期；--date 优先；不识别 flag value 误当 positional
+      const positional = args[0] && !args[0].startsWith("--") ? args[0] : undefined;
+      const dateFlag = getArg("--date");
+      const date = dateFlag ?? positional;
+      if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        console.error(`fetch-reports 的位置参数必须是 YYYY-MM-DD（收到 "${date}"）`);
+        process.exit(1);
+      }
       const result = await fetchReports({
         limit: limit ? parseInt(limit, 10) : undefined,
         dryRun: getFlag("--dry-run"),
+        date,
+        all: getFlag("--all"),
       });
       console.log("\n[fetch-reports] 完成:", result);
       break;
@@ -110,8 +121,7 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(
         {
           rawFileId: result.rawFileId.toString(),
-          rawMdPath: result.rawMdPath,
-          rawMdAbsPath: result.rawMdAbsPath,
+          markdownUrl: result.markdownUrl,
           title: result.title,
           researchType: result.researchType,
           rawCharCount: result.rawCharCount,
@@ -152,8 +162,7 @@ async function main(): Promise<void> {
         {
           rawFileId: result.rawFileId.toString(),
           pageId: result.pageId.toString(),
-          rawMdPath: result.rawMdPath,
-          rawMdAbsPath: result.rawMdAbsPath,
+          markdownUrl: result.markdownUrl,
           title: result.title,
           researchType: result.researchType,
         },
@@ -175,8 +184,7 @@ async function main(): Promise<void> {
         {
           rawFileId: result.rawFileId.toString(),
           pageId: result.pageId.toString(),
-          rawMdPath: result.rawMdPath,
-          rawMdAbsPath: result.rawMdAbsPath,
+          markdownUrl: result.markdownUrl,
           title: result.title,
           researchType: result.researchType,
           pageType: "brief",
@@ -198,8 +206,7 @@ async function main(): Promise<void> {
         {
           rawFileId: result.rawFileId.toString(),
           pageId: result.pageId.toString(),
-          rawMdPath: result.rawMdPath,
-          rawMdAbsPath: result.rawMdAbsPath,
+          markdownUrl: result.markdownUrl,
           title: result.title,
           researchType: result.researchType,
         },

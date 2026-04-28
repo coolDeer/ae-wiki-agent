@@ -11,7 +11,7 @@
  * core 不调 LLM——所有 narrative 由 agent 在 skills/enrich/SKILL.md 引导下生成。
  */
 
-import { eq, and, count, desc, inArray } from "drizzle-orm";
+import { eq, and, count, desc, ne } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { withAudit, withCreateAudit, Actor } from "~/core/audit.ts";
 import { tokenizeForIndex } from "~/core/tokenize.ts";
@@ -71,8 +71,7 @@ export async function enrichPrepareNext(opts: {
         eq(schema.pages.confidence, "low"),
         eq(schema.pages.deleted, 0),
         opts.type ? eq(schema.pages.type, opts.type) : undefined,
-        // 排除 source 自身
-        opts.type ? undefined : eq(schema.pages.deleted, 0)
+        opts.type ? undefined : ne(schema.pages.type, "source")
       )
     )
     .groupBy(schema.pages.id)

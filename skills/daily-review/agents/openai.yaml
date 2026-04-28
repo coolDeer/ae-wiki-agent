@@ -1,4 +1,0 @@
-interface:
-  display_name: "Daily Review"
-  short_description: "生成 7 问结构化投资每日复盘"
-  default_prompt: "Use $daily-review to produce a seven-question review for a given trading day."

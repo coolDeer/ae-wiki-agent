@@ -5,7 +5,7 @@ ae-wiki 有两层调度，**职责严格分离**：
 | 层 | 跑什么 | 调度方 | 何时用 |
 |---|---|---|---|
 | **OS 层（launchd）** | 纯脚本：`fetch-reports` / `worker` daemon | macOS launchd | 不需要 agent 思考的任务 |
-| **Agent 层（Claude Code `/schedule`）** | 需要 LLM 推理的 skill：`$research-ingest` / `$daily-review` 等 | Claude Code harness | 需要 agent 写 narrative / 复盘的任务 |
+| **Agent 层（Claude Code `/schedule`）** | 需要 LLM 推理的 skill：`$ae-research-ingest` / `$ae-daily-review` 等 | Claude Code harness | 需要 agent 写 narrative / 复盘的任务 |
 
 两层有时序依赖：OS 层先把数据拉下来，agent 层第二天醒来发现有新 raw 待 ingest。
 
@@ -63,7 +63,7 @@ tail -f ~/Library/Logs/ae-wiki/fetch-reports.log
 
 ## 二、Agent 层（Claude Code `/schedule`）
 
-OS 层无法跑 `$research-ingest` 这种需要 agent 写 narrative 的任务——那需要 Claude Code 这个 LLM runtime。
+OS 层无法跑 `$ae-research-ingest` 这种需要 agent 写 narrative 的任务——那需要 Claude Code 这个 LLM runtime。
 
 用 Claude Code 内置的 `/schedule` skill：
 
@@ -74,11 +74,11 @@ OS 层无法跑 `$research-ingest` 这种需要 agent 写 narrative 的任务—
        ↓
        (launchd 自动跑，agent 还在睡)
        ↓
-09:00  Agent 层：$research-ingest 循环跑完所有 pending raw_files
+09:00  Agent 层：$ae-research-ingest 循环跑完所有 pending raw_files
        ↓
        (agent 根据 raw markdown 写 narrative，落库)
        ↓
-17:00  Agent 层：$daily-review → $daily-summarize
+17:00  Agent 层：$ae-daily-review → $ae-daily-summarize
        ↓
        (PM 下班前看到当天复盘 + 简报)
 ```
@@ -90,8 +90,8 @@ OS 层无法跑 `$research-ingest` 这种需要 agent 写 narrative 的任务—
 在 Claude Code 里打：
 
 ```
-/schedule 9:00 daily $research-ingest
-/schedule 17:00 daily $daily-review && $daily-summarize
+/schedule 9:00 daily $ae-research-ingest
+/schedule 17:00 daily $ae-daily-review && $ae-daily-summarize
 ```
 
 `/schedule` 会注册到 Claude Code 的 trigger 系统，每天准时唤醒一个 Claude session 跑这些 skill。
@@ -130,15 +130,15 @@ OS 层无法跑 `$research-ingest` 这种需要 agent 写 narrative 的任务—
                                        ↓
         24/7 ── launchd ── worker ── 后台跑 embed_chunks（需要 EMBEDDING 开启时）/ detect_signals
                                        ↓
-09:00 ── Claude Code ── $research-ingest ── 循环 ingest:next → write → finalize
+09:00 ── Claude Code ── $ae-research-ingest ── 循环 ingest:next → write → finalize
                                        ↓
                                   pages +50 / facts +N / signals +M / timeline +K
                                        ↓
-12:00 ── PM 上班 ── $thesis-track list --status active
+12:00 ── PM 上班 ── $ae-thesis-track list --status active
                   ── 看哪些 active thesis 被新 source 影响
                                        ↓
-17:00 ── Claude Code ── $daily-review ── 7 问 epistemic 复盘
-                  ── $daily-summarize ── PM 简报（含 sizing/止损/路演要点）
+17:00 ── Claude Code ── $ae-daily-review ── 7 问 epistemic 复盘
+                  ── $ae-daily-summarize ── PM 简报（含 sizing/止损/路演要点）
                                        ↓
                                   wiki/output/daily-{review,summarize}-{date}.md
                                        ↓

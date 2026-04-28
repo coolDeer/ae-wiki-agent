@@ -18,7 +18,7 @@ export const links = pgTable(
       .generatedByDefaultAsIdentity(),
     fromPageId: bigint("from_page_id", { mode: "bigint" }).notNull(),
     toPageId: bigint("to_page_id", { mode: "bigint" }).notNull(),
-    linkType: text("link_type").notNull().default(""),
+    linkType: text("link_type").notNull().default("mention"),
     context: text("context").notNull().default(""),
     linkSource: text("link_source"),
     originPageId: bigint("origin_page_id", { mode: "bigint" }),
@@ -54,7 +54,7 @@ export type NewLink = typeof links.$inferInsert;
 
 export type LinkSource = "markdown" | "frontmatter" | "manual" | "extracted";
 export type LinkType =
-  | "" // mention
+  | "mention"
   | "covers"
   | "competes_with"
   | "invests_in"

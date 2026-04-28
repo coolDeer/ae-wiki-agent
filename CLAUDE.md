@@ -24,10 +24,10 @@
          │ scripts/cron + bun cli fetch-reports
          ↓
 ┌────────────────────────────────────────────────────┐
-│  raw/ ─ 本地 markdown（mineru 已 parse）           │
-│  raw_files 表 ─ 登记 + research_id 去重            │
+│  raw_files 表 ─ 元数据 + markdown_url（S3 直链）   │
+│                  research_id 去重；不再落本地文件  │
 └────────┬───────────────────────────────────────────┘
-         │ ingest:next/write/finalize（agent 三段式）
+         │ ingest:peek/commit/write/finalize（按需 fetch URL）
          ↓
 ┌────────────────────────────────────────────────────┐
 │  Postgres（线上 ae_wiki，唯一真相源）              │
@@ -111,7 +111,7 @@ ae-wiki-agent/                # 项目根
 └── CLAUDE.md                 # 本文件
 ```
 
-`.env` 里 `WORKSPACE_DIR=.` —— raw/ 就在本目录下。
+`.env` 里 `WORKSPACE_DIR=.` —— raw markdown 不再落盘，按需从 `raw_files.markdown_url` HTTP 拉。
 
 ---
 
@@ -119,17 +119,17 @@ ae-wiki-agent/                # 项目根
 
 | 入口 | 触发 | 作用 |
 |---|---|---|
-| `$fetch-reports` | 早 / 用户说"拉今天研报" | mongo → raw_files |
-| `$research-ingest` | fetch 后 / "ingest 一下" | raw → pages + facts + signals |
-| `$enrich` | 红链多了 / "补全 X" | confidence='low' entity → 正式 wiki 页 |
-| `$thesis-track` | PM 表态 / "看下论点" | 开仓 / 改 conviction / 关仓 |
+| `$ae-fetch-reports` | 早 / 用户说"拉今天研报" | mongo → raw_files |
+| `$ae-research-ingest` | fetch 后 / "ingest 一下" | raw → pages + facts + signals |
+| `$ae-enrich` | 红链多了 / "补全 X" | confidence='low' entity → 正式 wiki 页 |
+| `$ae-thesis-track` | PM 表态 / "看下论点" | 开仓 / 改 conviction / 关仓 |
 
 外加两个**消费者**：
 
 | 入口 | 输出 | 何时用 |
 |---|---|---|
-| `$daily-review` | `wiki/output/daily-review-{date}.md` | 当日 ingest 后做 epistemic 复盘 |
-| `$daily-summarize` | `wiki/output/daily-summarize-{date}.md` | 复盘后转 PM operational 简报 |
+| `$ae-daily-review` | `wiki/output/daily-review-{date}.md` | 当日 ingest 后做 epistemic 复盘 |
+| `$ae-daily-summarize` | `wiki/output/daily-summarize-{date}.md` | 复盘后转 PM operational 简报 |
 
 完整日循环：
 
@@ -193,7 +193,7 @@ bun src/cli.ts links:re-extract <pageId>
 | **`theses`** | **投资论点状态机** | page_id, target_page_id, direction, conviction, status, catalysts, validation_conditions |
 | **`signals`** | **自动事件流** | signal_type, severity, entity_page_id, thesis_page_id |
 | `timeline_entries` | 结构化事件 | entity_page_id, event_date, event_type, summary |
-| `raw_files` | mongo 原文登记 | research_id, raw_path, mongo_doc, ingested_page_id |
+| `raw_files` | mongo 原文登记 | research_id, markdown_url, mongo_doc, ingested_page_id |
 | `raw_data` | JSONB sidecar | page_id, source, data |
 | `page_versions` | 快照 | page_id, content, reason, snapshot_at |
 | `events` | 审计 log | actor, action, entity_type, entity_id, payload |
@@ -434,7 +434,7 @@ frontmatter 中 `tags` 使用 YAML 列表，小写英文，多词用短横线：
 
 aecapllc API 不定期出新 `researchTypeName`：
 
-- **目录结构自动沿用**：`raw/{date}/{researchType}/` 自动归档，无需用户审批
+- **正文不再落盘**：mongo 同步只入 `raw_files` 表（`markdown_url` 存 S3 直链），ingest 阶段按需 HTTP 拉
 - **Source 页 slug 用缩写前缀**：`ace-` / `cb-` / `mm-` / `sb-` / `vk-` / `sub-` / `twitter-`
 - **frontmatter `research_type` 保留 API 原值**，`source_type` 走 schema enum 最近映射：
   - `chat_brilliant` / `meeting_minutes` → `transcript`
@@ -446,12 +446,12 @@ aecapllc API 不定期出新 `researchTypeName`：
 ### Ingest 三段式
 
 ```
-ingest:next         → 取 raw_file，建 pages 骨架（type='source'），切 chunks
-                      返回 {pageId, rawMdAbsPath, ...}
-agent (Read raw)    → 阅读原文，按 source 模板写 narrative
+ingest:next         → 取 raw_file，HTTP fetch markdown_url，建 pages 骨架，切 chunks
+                      返回 {pageId, markdownUrl, ...}
+agent               → 通过 markdownUrl 拉原文（preview 已在 peek 输出），按 source 模板写 narrative
                       （可主动 search 已有 wiki 页交叉引用）
 ingest:write        → stdin 落 narrative，算 tokens_zh，写 page_versions
-ingest:finalize     → Stage 4 链接 / 5 facts / 6 jobs / 7 timeline / 8 thesis
+ingest:finalize     → 重新 fetch markdown_url，跑 Stage 4 链接 / 5 facts / 6 jobs / 7 timeline / 8 thesis
 ```
 
 > 大型文档（>50 页）分章节处理，每段确认。
@@ -522,7 +522,7 @@ aliases 已自动并入 `pages.tsv`（与 title 同权重 A），任何别名都
 详见 `./doc/scheduling.md`。两层：
 
 - **OS 层（macOS launchd）**：`fetch-reports` 每天 8 点 + `worker` 24/7 KeepAlive
-- **Agent 层（Claude Code `/schedule`）**：`$research-ingest` 9 点 + `$daily-review`/`$daily-summarize` 17 点
+- **Agent 层（Claude Code `/schedule`）**：`$ae-research-ingest` 9 点 + `$ae-daily-review`/`$ae-daily-summarize` 17 点
 
 安装：`./scripts/cron/install-launchd.sh`（默认未启用）。
 
@@ -611,18 +611,16 @@ CLI 跨进程传 ID 用字符串：`pageId.toString()` / `BigInt(pageIdStr)`。
 
 PG 15+ 支持，但 Drizzle 0.36 的 `uniqueIndex` builder 没暴露。当前在 `init-v2.sql` 里手维护（`uq_links` / `idx_timeline_dedup`），Drizzle schema 加注释说明。
 
-### 5. 路径处理
+### 5. raw markdown 加载
+
+raw 正文不再落本地，统一从 `raw_files.markdown_url` HTTP 拉：
 
 ```typescript
-// ✅ 标准用法
-import path from "node:path";
-const abs = path.resolve(env.WORKSPACE_DIR, rf.rawPath);
-
-// ❌ 不要再用 ".." 黑魔法（v2 之前的老写法）
-// path.resolve(env.RAW_DIR, "..", rf.rawPath)
+import { fetchRawMarkdown } from "~/core/raw-loader.ts";
+const md = await fetchRawMarkdown(rf);  // 进程内缓存，同 ingest 流程多次调用只 fetch 一次
 ```
 
-`WORKSPACE_DIR` 指向 raw/ 子目录的**父**目录。当前 `.env` 是 `..`（因为 raw/ 在仓库根），未来抽离时改成 `.`（raw/ 移进来）。
+老代码里的 `path.resolve(env.WORKSPACE_DIR, rf.rawPath)` 已废弃。`WORKSPACE_DIR` 现仅用于 `wiki/output/` 等派生产物。
 
 ### 6. CLI 命令模式
 
@@ -729,7 +727,7 @@ const rows = await sql`SELECT * FROM pages WHERE id = ${1}`;
 | `EMBEDDING_DISABLED` | — | false | true 时跳过 embedding 调用，搜索退化为 keyword-only |
 | `ANTHROPIC_API_KEY` | ✅ | — | 保留给未来 fact 抽取兜底 |
 | `ANTHROPIC_FACT_EXTRACT_MODEL` | — | claude-haiku-4-5 | |
-| `WORKSPACE_DIR` | — | `.` | raw/ 父目录（当前 `..`，抽离时改 `.`）|
+| `WORKSPACE_DIR` | — | `.` | wiki/output/ 等派生产物根目录；raw 已不再落盘 |
 | `WIKI_SOURCE_BOOST` | — | — | `"prefix:1.5,..."` 覆盖默认 source-boost 表 |
 | `WIKI_SEARCH_EXCLUDE` | — | — | 硬排除 slug 前缀，逗号分隔 |
 

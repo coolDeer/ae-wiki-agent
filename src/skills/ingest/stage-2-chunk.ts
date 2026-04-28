@@ -3,14 +3,15 @@
  *
  * 切分 raw markdown 为 chunks，写入 content_chunks（embedding 留空，等 Stage 6 异步算）。
  *
- * 优先用 mineru content_list.json 的 type 边界；fallback 用段级切分。
- *
- * TODO Phase 1：实现实际切分逻辑
+ * 当前优先级：
+ *   1. fallback 到 gbrain 风格 recursive chunker
+ *   2. 后续再接 mineru content_list.json 的结构边界
  */
 
 import type { IngestContext } from "~/core/types.ts";
 import { db, schema } from "~/core/db.ts";
-import { Actor, withCreateAudit } from "~/core/audit.ts";
+import { withCreateAudit } from "~/core/audit.ts";
+import { chunkText } from "~/core/chunkers/recursive.ts";
 
 export async function stage2Chunk(ctx: IngestContext): Promise<void> {
   const chunks = chunkMarkdown(ctx.rawMarkdown, ctx.contentListJson);
@@ -41,16 +42,10 @@ interface Chunk {
   pageIdx?: number;
 }
 
-/**
- * MVP 版：纯段级切分，每个非空段一个 chunk，type 一律 'text'。
- * Phase 1 实现：
- *  - 优先解析 content_list.json，按 type=text/list/table/chart 切
- *  - fallback 段级 + 标题边界
- */
 function chunkMarkdown(md: string, _contentListJson: unknown): Chunk[] {
-  return md
-    .split(/\n\n+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-    .map((text) => ({ text, type: "text" as const }));
+  // TODO: 接入 mineru content_list.json 后，对 table/chart/list 保持结构边界。
+  return chunkText(md).map((chunk) => ({
+    text: chunk.text,
+    type: "text" as const,
+  }));
 }
