@@ -94,6 +94,9 @@ function printHelp(): void {
   ae-wiki facts:re-extract <page_id>      # 重跑 Stage 5（针对单页）
   ae-wiki links:re-extract <page_id>      # 重跑 Stage 4（针对单页）
 
+  # —— Web UI ——
+  ae-wiki web [--port 3000]               # 启动只读 web UI（home / search / page / theses / entities / outputs / queue）
+
   # —— 维护任务（也可作为 minion job 跑：lint_run / facts_expire） ——
   ae-wiki lint:run [--stale-days N] [--raw-age-days N] [--fact-age-days N] [--sample N]
                                           # 跑 5 项健康检查 + 写 events(action='lint_run')
@@ -608,6 +611,15 @@ async function main(): Promise<void> {
         actor: Actor.systemIngest,
       });
       break;
+    }
+
+    case "web": {
+      const portStr = getArg("--port");
+      const port = portStr ? parseInt(portStr, 10) : 3000;
+      const { startWebServer } = await import("./web/server.ts");
+      await startWebServer({ port });
+      // Bun.serve 会保持进程不退；这里不能 process.exit
+      return;
     }
 
     case "lint:run": {
