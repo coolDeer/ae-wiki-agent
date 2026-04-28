@@ -1,39 +1,26 @@
 /**
  * Stage 5: 三层 Fact 抽取
  *
- * Tier A: <!-- facts ... --> YAML block 直读（agent 在 Stage 3 写入）✓ 实现
- * Tier B: narrative markdown table fallback                              ✓ MVP
- * Tier C: LLM 兜底（默认开启 Haiku）                                      - TODO
+ * Tier A: <!-- facts ... --> YAML block 直读（agent 在 Stage 3 写入）  ✓ 实现
+ * Tier B: narrative markdown table fallback                          ✓ MVP
+ * Tier C: LLM 兜底（OPENAI_FACT_EXTRACT_MODEL，默认 gpt-5-mini）       ✓ 实现 (stage-5-tier-c.ts)
  *
  * 流程：
  *   1. 读 page.content
  *   2. Tier A 解析 YAML 块
  *   3. Tier B 从 markdown table 补漏
- *   4. 对每条 YamlFact:
+ *   4. Tier C 把 (entity, metric, period) 三元组传给 LLM，让它从 prose 里挑漏抓
+ *      - source_quote 必须是 narrative 子串（normalized whitespace），防幻觉
+ *      - fail-soft：API 抛错时跳过，不中断 finalize
+ *      - 关闭：env STAGE5_TIER_C_DISABLED=true
+ *   5. 对每条 candidate:
  *      - resolveOrCreatePage(entity slug) → entity_page_id
  *      - 校验 + 单位归一（pct 自动 100→1）
  *      - 同 (entity, metric, period) 已有 fact 标 valid_to=today（覆盖语义）
- *      - INSERT 新 fact
+ *      - INSERT 新 fact，metadata.extracted_by ∈ {tier_a, tier_b, tier_c}
  *
- * ─── TODO: Tier C LLM 兜底（决策：跳过 Tier B，直接 A → C） ─────────
- *
- * 为什么需要：agent 在 Stage 3 写 narrative 时可能漏写 <!-- facts --> 块，
- *   漏掉的 fact 不会进结构化层，影响 query_facts MCP 工具和 thesis 跟踪。
- *
- * 为什么跳过 Tier B：中英混合场景下正则维护成本高、ROI 低；
- *   且 Tier C 带 source_quote 可校验，比正则更准、更鲁棒。
- *   未来若发现 LLM 漏抓的高频 pattern，再针对性补 B。
- *
- * 实现要点：
- *   - 输入：page.content + Tier A 已抽到的 (entity, metric, period) 列表
- *           （传给模型让它只补漏，不重复）
- *   - 模型：env.OPENAI_FACT_EXTRACT_MODEL（默认 gpt-5-mini）
- *   - 输出：JSON schema 约束 YamlFact[]，必须带 source_quote
- *   - 校验：source_quote 必须是 page.content 子串（防幻觉）；
- *           不过校验的标 confidence=0.5 或丢弃
- *   - 开关：config 表的 'fact_extract_llm_enabled'（默认 true）
- *   - 复用：normalize() / resolveOrCreatePage()，extracted_by='tier_c'
- *   - 成本：单 source ~5K input token，Haiku 4.5 ≈ $0.005/份，可忽略
+ * 为什么 Tier B 仍保留：表格里高频出现的 period matrix（FY26E / FY27E ...）
+ *   走结构化 parser 比 LLM 准确度高、零成本。Tier C 是漏网之鱼的兜底。
  */
 
 import { eq, and, isNull, sql as drizzleSql } from "drizzle-orm";
@@ -47,6 +34,7 @@ import {
   parseMarkdownTables,
   type MarkdownTableArtifact,
 } from "~/core/markdown-tables.ts";
+import { extractTierC } from "./stage-5-tier-c.ts";
 
 interface YamlFact {
   entity: string;
@@ -85,7 +73,7 @@ interface NormalizedFact {
 }
 
 interface CandidateFact extends YamlFact {
-  extractedBy: "tier_a" | "tier_b";
+  extractedBy: "tier_a" | "tier_b" | "tier_c";
 }
 
 export async function stage5Facts(ctx: IngestContext): Promise<void> {
@@ -104,11 +92,30 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
     ...fact,
     extractedBy: "tier_b" as const,
   }));
-  const candidates = dedupeCandidates([...tierA, ...tierB]);
 
   console.log(`  [stage5] tier A: ${tierA.length} candidate facts`);
   console.log(`  [stage5] tier B: ${tierB.length} candidate facts`);
 
+  // Tier C：把已抽到的 (entity, metric, period) 三元组传给 LLM，让它从 prose 补漏
+  const alreadyKeys = new Set<string>();
+  for (const f of [...tierA, ...tierB]) {
+    alreadyKeys.add(
+      `${f.entity.trim()}|${f.metric.trim()}|${(f.period ?? "").trim()}`
+    );
+  }
+  const tierCRaw = await extractTierC(page.content, alreadyKeys);
+  const tierC: CandidateFact[] = tierCRaw.map((fact) => ({
+    entity: fact.entity,
+    metric: fact.metric,
+    period: fact.period,
+    value: fact.value,
+    unit: fact.unit,
+    source_quote: fact.source_quote,
+    confidence: fact.confidence,
+    extractedBy: "tier_c" as const,
+  }));
+
+  const candidates = dedupeCandidates([...tierA, ...tierB, ...tierC]);
   if (candidates.length === 0) return;
 
   const today = new Date().toISOString().slice(0, 10);

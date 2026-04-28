@@ -18,6 +18,11 @@ const EnvSchema = z.object({
   OPENAI_EMBEDDING_MODEL: z.string().default("text-embedding-3-large"),
   OPENAI_AGENT_MODEL: z.string().default("gpt-5-mini"),
   OPENAI_FACT_EXTRACT_MODEL: z.string().default("gpt-5-mini"),
+  // 关掉 Stage 5 Tier C LLM 兜底（默认开启）
+  STAGE5_TIER_C_DISABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
   // 关掉所有 embedding 调用：search 走纯 keyword，worker 跳过 embed_chunks
   EMBEDDING_DISABLED: z
     .enum(["true", "false"])
