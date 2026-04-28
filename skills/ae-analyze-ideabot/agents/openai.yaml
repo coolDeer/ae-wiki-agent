@@ -1,0 +1,4 @@
+interface:
+  display_name: "Analyze IdeaBot"
+  short_description: "拉取单条 IdeaBot 记录并结合 wiki 生成综合分析报告"
+  default_prompt: "Use $ae-analyze-ideabot <name> to produce a cross-analysis report for one IdeaBot entry."
