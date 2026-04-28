@@ -188,6 +188,27 @@ function renderTurn(t: ChatTurn): string {
 // ============================================================================
 
 export async function viewHome(): Promise<string> {
+  // 近 7 天 source/brief：直接 SQL 拉，不走 recent_activity（后者混了 events
+  // + 自动建的红链 entity，会把 source/brief 挤出 limit 之外）。
+  const sourceBriefRows = await db.execute(sql`
+    SELECT id::text AS page_id, slug, title, type,
+           create_time AS ts
+    FROM pages
+    WHERE deleted = 0
+      AND type IN ('source', 'brief')
+      AND create_time >= NOW() - INTERVAL '7 days'
+    ORDER BY create_time DESC
+    LIMIT 100
+  `);
+  const todaysSourceBriefs = sourceBriefRows as unknown as Array<{
+    page_id: string;
+    slug: string;
+    title: string;
+    type: string;
+    ts: string;
+  }>;
+
+  // 近 7 天混合活动流（事件 / 信号 / 新页），仍走 recent_activity 给概览
   const recent = (await recentActivity({ days: 7, limit: 30 })) as Array<{
     kind: string;
     ts: string;
@@ -199,11 +220,6 @@ export async function viewHome(): Promise<string> {
     signal_type?: string;
     detail?: string;
   }>;
-
-  const newPages = recent.filter((r) => r.kind === "page");
-  const todaysSourceBriefs = newPages.filter(
-    (r) => r.slug?.startsWith("sources/") || r.slug?.startsWith("briefs/")
-  );
 
   const counts = await db.execute(sql`
     SELECT
@@ -247,14 +263,14 @@ export async function viewHome(): Promise<string> {
   </div>
 </div>
 
-<h2>Today's source / brief (last 7d)</h2>
+<h2>Today's source / brief (last 7d, ${todaysSourceBriefs.length})</h2>
 ${todaysSourceBriefs.length === 0
   ? `<div class="empty">no recent source/brief pages</div>`
   : `<ul class="plain">${todaysSourceBriefs
       .map(
         (p) => `<li>
           <div class="row">
-            <div class="grow"><a href="/pages/${encodeURIComponent(p.slug ?? "")}">${escape(p.title ?? p.slug)}</a></div>
+            <div class="grow">${pageTag(p.type)} <a href="/pages/${encodeURIComponent(p.slug)}">${escape(p.title ?? p.slug)}</a></div>
             <span class="muted score">${escape(String(p.ts).slice(0, 10))}</span>
           </div>
           <span class="muted score">${escape(p.slug)}</span>
