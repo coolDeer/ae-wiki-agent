@@ -3,7 +3,7 @@
 > 面向**研究报告 + 投资分析**场景的 Postgres + pgvector 架构方案。
 > 本文是 v2 设计的**单一真相文档**——schema、原则、SQL、迁移路径都在这里。
 >
-> **Status**: Draft v2. 全新设计；v1 三表（wiki_pages / wiki_links / raw_sources）已废弃，schema 文档已删除。
+> **Status**: v2 已上线，schema 在生产 (`infra/init-v2.sql` + `infra/migrations/v2.1.0 → v2.6.3`)；v1 三表（wiki_pages / wiki_links / raw_sources）已废弃。本文档与代码同步到 2026-04-28。
 >
 > **关联文档**：
 > - `CLAUDE.md` — wiki schema 与 ingest 工作流（人 / LLM 视角）
@@ -57,58 +57,89 @@
 - 总结风格可控（按 CLAUDE.md schema）
 - 上游格式变化不影响下游 schema
 
+### 1.5 关键原则：Thin Harness, Fat Skill
+
+借鉴 gbrain v0.20+ 设计：**core（`src/core/`）不调用 LLM，所有理解 / 推理工作 push 到 skill markdown**（`skills/ae-*/SKILL.md`）。
+
+- core 只做**确定性落库**：SQL / 正则 / YAML 解析 / chunking。整个 ingest pipeline 主路径里没有一处 LLM 调用。
+- 每个 skill 是一份 `SKILL.md`，agent（Claude Code 主会话 或 OpenAI durable runtime）按其指引执行三段式 / 多段式 CLI：
+  ```
+  prepare:next   → 取上下文，建 page 骨架
+  agent          → 读 raw / backlinks，写 narrative
+  write          → stdin 落库
+  finalize       → 派生（links / facts / signals / timeline）
+  ```
+- 改流程改 markdown 即可，**不用动 TS 代码**——这是这套系统能在 4 周 MVP 内跑起来的关键。
+- 详见 `doc/llm-touchpoints.md`。
+
 ---
 
 ## 2. 整体架构
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                       Layer 6: Client / Agent                     │
-│  Claude Code (MCP)  │  CLI tool  │  Web UI (后期)                 │
+│                  Layer 6: Client / Agent                          │
+│  Claude Code (主会话, MCP)  │  CLI tool  │  Web UI (Phase 3)      │
 └──────────────────┬───────────────────────────────────────────────┘
-                   │ MCP / API / SQL
+                   │ MCP / CLI
 ┌──────────────────▼───────────────────────────────────────────────┐
-│                      Layer 5: Skills (orchestration)              │
-│   ingest    │   query   │   enrich   │   thesis-track   │ ...    │
-│   daily-review (existing) │ daily-summarize (existing)            │
-│   signal-detector (new)   │ consensus-monitor (new)               │
-└──────────────────┬───────────────────────────────────────────────┘
+│              Layer 5: Skills (Fat Skill, markdown-driven)         │
+│   ae-fetch-reports / ae-research-ingest / ae-enrich               │
+│   ae-thesis-track  / ae-daily-review     / ae-daily-summarize     │
+│   ae-analyze-ideabot / ae-analyze-timebot                         │
+│   每个 skill = SKILL.md + 可选 agents/openai.yaml                  │
+└────────┬───────────────────────────────────────────┬─────────────┘
+         │ Claude Code 主会话当 LLM                   │ OpenAI durable runtime
+         │                                           │ (gpt-5-mini 默认)
+         │                                           ▼
+         │                       ┌──────────────────────────────────────┐
+         │                       │  Layer 4b: Durable Agent Runtime     │
+         │                       │  src/agents/runtime.ts               │
+         │                       │  src/core/minions/{worker,supervisor}│
+         │                       │  对话历史 → agent_messages           │
+         │                       │  tool 调用 → agent_tool_executions   │
+         │                       │  job 状态 → minion_jobs (agent_run)  │
+         │                       └──────────────────┬───────────────────┘
+         │                                          │
+         ▼                                          ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│              Layer 4a: Service / Business Logic (TS, no LLM)         │
+│   ingest 三段式 (peek/commit/brief/pass → write → finalize)          │
+│   stage-1 skeleton / stage-2 chunk + table artifact                 │
+│   stage-3 narrative / stage-4 links / stage-5 facts                 │
+│   stage-6 jobs / stage-7 timeline / stage-8 thesis                  │
+│   embedding pipeline / minion worker (embed_chunks /                │
+│      detect_signals / enrich_entity / agent_run /                   │
+│      lint_run / facts_expire)                                       │
+└──────────────────┬──────────────────────────────────────────────────┘
                    │
-┌──────────────────▼───────────────────────────────────────────────┐
-│                  Layer 4: Service / Business Logic                │
-│   fact extraction   │   entity resolution   │   link extraction   │
-│   embedding pipeline │   provenance tracking │   conflict detect  │
-└──────────────────┬───────────────────────────────────────────────┘
+┌──────────────────▼──────────────────────────────────────────────────┐
+│                       Layer 3: Search                                │
+│   keyword (tsvector, title^A + aliases^A + content^B + timeline^C)  │
+│   vector (pgvector HNSW, 可关)                                       │
+│   RRF fusion → source-boost → exclude-prefix → dedup                │
+└──────────────────┬──────────────────────────────────────────────────┘
                    │
-┌──────────────────▼───────────────────────────────────────────────┐
-│                       Layer 3: Search                              │
-│   keyword (tsvector)            │  vector (pgvector HNSW)         │
-│   RRF fusion → boost → cosine rerank → backlink boost → dedup     │
-└──────────────────┬───────────────────────────────────────────────┘
-                   │
-┌──────────────────▼───────────────────────────────────────────────┐
-│                  Layer 2: Postgres + pgvector                     │
-│  pages (万物皆 page) │ content_chunks │ links │ tags              │
-│  facts (投资专属) │ theses │ signals │ timeline_entries          │
-│  raw_files │ raw_data │ page_versions │ events │ minion_jobs     │
-│  sources (多租户) │ config                                        │
-└──────────────────┬───────────────────────────────────────────────┘
-                   │ ingest / sync
-┌──────────────────▼───────────────────────────────────────────────┐
-│                       Layer 1: Raw                                 │
-│  raw/{date}/{type}/*.md         (mineru parsed markdown)          │
-│  raw/{date}/{type}/*_content_list.json  (mineru structured)       │
-│  raw/{date}/{type}/*.meta.json  (sidecar with API metadata)       │
-│  raw/*.xlsx / *.pdf             (broker models, raw uploads)      │
-└──────────────────────────────────────────────────────────────────┘
+┌──────────────────▼──────────────────────────────────────────────────┐
+│              Layer 2: Postgres + pgvector (17 表)                    │
+│   sources (多租户)                                                   │
+│   pages (万物皆 page)  │ content_chunks │ links │ tags               │
+│   facts │ theses │ signals │ timeline_entries (投资专属)              │
+│   raw_files (markdown_url + triage_decision)                        │
+│   raw_data (含 source='tables' artifact) │ page_versions │ events    │
+│   minion_jobs │ agent_messages │ agent_tool_executions │ config      │
+└──────────────────┬──────────────────────────────────────────────────┘
+                   │ raw 不再落本地，按需 HTTP 拉
+┌──────────────────▼──────────────────────────────────────────────────┐
+│              Layer 1: Upstream (read-only)                           │
+│   MongoDB ResearchReportRecord (元数据 + parseStatus)                 │
+│   S3 parsedMarkdownS3 (mineru 解析后的 markdown，HTTP 直链)           │
+└─────────────────────────────────────────────────────────────────────┘
                    ▲
-                   │ fetch-reports skill
-                   │ (1) MongoDB 查 ResearchReportRecord
-                   │ (2) S3 下载 parsedMarkdownS3
-                   │ (3) 写 raw/ + INSERT raw_files (research_id 唯一去重)
-                   │
-              MongoDB ─┐
-              S3       ─┘ (上游研究平台)
+                   │ ae-fetch-reports skill (launchd 每天 8 点)
+                   │ (1) 查 ResearchReportRecord WHERE parseStatus='completed'
+                   │ (2) INSERT raw_files (markdown_url + research_id 去重)
+                   │   raw 正文不落盘，ingest 时按需 fetch markdown_url
 ```
 
 ### 2.1 关键设计决策
@@ -116,13 +147,17 @@
 | 决策                  | 选择                                                  | 理由                       |
 | ------------------- | --------------------------------------------------- | ------------------------ |
 | **Source of truth** | Postgres                                            | 多源 / 多人 / 时间轴查询的天然胜场     |
-| **存储边界**          | DB 是唯一存储，不维护 markdown 文件                                  | 避免双写一致性问题；agent 编辑 DB 即可，不需要 Obsidian |
-| **嵌入模型**            | OpenAI `text-embedding-3-large` (1536 维)            | 中英文质量好                   |
-| **Chunking**        | mineru content_list.json 的 type 边界（首选）→ 段级 fallback | 利用已有解析，不重新切              |
+| **存储边界**          | DB 是唯一存储；raw 正文不落本地，ingest 时按 `raw_files.markdown_url` HTTP 拉 | 避免双写一致性 + 节省磁盘；进程内缓存使一次 ingest 只 fetch 一次 |
+| **理解 vs 落库分层** | core 不调 LLM；推理 push 到 SKILL.md（Thin Harness, Fat Skill） | 改流程改 markdown 不动代码；core 全确定性，可单测 |
+| **Agent runtime**  | 双轨：Claude Code 主会话（交互）+ OpenAI gpt-5-mini durable runtime（异步队列） | 同一份 SKILL.md 两条路径都能跑；durable runtime 历史落 `agent_messages` |
+| **嵌入模型**            | OpenAI `text-embedding-3-large` (1536 维，可关)         | 中英文质量好；`EMBEDDING_DISABLED` 时退化为 keyword-only |
+| **Chunking**        | recursive splitter（默认）；mineru content_list 边界（TODO） | 段级切分质量足够 MVP；mineru 接入待补 |
 | **实体设计**            | 万物皆 page（gbrain 模式）+ 投资强查询字段直接进 pages 列             | 单一索引、跨类型 link 天然成立       |
-| **Fact extractor**  | 三层：YAML block 直读 → 正则 → LLM（兜底）                     | 从可靠到不可靠，最大化 zero-cost 部分 |
-| **Async pipeline**  | Postgres 原生 `minion_jobs` 表（gbrain 模式）              | 不引入 Redis                |
+| **Fact extractor**  | 三层：Tier A YAML block 直读（已上线）→ Tier B 正则（已跳过）→ Tier C LLM 兜底（TODO，决策跳 B 直接 C） | YAML 是 agent 在 narrative 里写的契约，零成本零误差；Tier C 要写 |
+| **Async pipeline**  | Postgres 原生 `minion_jobs`（FOR UPDATE SKIP LOCKED）   | 不引入 Redis；6 类 job：embed_chunks / detect_signals / enrich_entity / agent_run / lint_run / facts_expire |
+| **Triage**         | ingest 入口三分（commit / brief / pass）+ deleted=1 软删 + skipped_at 跳过 | 短素材塞 7 段 source 模板会污染；brief 给前沿动态留位置 |
 | **多租户**             | `sources(id)` 表（gbrain 模式）                          | wiki / 个人笔记 / 实验区共库分区    |
+| **软删除主流**       | 全表 `deleted SMALLINT` + partial unique `WHERE deleted=0` | append-only + 时间旅行查询；外键全移除靠应用层维护引用 |
 
 ---
 
@@ -145,39 +180,46 @@
 
 6. **Provenance 是一等公民** — `links` 带 `link_source` / `origin_page_id` / `origin_field`，`facts` 带 `source_page_id` / `valid_from` / `valid_to`，所有"谁说的、什么时候说的"可查。
 
-7. **不支持物理删除（append-only + soft archive）** — 任何已写入的 page / fact / link 都不 DELETE，只通过状态字段标记：
-   - `pages.status = 'archived'` — 不再参与默认搜索，但历史可查
+7. **不支持物理删除（append-only + soft delete）** — 任何已写入的行都不 DELETE，主流是 `deleted SMALLINT` 软删；UNIQUE 全部改成 `partial unique WHERE deleted=0`（v2.1.0 完成）。语义辅助字段：
+   - `pages.status = 'archived'` — 论点 / 输出页不再参与默认搜索，但历史可查
    - `facts.valid_to = <date>` — 标记 fact 失效（被新 fact 覆盖），原行保留
-   - `signals.resolved = true` — 标记已处理，不删
    - `theses.status = 'closed' | 'invalidated'` — 论点终止，记录 close 数据
+   - `raw_files.skipped_at + skip_reason` — triage 主动跳过（v2.4.0），跟 `deleted=1` 语义分开
+   - `signals.resolved = true` — 标记已处理，不删
 
    **好处**：
-   - 不需要外键 ON DELETE CASCADE（已全部移除）
+   - 不需要外键 ON DELETE CASCADE（已全部移除，应用层维护完整性）
    - 不会出现悬空引用 / 孤儿数据问题
    - 时间旅行查询天然成立（"3 个月前 wiki 怎么说"直接 SQL）
-   - 审计 / 合规友好（任何变更可追溯）
+   - 审计 / 合规友好（任何变更可追溯，由 `events` 记录）
 
    **代价**：表会持续增长。MVP 阶段无影响；超大规模时按月分区或冷归档。
 
-### 3.1 完整表清单（15 张）
+8. **Thin Harness, Fat Skill** — core（`src/core/`）严格不调 LLM。所有理解工作 push 到 `skills/ae-*/SKILL.md`，由 agent（Claude Code 主会话或 OpenAI durable runtime）执行。core 给 agent 提供的是确定性 CLI（`ingest:peek/commit/brief/pass/write/finalize` 等）+ MCP 查询接口（`search` / `get_page` / `query_facts` 等 7 个工具）。改流程改 markdown，不改 TS 代码。详见 `doc/llm-touchpoints.md`。
 
-| #   | 表名                 | 角色                | 核心字段                                                                         |
-| --- | ------------------ | ----------------- | ---------------------------------------------------------------------------- |
-| 1   | `sources`          | 多租户分区（gbrain）     | id, name, config                                                             |
-| 2   | `pages`            | **核心：万物皆 page**   | slug, type, content, frontmatter, ticker, sector, embedding, tsv             |
-| 3   | `content_chunks`   | 分段 embedding      | page_id, chunk_text, chunk_type, embedding                                   |
-| 4   | `links`            | 类型化边 + provenance | from_page_id, to_page_id, link_type, link_source, origin_page_id             |
-| 5   | `tags`             | m2m 标签            | page_id, tag                                                                 |
-| 6   | `facts`            | **投资专属：时间序列数值**   | entity_page_id, metric, period, value_numeric, source_page_id, valid_from/to |
-| 7   | `theses`           | **投资专属：论点状态机**    | page_id (PK), target_page_id, direction, conviction, status                  |
-| 8   | `signals`          | **投资专属：自动事件流**    | signal_type, entity_page_id, thesis_page_id, severity, detected_at           |
-| 9   | `timeline_entries` | 结构化时间线            | entity_page_id, event_date, event_type, summary                              |
-| 10  | `raw_files`        | 原始文件登记            | raw_path, research_id, parse_status, ingested_page_id                        |
-| 11  | `raw_data`         | JSONB sidecar     | page_id, source, data                                                        |
-| 12  | `page_versions`    | 快照历史              | page_id, content, edited_by, snapshot_at                                     |
-| 13  | `events`           | 审计 log            | actor, action, entity_id, payload                                            |
-| 14  | `minion_jobs`      | 异步队列（gbrain）      | name, status, data, attempts                                                 |
-| 15  | `config`           | 配置 KV             | id (即 key), value                                                            |
+### 3.1 完整表清单（17 张）
+
+| #   | 表名                       | 角色                                  | 核心字段                                                                         |
+| --- | ------------------------ | ----------------------------------- | ---------------------------------------------------------------------------- |
+| 1   | `sources`                | 多租户分区（gbrain）                       | id, name, config                                                             |
+| 2   | `pages`                  | **核心：万物皆 page**                     | slug, type, content, timeline, frontmatter, ticker, sector, aliases, embedding, tsv |
+| 3   | `content_chunks`         | 分段 embedding                        | page_id, chunk_text, chunk_type, embedding                                   |
+| 4   | `links`                  | 类型化边 + provenance                   | from_page_id, to_page_id, link_type, link_source, origin_page_id             |
+| 5   | `tags`                   | m2m 标签                              | page_id, tag                                                                 |
+| 6   | `facts`                  | **投资专属：时间序列数值**                     | entity_page_id, metric, period, value_numeric, source_page_id, valid_from/to |
+| 7   | `theses`                 | **投资专属：论点状态机**                      | page_id (PK), target_page_id, direction, conviction, status, catalysts, validation_conditions |
+| 8   | `signals`                | **投资专属：自动事件流**                      | signal_type, entity_page_id, thesis_page_id, severity, source_page_id        |
+| 9   | `timeline_entries`       | 结构化时间线                              | entity_page_id, event_date, event_type, summary                              |
+| 10  | `raw_files`              | 原始文件登记（v2.5.0+ 仅元数据 + S3 直链）       | research_id, markdown_url, triage_decision, ingested_page_id, skipped_at, skip_reason |
+| 11  | `raw_data`               | JSONB sidecar（含 `source='tables'` 表格 artifact） | page_id, source, data                                            |
+| 12  | `page_versions`          | 快照历史                                | page_id, content, timeline, frontmatter, edited_by, reason, snapshot_at      |
+| 13  | `events`                 | 审计 log（含 `lint_run` / `facts_expire` 等系统事件） | actor, action, entity_type, entity_id, payload                  |
+| 14  | `minion_jobs`            | 异步队列（gbrain）                        | name, status, data, attempts, progress, result, started_at, finished_at      |
+| 15  | `agent_messages`         | **durable agent runtime 对话历史** (v2.6.0) | job_id, turn_index, role, content, model, stop_reason, tokens_in/out     |
+| 16  | `agent_tool_executions`  | **durable agent runtime tool 调用** (v2.6.0) | job_id, turn_index, tool_use_id, tool_name, status, input, output, error |
+| 17  | `config`                 | 配置 KV                               | id (即 key), value                                                            |
+
+迁移链：v2.1.0 partial unique（软删感知）→ v2.2.0 aliases 并入 tsv → v2.3.0/v2.6.3 jieba（已回退）→ v2.4.0 raw_files 加 skipped_at → v2.5.0 raw_files 改 markdown_url → v2.5.1 加 triage_decision → v2.6.0 agent runtime → v2.6.1/.2 minion 加 cancelled / paused 状态。
 
 后期再加（不在 MVP）：`access_tokens`、`mcp_request_log`（远程 MCP 鉴权 + 审计）。
 
@@ -578,25 +620,27 @@ CREATE INDEX idx_theses_direction ON theses(direction);
 
 **为什么不直接放 pages.frontmatter？**因为这些字段被高频 JOIN（`signals` 写入时要查 active thesis、`daily-summarize` 要列所有 active long/short）。直接是列性能更好。
 
-#### 维护机制：signal-detector 自动建议 + Phase 2 人工 API override
+#### 维护机制：半自动 — 自动写 signal，人工/agent 调状态
 
-**Phase 1（默认）— 全自动**：
-- `theses` 行不由人工创建。每次 ingest Stage 8 检测到关联 active thesis 的 entity 出现关键 fact 变化（如 EPS miss / 目标价大幅修订）→ `signal-detector` 自动写入 `signals`
-- 当 signals 累积到一定密度或严重度（详见 signal-detector skill 规则）→ 自动 UPDATE `theses` 的 `conviction` / `status` / `validation_conditions[].status`
-- 自动调整都带 `update_by = 'agent:signal-detector'`，可审计、可回滚
+实际落地的分工与早期设计不同，**`signal-detector` 不会自动 UPDATE `theses` 行**。原因：投资判断有反身性，确定性脚本不应自动 close 论点。
 
-**Phase 2 — 人工 API override**：
-新增 endpoint（CLI / MCP tool / Web UI 后期）：
-- `thesis.create(target_page_id, direction, conviction, ...)` — 人工新建论点
-- `thesis.update(page_id, fields)` — 人工修改 conviction / status / catalysts 等
-- `thesis.close(page_id, reason)` — 人工平仓
-- 任何人工 update 写 `update_by = 'human:<name>'`，所以可一眼区分 agent vs 人
+**自动**（已上线）：
+- ingest Stage 8 写 `signals(signal_type='thesis_validation', severity='info')`：source 提到 active thesis 的 target 时，提示"该 review 了"
+- worker `detect_signals` 写 `signals(signal_type='consensus_drift' | 'fact_outlier')`：跨 source fact 偏离 >10% (info) / >20% (warning)
+- 这两个产线**只写 signals**，不改 `theses` 任何字段
 
-**冲突解决**：人工 update 后，signal-detector 检测到自动建议时不强制覆盖人工值；改为写一条 `signals (severity='warning', signal_type='thesis_human_override_suggestion')`，让 PM 看见。
+**人工 / agent CLI**（已上线，主流维护路径）：
+- `thesis:open --target <slug> --direction <long|short|pair|neutral> --name "..."` — 开仓
+- `thesis:write <pageId>` — stdin 落 narrative
+- `thesis:update --conviction X / --add-catalyst JSON / --mark-condition "C:status[:signal_id]"` — 调状态
+- `thesis:close <pageId> --reason validated|invalidated|stop_loss|manual` — 关仓
+- `update_by` 区分 `agent:claude` / `agent:runtime` / `human:<name>`，可审计
+
+**Agent 角色**：`ae-thesis-track` skill 让 agent 在 ingest 后主动跑 `thesis:list --status active` → `thesis:show <pageId>` → 据 signals 决定调用哪个 update 命令。属于"半自动 + 人在环"，详见 `skills/ae-thesis-track/SKILL.md`。
 
 ### 3.9 signals — 自动事件流（投资专属）
 
-`signal-detector` skill 自动写入。任何"值得 PM 注意"的离散事件。
+由两条产线写入：(1) ingest Stage 8 写 `thesis_validation` 提示 source 触及 active thesis 的 target；(2) worker `detect_signals` 跨 source fact 偏离比对写 `consensus_drift` / `fact_outlier`。**signals 只写不改 theses，状态机由 agent / PM 通过 `thesis:update` 主动推进**。
 
 ```sql
 CREATE TABLE signals (
@@ -655,44 +699,55 @@ CREATE INDEX idx_timeline_event_type ON timeline_entries(event_type);
 CREATE UNIQUE INDEX idx_timeline_dedup ON timeline_entries(entity_page_id, event_date, summary);
 ```
 
-### 3.11 raw_files — 原始文件登记
+### 3.11 raw_files — 原始文件登记（v2.5.0+ 元数据 + S3 直链）
 
-直连 MongoDB `ResearchReportRecord` 集合拉取的 markdown 先登记在这，ingest 后才创建 pages 记录。两者通过 `ingested_page_id` 关联。
+直连 MongoDB `ResearchReportRecord` 集合拉取的元数据登记在这；**正文不再落本地**，存 `parsedMarkdownS3` 直链 `markdown_url`，ingest 时按需 HTTP 拉。Triage 三分流程在 `triage_decision` 字段记录（v2.5.1）。
 
 ```sql
 CREATE TABLE raw_files (
   id                BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
   source_id         TEXT NOT NULL DEFAULT 'default',
-  raw_path          TEXT NOT NULL UNIQUE,         -- 'raw/2026-04-26/meeting_minutes/xxx.md'
+  -- v2.5.0：S3 直链替代本地文件
+  markdown_url      TEXT NOT NULL,                 -- parsedMarkdownS3 HTTP 直链
   research_id       TEXT,                          -- 上游 ResearchReportRecord.researchId
-  research_type     TEXT,                          -- 'meeting_minutes' | 'arete' | 'twitter' | ...
-  org_code          TEXT,                          -- 上游 orgCode (如 'JG1000')，后续作为多租户/权限边界
+  research_type     TEXT,                          -- 'meeting_minutes' | 'aletheia' | 'twitter' | ...
+  org_code          TEXT,                          -- 上游 orgCode (如 'JG1000')
   title             TEXT,
   tags              TEXT[],                        -- 上游 tags[]
   mongo_doc         JSONB,                         -- 完整 MongoDB ResearchReportRecord 文档
   parse_status      TEXT,                          -- upstream parseStatus: 'completed' | 'pending' | ...
-  ingested_page_id  BIGINT,
+  -- v2.5.1：Triage 决策结果
+  triage_decision   TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'commit' | 'brief' | 'pass'
+  ingested_page_id  BIGINT,                        -- ingest 后回填
   ingested_at       TIMESTAMPTZ,
+  -- v2.4.0：Triage 主动跳过（与 deleted=1 语义分开）
+  skipped_at        TIMESTAMPTZ,
+  skip_reason       TEXT,
   -- 标准审计字段（所有表统一）
   extend       JSONB,
   create_by    VARCHAR(64) NOT NULL DEFAULT '',
   update_by    VARCHAR(64) NOT NULL DEFAULT '',
   create_time  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   update_time  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  deleted      SMALLINT    NOT NULL DEFAULT 0,
-
-  CONSTRAINT raw_files_research_id_key UNIQUE (research_id)   -- fetch-reports 去重 key
+  deleted      SMALLINT    NOT NULL DEFAULT 0
 );
 
-CREATE INDEX idx_raw_files_pending       ON raw_files (create_time DESC) WHERE ingested_at IS NULL;
-CREATE INDEX idx_raw_files_research_type ON raw_files (research_type);
-CREATE INDEX idx_raw_files_org           ON raw_files (org_code) WHERE org_code IS NOT NULL;
-CREATE INDEX idx_raw_files_tags          ON raw_files USING GIN (tags);
+-- v2.1.0：partial unique（软删感知）
+CREATE UNIQUE INDEX uq_raw_files_research_id ON raw_files (research_id)
+  WHERE deleted = 0 AND research_id IS NOT NULL;
+
+CREATE INDEX idx_raw_files_pending          ON raw_files (create_time);
+CREATE INDEX idx_raw_files_research_type    ON raw_files (research_type);
+CREATE INDEX idx_raw_files_triage_decision  ON raw_files (triage_decision);
+CREATE INDEX idx_raw_files_org              ON raw_files (org_code);
+CREATE INDEX idx_raw_files_skipped          ON raw_files (skipped_at) WHERE skipped_at IS NOT NULL;
 ```
 
 **字段说明**：
-- `research_id` 全局 UNIQUE — fetch-reports 直接 `INSERT ... ON CONFLICT (research_id) DO NOTHING` 去重
-- `mongo_doc` 存完整 `ResearchReportRecord` 文档（含 `parsedMarkdownS3` / `parsedContentListS3` / `parseLockedBy` / 时间戳等所有字段），失去 schema 锁定但保留全部上游信息
+- `markdown_url`：v2.5.0 起替代 `raw_path`。`fetchRawMarkdown(rf)` 进程内缓存，同 ingest 流程多次调用只 fetch 一次（见 `src/core/raw-loader.ts`）
+- `research_id` partial unique（`WHERE deleted=0 AND research_id IS NOT NULL`）— fetch-reports 直接 `INSERT ... ON CONFLICT (research_id) WHERE deleted=0 AND research_id IS NOT NULL DO NOTHING`
+- `triage_decision`：默认 `'pending'`；`ingest:peek` 不改；`commit/brief` 写对应值并建 page；`pass` 写 `'pass'` + 标 `skipped_at`
+- `mongo_doc` 存完整 `ResearchReportRecord` 文档（含 `parsedMarkdownS3` / `parsedContentListS3` / `parseLockedBy` / 时间戳等），失去 schema 锁定但保留全部上游信息
 - `org_code` 当前不强制（NULL 兼容旧数据），未来添加 access control 时可强制 `pages.org_code = raw_files.org_code`
 - `tags` 在 ingest Stage 4 之外也会同步到 `tags` 表（m2m 行）便于按标签搜索
 
@@ -777,31 +832,117 @@ CREATE INDEX idx_events_action ON events(action, ts DESC);
 
 ### 3.15 minion_jobs — Postgres 原生异步队列（gbrain 模式）
 
-不引入 Redis / Celery。
+不引入 Redis / Celery。worker 用 `FOR UPDATE SKIP LOCKED` 抢占 job（见 `src/core/minions/worker.ts`）。
 
 ```sql
 CREATE TABLE minion_jobs (
   id           BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-  name         TEXT NOT NULL,                     -- 'embed_chunks' | 'extract_facts' | 'enrich_entity' | 'detect_signals'
-  status       TEXT NOT NULL DEFAULT 'waiting',   -- 'waiting' | 'active' | 'completed' | 'failed'
+  name         TEXT NOT NULL,                     -- job 类型，见下表
+  status       TEXT NOT NULL DEFAULT 'waiting',   -- waiting | active | paused | completed | failed | cancelled
   data         JSONB NOT NULL,
   attempts     INTEGER NOT NULL DEFAULT 0,
   max_attempts INTEGER NOT NULL DEFAULT 3,
+  progress     JSONB,                              -- 长跑 job 的中间进度（v2.6.0 加）
   result       JSONB,
   error        TEXT,
   started_at   TIMESTAMPTZ,
   finished_at  TIMESTAMPTZ,
   -- 标准审计字段（所有表统一）
-  extend       JSONB,                                            -- 扩展信息（任意 JSON 元数据）
-  create_by    VARCHAR(64) NOT NULL DEFAULT '',                  -- 创建人（'agent:claude' / 'human:levin' / ...）
-  update_by    VARCHAR(64) NOT NULL DEFAULT '',                  -- 更新人
-  create_time  TIMESTAMPTZ NOT NULL DEFAULT NOW(),               -- 创建时间
-  update_time  TIMESTAMPTZ NOT NULL DEFAULT NOW(),               -- 更新时间（应用层维护）
-  deleted      SMALLINT    NOT NULL DEFAULT 0                    -- 逻辑删除：0=未删除, 1=已删除
+  extend       JSONB,
+  create_by    VARCHAR(64) NOT NULL DEFAULT '',
+  update_by    VARCHAR(64) NOT NULL DEFAULT '',
+  create_time  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  update_time  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  deleted      SMALLINT    NOT NULL DEFAULT 0
 );
 
-CREATE INDEX idx_jobs_pending ON minion_jobs(name, create_time) WHERE status = 'waiting';
-CREATE INDEX idx_jobs_status ON minion_jobs(status, create_time DESC);
+CREATE INDEX idx_jobs_pending ON minion_jobs(name, create_time);
+CREATE INDEX idx_jobs_status  ON minion_jobs(status, create_time);
+```
+
+**Job name 列表**（见 `src/core/minions/types.ts` `MinionJobName`）：
+
+| name | 触发 | handler | 备注 |
+|---|---|---|---|
+| `embed_chunks` | ingest Stage 6 | OpenAI embedding API | `EMBEDDING_DISABLED=true` 时被 worker 跳过 |
+| `detect_signals` | ingest Stage 6 | 跨 source fact 偏离比对（>10% 写 info，>20% 写 warning） | 需 ≥1 条同 entity+metric+period 的 prior fact |
+| `enrich_entity` | Stage 4 自动建红链时 | 起一个 `agent_run` job 跑 ae-enrich skill | 红链补全的自动化入口 |
+| `agent_run` | enrich_entity / 用户显式 | OpenAI gpt-5-mini durable runtime（`src/agents/runtime.ts`） | 对话历史落 `agent_messages` / `agent_tool_executions` |
+| `lint_run` | cron / 手动 (`ae-wiki lint:run`) | 5 项健康检查写 `events(action='lint_run')` | 见 §6 维护任务 |
+| `facts_expire` | cron / 手动 (`ae-wiki facts:expire`) | 关闭 period_end 已过 N 天的 latest fact | 默认 90 天 |
+
+`status` 状态机（v2.6.1 / v2.6.2 加 `cancelled` / `paused`）：
+```
+waiting → active → completed
+              ↓
+              → failed (attempts < max_attempts → waiting，否则终态)
+              → paused (用户暂停，可 resume)
+              → cancelled (用户取消，终态)
+```
+
+### 3.15.1 agent_messages — durable agent runtime 对话历史 (v2.6.0)
+
+存 OpenAI gpt-5-mini durable runtime 跑 `agent_run` job 时的每轮对话。
+
+```sql
+CREATE TABLE agent_messages (
+  id          BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  job_id      BIGINT NOT NULL,                    -- → minion_jobs.id (name='agent_run')
+  turn_index  INTEGER NOT NULL,
+  role        TEXT NOT NULL,                      -- 'system' | 'user' | 'assistant' | 'tool'
+  content     JSONB NOT NULL,                     -- OpenAI message content（含 tool_calls）
+  model       TEXT,
+  stop_reason TEXT,
+  tokens_in   INTEGER,
+  tokens_out  INTEGER,
+  started_at  TIMESTAMPTZ,
+  finished_at TIMESTAMPTZ,
+  metadata    JSONB NOT NULL DEFAULT '{}',
+  -- 标准审计字段
+  extend       JSONB,
+  create_by    VARCHAR(64) NOT NULL DEFAULT '',
+  update_by    VARCHAR(64) NOT NULL DEFAULT '',
+  create_time  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  update_time  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  deleted      SMALLINT    NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX uq_agent_messages_job_turn  ON agent_messages (job_id, turn_index) WHERE deleted = 0;
+CREATE INDEX        idx_agent_messages_job_turn ON agent_messages (job_id, turn_index);
+```
+
+用途：`ae-wiki agent:logs <job_id>` / `agent:replay` 通过这张表回放任意 job。崩溃 / 暂停后可从最后一轮恢复。
+
+### 3.15.2 agent_tool_executions — durable agent runtime tool 调用 (v2.6.0)
+
+每次 agent 调 MCP / CLI 工具时记一行，让长跑 job 可断点续跑。
+
+```sql
+CREATE TABLE agent_tool_executions (
+  id           BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  job_id       BIGINT NOT NULL,                   -- → minion_jobs.id
+  turn_index   INTEGER NOT NULL,
+  tool_use_id  TEXT NOT NULL,                     -- OpenAI tool_call.id
+  tool_name    TEXT NOT NULL,                     -- 'search' | 'get_page' | 'ingest:commit' | ...
+  status       TEXT NOT NULL DEFAULT 'pending',   -- 'pending' | 'running' | 'completed' | 'failed'
+  input        JSONB NOT NULL DEFAULT '{}',
+  output       JSONB,
+  error        TEXT,
+  started_at   TIMESTAMPTZ,
+  finished_at  TIMESTAMPTZ,
+  metadata     JSONB NOT NULL DEFAULT '{}',
+  -- 标准审计字段
+  extend       JSONB,
+  create_by    VARCHAR(64) NOT NULL DEFAULT '',
+  update_by    VARCHAR(64) NOT NULL DEFAULT '',
+  create_time  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  update_time  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  deleted      SMALLINT    NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX uq_agent_tool_exec_job_tool_use  ON agent_tool_executions (job_id, tool_use_id) WHERE deleted = 0;
+CREATE INDEX        idx_agent_tool_exec_job_turn     ON agent_tool_executions (job_id, turn_index);
+CREATE INDEX        idx_agent_tool_exec_status       ON agent_tool_executions (status, started_at);
 ```
 
 ### 3.16 config — 配置 KV
@@ -866,11 +1007,19 @@ ON CONFLICT (id) DO NOTHING;
 
          ┌───────────────┐    ┌───────────────┐
          │  minion_jobs  │    │     config    │
-         └───────────────┘    └───────────────┘
+         └───┬───────────┘    └───────────────┘
+             │ name='agent_run'
+             ▼
+    ┌────────────────────────┐    ┌────────────────────────┐
+    │   agent_messages       │    │ agent_tool_executions  │
+    │   (job_id → minion_jobs│    │ (job_id → minion_jobs) │
+    │    每轮对话历史)        │    │  每次 tool 调用记录)   │
+    └────────────────────────┘    └────────────────────────┘
                   ▲
-                  │ ingest 流程异步入队
+                  │ ingest Stage 6 入队 + Stage 4 红链 → enrich_entity
+                  │ enrich_entity → 起 agent_run 跑 ae-enrich
                   │
-              [ingest skill]
+              [ingest skill / agent runtime]
 ```
 
 ### 3.18 与 v1 三表的对应（仅供迁移参考）
@@ -890,73 +1039,90 @@ ON CONFLICT (id) DO NOTHING;
 ### 4.1 端到端流程
 
 ```
-[fetch-reports skill]
+[ae-fetch-reports skill]                          (launchd 每天 8 点 / 手动)
     ↓ MongoDB 查 ResearchReportRecord WHERE parseStatus='completed'
-    ↓ 对每条 record：先查 raw_files 是否已存在 (research_id 去重) → 没有则下载 parsedMarkdownS3
-    ↓ 写 raw/{date}/{type}/*.md + INSERT raw_files (含 org_code, tags, mongo_doc)
-[raw_files (ingested_at IS NULL) 队列]
-    ↓ ingest skill
+    ↓ 对每条 record：partial unique 去重 ON CONFLICT (research_id) WHERE deleted=0 ...
+    ↓ INSERT raw_files (markdown_url=parsedMarkdownS3, mongo_doc, research_type, tags, org_code...)
+    ↓ ※ 正文不落本地，只存 S3 直链
+[raw_files (triage_decision='pending', ingested_at IS NULL, skipped_at IS NULL) 队列]
     ↓
-[Stage 1: 登记 raw_files + 创建 pages 骨架]
-    ├─ INSERT INTO raw_files (raw_path, research_id, research_type, ...)
-    ├─ INSERT INTO pages (slug='sources/<prefix>-<title>-<date>', type='source', title, ...)
-    ├─ UPDATE raw_files SET ingested_page_id = <new page id>
-    └─ 写 events: 'ingest_start'
+    ↓ ae-research-ingest skill — Triage 三分流程
     ↓
-[Stage 2: 内容分段（不依赖上游 summary）]
-    ├─ 读 raw markdown + 可选读 content_list.json 的 type 边界
-    ├─ 切分为 chunks，保留 chunk_type / page_idx
-    ├─ 表格 / 图表 chunk 单独标记，便于后续过滤
-    └─ 写 content_chunks（embedding 留空，等异步任务）
+[ingest:peek <rawFileId 自动选下一个>]            (确定性 SQL，无 LLM)
+    ├─ 进程内缓存 fetchRawMarkdown(rf) 一次
+    ├─ 截取 preview (前 1500 字)
+    └─ 返回 { rawFileId, markdownUrl, title, researchType, rawCharCount, preview }
     ↓
-[Stage 3: agent 生成 wiki narrative（核心）]
-    ├─ Claude 读 raw markdown（必要时按 chunk 顺序）
-    ├─ 按 CLAUDE.md source 页 schema 生成结构化 wiki content：
-    │   - 来源概要 / 关键要点 / 重要数据点
-    │   - 值得注意的观点引语 / 结构性观察
-    │   - 与现有知识的关系 / 后续跟进项
-    ├─ 写 pages.content（人 + LLM 都能读的 markdown）
-    └─ Agent 自带产出 tone / 个股看法 / 行业判断（写到 frontmatter JSONB）
-    ↓
-[Stage 4: 实体识别 + 链接抽取]
-    ├─ 从 pages.content 提取：
-    │   - [[wikilink]] / [Name](path) markdown link
-    │   - 已知 ticker (NOW / 600519.SH / ...)
-    │   - alias 匹配: pages.aliases[]
-    ├─ 不存在的实体 → 自动建 pages 记录（type='company' 等，confidence='low'，待 enrich）
-    └─ 写 links (link_source='extracted', origin_page_id)
-    ↓
-[Stage 5: 事实抽取]
-    ├─ Tier A: <!-- facts ... --> YAML block 直读（agent 在 Stage 3 写入）
-    ├─ Tier B: 正则 (revenue $X / FY27 EPS $X.XX / 目标价 X)
-    ├─ Tier C: LLM call（默认启用 Haiku，自动跑；可通过 config.fact_extract_llm_enabled 关闭）
-    └─ 写 facts（带 valid_from = source 页的 create_time::date）
-    ↓
-[Stage 6: 异步任务入队]
-    ├─ minion_jobs: embed_chunks → 调 OpenAI embedding
-    ├─ minion_jobs: enrich_entity → 给红链补全（公司基本面、关键人）
-    └─ minion_jobs: detect_signals → 跨 source 比对，发现 expectation gap
-    ↓
-[Stage 7: timeline 提取]
-    ├─ agent 在 Stage 3 narrative 中已识别的事件（earnings / guidance / rating）
-    └─ 写 timeline_entries
-    ↓
-[Stage 8: thesis 关联]
-    ├─ 如果 source 关联的 entity 有 active thesis → 写 signals
-    │   （'thesis_validation' 或 'thesis_invalidation'）
-    └─ 写 events: 'ingest_complete'
+    ↓ agent (Claude Code 主会话 或 OpenAI durable runtime) 读 preview / 完整 raw
+    ↓ 三选一：
+    ├─→ ingest:pass <rf> --reason "..."          → 标 raw_files.skipped_at + skip_reason，结束
+    │
+    ├─→ ingest:commit <rf>     (核心投资素材)     → 走 source 路径
+    │       ↓
+    │       Stage 1: 建 page 骨架 (type='source', slug='sources/<prefix>-<title>-<date>')
+    │             UPDATE raw_files SET triage_decision='commit', ingested_page_id=<pid>
+    │       Stage 2: 切 content_chunks (recursive splitter) + 抽 raw_data(source='tables') 表格 artifact
+    │       ↓
+    │   agent 读完整 raw 写 7 段 source narrative + <!-- facts --> YAML + <!-- timeline --> 段
+    │       ↓
+    │   ingest:write <pageId>  (stdin 落 narrative + page_versions 快照)
+    │       ↓
+    │   ingest:finalize <pageId>
+    │       ├─ Stage 4 链接抽取：[[wikilink]] → links；红链自动建 page (confidence='low')
+    │       │           红链同时入队 minion_jobs(name='enrich_entity')
+    │       ├─ Stage 5 facts：Tier A YAML 直读（已上线）/ Tier B 正则（已跳过）/ Tier C LLM（TODO，决策跳 B 直 C）
+    │       ├─ Stage 6 jobs：minion_jobs(embed_chunks, detect_signals) 入队
+    │       ├─ Stage 7 timeline：解析 <!-- timeline --> 之后的 YAML → timeline_entries
+    │       └─ Stage 8 thesis：source 提到的 entity 命中 active thesis.target_page_id
+    │                         → 写 signals(signal_type='thesis_validation', severity='info')
+    │                         写 events(action='ingest_complete')
+    │
+    └─→ ingest:brief <rf>      (前沿动态弱相关)   → 走 brief 路径
+            ↓
+            Stage 1: 建 page 骨架 (type='brief', slug='briefs/<prefix>-<title>-<date>')
+            Stage 2: 切 chunks（短素材通常 1 chunk，无表格）
+            ↓
+        agent 写 4 段精简 brief（TL;DR / Key Observations / Investment View / Links）
+        + frontmatter (tags / url / platform)
+            ↓
+        ingest:write <pageId>
+            ↓
+        ingest:finalize <pageId>
+            ├─ Stage 3 解析 frontmatter 合并到 pages.frontmatter
+            ├─ Stage 4-8 跑同样流程；brief 通常 0 facts / 0 timeline 是预期
+            └─ 完成
+
+[兜底：commit/brief 后才发现内容是噪声]
+    └─→ ingest:skip <pageId> --reason "..."    → 软删 page (deleted=1) + 标 raw_files.skipped_at
 ```
 
-### 4.2 失败 / 重试
+### 4.2 完成判据
+
+- 控制台依次打印 `[stage4] / [stage5] / [stage6] / [stage7] / [stage8]`，最后一行 `✓ page #N finalized`
+- `raw_files.ingested_page_id` 已写入
+
+source 页正常应有 facts ≥ 1，brief 0 facts 是预期。
+
+### 4.3 失败 / 重试
 
 - 每个 stage 独立事务，单 stage 失败不影响已完成的
-- minion_jobs 自带重试（max_attempts=3，exponential backoff）
+- minion_jobs 自带重试（`max_attempts=3`，attempts 递增）
 - ingest 失败的 page 标 `status='draft'`，不参与默认搜索，研究员可见
+- 派生 stage 全部幂等可重跑：`facts:re-extract <pageId>` / `links:re-extract <pageId>`
 
-### 4.3 增量 vs 全量
+### 4.4 增量 vs 全量
 
-- **增量**：fetch-reports 已经幂等（已存在跳过），ingest 也按 `raw_files.ingested_at IS NULL` 过滤待 ingest 的
-- **全量重建**：保留 `rebuild` 风格命令，从 raw/ 重新跑（用于 schema 升级 / extractor 升级时）
+- **增量**：fetch-reports 幂等（partial unique on research_id 去重）；`ingestPickPending()` 过滤 `ingested_at IS NULL AND skipped_at IS NULL AND triage_decision='pending'`
+- **全量重建**：派生 stage 可逐 page 重跑，无需重 fetch；schema 升级时通过 `infra/migrations/vX.Y.Z-*.sql` + `scripts/run-X-migration.mjs` 跑迁移
+
+### 4.5 维护任务（不在 ingest 主路径）
+
+`lint_run` / `facts_expire` 是独立 minion job，定期跑：
+
+- `ae-wiki lint:run` — 5 项健康检查（orphan_pages / stale_active_theses / unenriched_red_links / pending_raw_files / expired_latest_facts），写 `events(action='lint_run')`
+- `ae-wiki facts:expire [--age 90]` — 把 `period_end < CURRENT_DATE - 90d` 的 latest fact 标 `valid_to`
+- 实现：`src/skills/lint/index.ts` / `src/skills/facts/expire.ts`
+- 也可作为 minion job 由 cron 拉起
 
 ---
 
@@ -1010,58 +1176,80 @@ LIMIT 10;
 
 ### 5.3 MCP Tools 设计
 
-给 Claude / agent 暴露的 5 个工具（不给裸 SQL）：
+给 Claude / agent 暴露的 7 个工具（不给裸 SQL）。实现见 `src/mcp/server.ts` + `src/mcp/queries.ts`：
 
 | Tool | 用途 |
 |---|---|
-| `search(query, filters)` | hybrid search，返回 page list |
-| `get_page(slug or id)` | 拿完整 page（含 frontmatter 中的 tone / 个股看法等 agent 提炼字段）|
-| `query_facts(entity, metric?, period?)` | 结构化事实查询 |
-| `list_entities(type, filters)` | 实体列表（按 sector / status / ...）|
-| `recent_activity(days, kinds?)` | 最近活动（events + signals + new pages）|
+| `search(query, filters)` | hybrid search（keyword + 可选 vector + RRF + source-boost），返回 page list |
+| `get_page(slug or id)` | 拿完整 page（含 frontmatter / tags / link counts / status / confidence）|
+| `query_facts(entity, metric?, period?, table_only?, table_id?, include_raw_table?)` | 结构化事实查询，可限定来自表格 artifact |
+| `get_table_artifact(identifier, table_id?)` | 拿 page 的 `raw_data(source='tables')` 表格 artifact（v2.5+，见 `doc/table-artifacts.md`）|
+| `compare_table_facts(metric, entities?, periods?, source_identifier?, current_only?)` | 跨实体 / period 的对比矩阵（基于表格 fact） |
+| `list_entities(type, filters)` | 实体列表（按 sector / ticker / confidence / ...） |
+| `recent_activity(days, kinds?)` | 最近活动（events + signals + new pages） |
 
-**禁止**：直接 SQL execute（即使 read-only）。生产事故风险太高。
+**禁止**：直接 SQL execute（即使 read-only）。生产事故风险太高。`.mcp.json` 已配好，新开 Claude Code 会话自动连。
 
 ---
 
-## 6. Skills 演化
+## 6. Skills 现状
 
-### 6.1 现有 skill → 新架构下的角色
+### 6.1 已上线（8 个）
 
-| Skill | 改动 | 后台 |
+每个 skill 由一份 `skills/<name>/SKILL.md` 定义，可选 `agents/openai.yaml` 让 OpenAI durable runtime 调用。Claude Code 主会话与 OpenAI runtime 跑同一份 SKILL.md。
+
+| Skill | SKILL.md | OpenAI runtime | 触发 / 作用 |
+|---|---|---|---|
+| `ae-fetch-reports` | ✓ | ✓ | launchd 每天 8 点 / 手动 — MongoDB → raw_files |
+| `ae-research-ingest` | ✓ | ✓ | fetch 后 — Triage 三分 + 三段式 ingest |
+| `ae-enrich` | ✓ | ✓ | Stage 4 自动入队 / 手动 — 红链 entity 补全 |
+| `ae-thesis-track` | ✓ | ✓ | PM 表态 / ingest 后回看 — 论点状态机 |
+| `ae-daily-review` | ✓ | ✓ | 当日 ingest 后 — 7 问 epistemic 复盘 |
+| `ae-daily-summarize` | ✓ | ✓ | daily-review 后 — PM operational 简报 |
+| `ae-analyze-ideabot` | ✓ | ✓ | 用户指定 — 单条 IdeaBot 综合分析 |
+| `ae-analyze-timebot` | ✓ | ✓ | 用户指定 — 周工时 + 个性化研究建议 |
+
+### 6.2 自动化分层
+
+| 自动 | 半自动（worker 可代跑） | 全人工（PM/agent 必须出席） |
 |---|---|---|
-| `fetch-reports` | **重写**：HTTP API → 直连 MongoDB；写入扩展 raw_files（含 org_code / tags / mongo_doc）| MongoDB + S3 |
-| `daily-review` | 改成查 Postgres 而非 grep markdown | events/signals |
-| `daily-summarize` | 同上 | facts/theses |
-| `analyze-ideabot` | 同上 | facts |
-| `analyze-timebot` | 同上 | events |
+| ingest Stage 6 入队 `embed_chunks` / `detect_signals` | `enrich_entity` job → `agent_run` 跑 ae-enrich（OpenAI durable runtime） | `thesis:open` / `thesis:update --mark-condition` / `thesis:close` |
+| ingest Stage 8 命中 active thesis 写 signal | `lint_run` cron / `facts_expire` cron | conviction bump / drop |
+| Stage 5 fact YAML 直读 | | catalyst 命中判定 / stop_loss 触发 |
 
-### 6.2 新增 skill
+worker (`bun src/cli.ts worker` 或 `jobs:supervisor`) 跑起来后，红链补全完全异步；不跑的话 agent 也可走三段式 CLI 手动 enrich。
 
-| Skill | 触发 | 作用 |
+### 6.3 计划中（未实现）
+
+| Skill | 状态 | 说明 |
 |---|---|---|
-| `ingest` | fetch-reports 后 / 手动 | 跑 Stage 1-8 ingest pipeline |
-| `enrich` | 红链 entity / 手动 | 补全 entity 元数据（市值、关键人、产品线）|
-| `query` | 用户提问 | 编排 MCP tools 回答问题 |
-| `thesis-track` | active thesis 状态变化 | 维护 theses 表，关联 catalysts |
-| `signal-detector` | ingest 后台任务 | 检测 expectation gap / consensus drift / earnings surprise |
-| `consensus-monitor` | 每日 / 实时 | 跟踪 Arete vs 街口的差距漂移 |
-| `catalyst-tracker` | 每周 | 维护 timeline_entries 中 expected catalysts |
-| `maintain` | 每周 / 月 | 健康检查（stale page / broken link / fact 一致性 / 重复实体合并候选）|
+| `consensus-monitor` | TODO | Arete vs 街口的差距漂移；待 facts 表数据量足够后启动 |
+| `catalyst-tracker` | TODO | 维护 timeline 中 expected catalysts；目前由 ae-thesis-track 兼顾 |
+| Stage 5 Tier C LLM 兜底 | TODO | 决策已固化（跳过 Tier B 直接 Tier C），代码待写；模型 `OPENAI_FACT_EXTRACT_MODEL=gpt-5-mini` |
 
-### 6.3 Skill 间数据流
+### 6.4 Skill 间数据流
 
 ```
-fetch-reports → raw/
+ae-fetch-reports → raw_files (markdown_url + mongo_doc)
     ↓
-ingest → pages + content_chunks + facts + links + timeline_entries
-    ↓
-signal-detector → signals
-    ↓
-daily-review (读 events + signals + facts) → 写 pages (type='output', slug='outputs/daily-review-{date}')
-    ↓
-daily-summarize (读 events + signals + theses) → 写 pages (type='output', slug='outputs/daily-summarize-{date}')
+ae-research-ingest (peek/commit/brief/pass → write → finalize)
+    ├→ pages (source/brief)
+    ├→ content_chunks
+    ├→ facts (Tier A YAML)
+    ├→ links + 红链 pages (confidence='low') → minion_jobs(enrich_entity)
+    ├→ timeline_entries
+    └→ signals (Stage 8 命中 active thesis)
+         ↓
+ae-enrich (manually 或 worker 自动) → 把红链 entity 补成正式 wiki 页
+         ↓
+ae-thesis-track (PM 触发) → theses 表（catalysts / validation_conditions）
+         ↓
+ae-daily-review (读 source/brief/signals/active thesis) → wiki/output/daily-review-{date}.md
+         ↓
+ae-daily-summarize (读 review + thesis + facts) → wiki/output/daily-summarize-{date}.md
 ```
+
+注：daily-review / daily-summarize 输出**写文件而非 page**（与早期设计不同）。文件路径：`wiki/output/`。`WORKSPACE_DIR=.` 配置控制根目录。
 
 ---
 
@@ -1073,12 +1261,12 @@ daily-summarize (读 events + signals + theses) → 写 pages (type='output', sl
 | --------- | -------------------------------------------------- |
 | 数据库       | Postgres 16-17 + pgvector 0.8.2                    |
 | Embedding | OpenAI `text-embedding-3-large` (1536)             |
-| 主语言       | **TypeScript**（runtime 倾向 Bun，与 gbrain 一致；scripts/ 下的 fetch_reports.py 是 Python legacy，Phase 1 重写为 TS）|
-| ORM       | Drizzle ORM（pgvector 支持完善、TS-native、SQL-like）       |
-| Postgres 客户端 | `postgres.js`（高性能，Drizzle 默认搭配） |
-| 上游数据源    | **MongoDB**（直连 `ResearchReportRecord` 集合）+ S3（下载 parsedMarkdownS3）|
+| 主语言       | **TypeScript** strict + **Bun 1.3.13** runtime（不能用 Node 跑：用了 `Bun.CryptoHasher` / `Bun.stdin.text()`） |
+| ORM       | Drizzle ORM 0.36（pgvector 支持完善、TS-native、SQL-like）  |
+| Postgres 客户端 | `postgres.js`（高性能，Drizzle 默认搭配；`prepare:false` 兼容 PgBouncer） |
+| 上游数据源    | **MongoDB**（直连 `ResearchReportRecord` 集合）+ S3（HTTP GET parsedMarkdownS3）|
 | MongoDB 客户端 | `mongodb` 官方 Node 驱动 |
-| 接入 Claude | MCP server (`@modelcontextprotocol/sdk` TypeScript) |
+| 接入 Claude / OpenAI | MCP server (`@modelcontextprotocol/sdk`) + OpenAI durable runtime (`src/agents/runtime.ts`，模型默认 `gpt-5-mini`) |
 
 ### 7.2 待选
 
@@ -1102,23 +1290,32 @@ daily-summarize (读 events + signals + theses) → 写 pages (type='output', sl
 
 ### 7.4 环境变量
 
+`src/core/env.ts` Zod 校验唯一入口；所有读 `process.env` 都过它。完整清单见 `CLAUDE.md §环境变量`。
+
 ```bash
-# Postgres（v2 wiki 主存储）
+# 必填
 DATABASE_URL=postgresql://ae_root:<password>@<host>:54329/ae_wiki
-
-# MongoDB（上游研究报告元数据，只读）
 MONGODB_URI=mongodb://<user>:<password>@<host>:27017/<auth_db>
-MONGODB_DB=<db_name>                # 含 ResearchReportRecord 集合的库
-MONGODB_COLLECTION=ResearchReportRecord
+MONGODB_DB=<db_name>                              # 含 ResearchReportRecord 集合的库
+OPENAI_API_KEY=sk-...                             # embedding + agent runtime 共用
 
-# OpenAI（embedding + 兜底 fact 抽取）
-OPENAI_API_KEY=sk-...
-OPENAI_EMBEDDING_MODEL=text-embedding-3-large
+# 可选 — 模型
+OPENAI_EMBEDDING_MODEL=text-embedding-3-large     # 默认
+OPENAI_AGENT_MODEL=gpt-5-mini                     # durable agent runtime 默认模型
+OPENAI_FACT_EXTRACT_MODEL=gpt-5-mini              # 预留给 Stage 5 Tier C（待实现）
+EMBEDDING_DISABLED=false                          # true 时跳过 embedding 调用，搜索退化为 keyword-only
 
-# OpenAI（agent runtime / embedding / 未来 fact fallback）
-OPENAI_API_KEY=sk-...
+# 可选 — 路径
+WORKSPACE_DIR=.                                   # wiki/output/ 等派生产物根目录；raw 已不再落盘
 
-# 可选：S3（如需直接 boto3 / aws-sdk 访问；HTTP GET 也够）
+# 可选 — 上游 Mongo 集合名
+MONGODB_COLLECTION=ResearchReportRecord           # 默认值
+
+# 可选 — 搜索调优
+WIKI_SOURCE_BOOST="sources/Arete-:1.5,sources/cb-:0.6,..."   # 覆盖默认 source-boost 表
+WIKI_SEARCH_EXCLUDE=briefs/                       # 硬排除 slug 前缀，逗号分隔
+
+# 可选 — S3 直接访问（HTTP GET markdown_url 通常够）
 AWS_ACCESS_KEY_ID=...
 AWS_SECRET_ACCESS_KEY=...
 AWS_REGION=ap-southeast-1
@@ -1126,38 +1323,44 @@ AWS_REGION=ap-southeast-1
 
 ---
 
-## 8. Migration 路径
+## 8. Migration 现状（截至 2026-04-28）
 
-> v2 是**全新 schema**。不做"在 v1 三表上 ALTER"的增量演进——会留下半生不熟的混合 schema。
+### Phase 0：准备 — ✅ 完成
 
-### Phase 0：准备（本周）
+- [x] 架构文档评审
+- [x] `infra/init-v2.sql` 17 张表 DDL
+- [x] Postgres schema 部署
+- [x] ingest skill v0 骨架
 
-- [ ] 完成本架构文档评审
-- [ ] 编写 `infra/init-v2.sql`（15 张新表的完整 DDL）
-- [ ] 在 Postgres 实例上**重建 schema**（DROP v1 三表 → CREATE v2 全部表）
-- [ ] 写 ingest skill 的 v0 骨架（仅 Stage 1-3）
+### Phase 1：MVP — ✅ 完成
 
-### Phase 1：MVP（4 周）
+- [x] 完整 ingest pipeline（Stage 1-8 + Triage 三分）
+- [x] 7 个 MCP tools 上线（含 `get_table_artifact` / `compare_table_facts`）
+- [x] `daily-review` / `daily-summarize` 输出到 `wiki/output/{date}.md`（与早期"写到 pages 表"决定不同；改成文件方便人手翻）
+- [x] 历史 `wiki/*.md` **不导入**（决定保留为只读历史）
+- [x] 生产试用稳定（多日 ingest 跑通）
 
-- [ ] 完整 ingest pipeline（Stage 1-8）
-- [ ] 5 个 MCP tools 上线
-- [ ] **可选**：把现有 `wiki/source/*.md` 跑一次 ingest 导入 DB（仅作为历史内容迁移；导入完 wiki/ 目录可归档/删除）
-- [ ] daily-review / daily-summarize 改为从 Postgres 读 + 输出到 `pages` 表（type='output'）
-- [ ] 一周生产试用，发现 schema 缺口
+### Phase 2：增强 — 🟡 进行中
 
-### Phase 2：增强（4 周）
+- [x] thesis 状态机 + catalyst CLI（`thesis:open / write / update / close`）
+- [x] entity enrich pipeline（自动 + 手动两条路径都能跑）
+- [x] **Durable agent runtime**（OpenAI gpt-5-mini + `agent_messages` / `agent_tool_executions`）— 让长跑 skill 可恢复 / 可回放
+- [x] **Triage 三分流程** + brief page type
+- [x] **表格 artifact**（`raw_data(source='tables')` + `get_table_artifact` / `compare_table_facts`）
+- [x] **维护任务 minion job**（`lint_run` / `facts_expire`）
+- [ ] `signal-detector` 升级（当前只做 fact 偏离比对，未来扩 expectation gap / earnings surprise）
+- [ ] `consensus-monitor` 跨 broker 漂移监控
+- [ ] `catalyst-tracker` 周度 timeline 维护
+- [ ] Stage 5 Tier C LLM 兜底（决策已固化，代码待写）
+- [ ] mineru `content_list.json` 接入 Stage 2
 
-- [ ] signal-detector + consensus-monitor 上线
-- [ ] thesis 状态机 + catalyst tracker
-- [ ] entity enrich pipeline（自动补全 alias / sector / 关键人）
-- [ ] daily-review / daily-summarize 输出查看入口（CLI / 简易 web 渲染）
-
-### Phase 3：稳态（持续）
+### Phase 3：稳态 — 🔴 待启动
 
 - [ ] Web UI（如需，根据团队规模决定）
 - [ ] 多人协作（auth + permissions）
 - [ ] 高级分析 dashboard
 - [ ] 外部集成（Bloomberg / Wind 数据）
+- [ ] 单测 / E2E（当前 0 测，是 Tier 0 缺口）
 
 ---
 
@@ -1175,14 +1378,26 @@ AWS_REGION=ap-southeast-1
 
 ---
 
-## 10. 待决问题（请研究员定夺）
+## 10. 当前未决 / 取舍候选
 
-下列问题影响后续实施，需要在 Phase 0 之前明确：
+Phase 2 进行中的开放问题：
 
-1. **历史 wiki 内容是否导入？**
-   - 选项 A：跑一次 ingest pipeline 把现有 `wiki/source/*.md` 全量导入 DB
-   - 选项 B：完全新起炉灶，旧内容不导入
-   - 建议：A（挑空闲日批量跑），导入完 `wiki/` 目录归档
+1. **Stage 5 Tier C LLM 兜底何时启动**
+   - 触发条件：当 YAML block 命中率 < 50% 或某类 source 频繁 0 fact
+   - 模型已选 `gpt-5-mini`（`OPENAI_FACT_EXTRACT_MODEL` 默认值）
+   - 风险：成本失控；缓解：单 source 单次调用上限 + 进度落 `minion_jobs.progress`
+
+2. **mineru `content_list.json` 接入 Stage 2**
+   - 当前 chunker 是段级，长 markdown 切分质量差
+   - 待评估上游是否稳定提供 + 实施成本
+
+3. **DeepSeek slug 大小写规范**
+   - 已发现 `companies/DeepSeek` / `companies/deepseek` 重复（slug 大小写不归一化）
+   - 待补一个 hygiene 脚本或迁移规则
+
+4. **签到 worker 如何在 macOS 本地（launchd）+ Linux 生产（systemd）双轨部署**
+   - `infra/launchd/` 与 `infra/systemd/` 两套配置已存在
+   - 缺一份"挂了怎么办"的 supervisor README
 
 ---
 
@@ -1212,20 +1427,24 @@ gbrain 有但我们暂不做的：
 
 ---
 
-## 12. 决策清单（给研究员的 1 页摘要）
+## 12. 决策清单（落地后的 1 页摘要）
 
-| 问题         | 我的建议                       | 等你拍板  |
-| ---------- | -------------------------- | ----- |
-| 主存储        | Postgres + pgvector        | ✅ 已定  |
-| 实体设计       | 万物皆 page + 投资字段直接成列        | ✅ 已定  |
-| 存储边界       | DB 唯一存储，不维护 markdown       | ✅ 已定  |
-| 主语言        | TypeScript + Bun + Drizzle | ✅ 已定  |
-| Fact 抽取策略  | 三层全开（YAML / 正则 / LLM 兜底）   | ✅ 已定  |
-| LLM 兜底     | 默认开启（Tier C，Haiku 模型）      | ✅ 已定  |
-| Thesis 维护  | signal-detector 自动建议（Phase 2 加人工 API override）| ✅ 已定 |
-| Entity 自动建 | 自动 + `confidence='low'` 标记 | ✅ 已定 |
-| 历史 wiki 导入 | 一次性批量后归档原 wiki/            | ⚠️ 待定 |
-| MVP 周期     | 4 周                        | ⚠️ 待定 |
-| 是否做 Web UI | Phase 3 再说                 | ⚠️ 待定 |
+| 问题         | 决定                                    | 状态 |
+| ---------- | ------------------------------------- | --- |
+| 主存储        | Postgres 16-17 + pgvector 0.8.2       | ✅ 已落地 |
+| 实体设计       | 万物皆 page + 投资字段（ticker / sector / aliases）直接成列 | ✅ 已落地 |
+| 存储边界       | DB 唯一存储；raw 不落本地，存 `markdown_url` HTTP 拉 | ✅ 已落地（v2.5.0） |
+| 主语言        | TypeScript strict + Bun 1.3.13 + Drizzle 0.36 | ✅ 已落地 |
+| Thin Harness, Fat Skill | core 不调 LLM；推理 push 到 `SKILL.md` | ✅ 已落地 |
+| Fact 抽取策略  | Tier A YAML 直读已上；Tier B 正则跳过；Tier C LLM 待补 | 🟡 部分 |
+| Triage     | ingest 入口三分（commit / brief / pass） | ✅ 已落地（v2.4 + v2.5.1） |
+| Entity 自动建 | 自动 + `confidence='low'` 标记 + Stage 4 入队 enrich_entity job | ✅ 已落地 |
+| Thesis 维护  | 半自动（ingest Stage 8 + worker detect_signals 写 signal）+ PM/agent CLI 走状态机 | ✅ 已落地 |
+| Agent runtime | 双轨：Claude Code 主会话 + OpenAI gpt-5-mini durable runtime（同一份 SKILL.md）| ✅ 已落地（v2.6.0） |
+| 异步队列     | Postgres `minion_jobs` (FOR UPDATE SKIP LOCKED) | ✅ 已落地 |
+| 维护任务     | `lint_run` / `facts_expire` minion job + CLI | ✅ 已落地 |
+| 历史 wiki 导入 | 不导入；保留为只读历史                    | ✅ 已决 |
+| Web UI     | Phase 3 再说                            | 🔴 待启动 |
+| 单测 / E2E   | 当前 0 测，Tier 0 优先级缺口            | 🔴 待补 |
 
-确认后我就开始 Phase 0：写 `infra/init-v2.sql` schema migration + ingest skill v0 骨架。
+文档与 schema 真相源：`infra/init-v2.sql` + `infra/migrations/v2.1.0 → v2.6.3`。
