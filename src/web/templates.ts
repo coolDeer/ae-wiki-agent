@@ -180,6 +180,88 @@ form.filter select, form.filter input {
   border-radius: 6px; border: 1px solid var(--accent);
   background: var(--bg-soft); color: var(--fg); font-size: 13px;
 }
+.pagination {
+  display: flex; align-items: center; gap: 16px;
+  flex-wrap: wrap; margin: 16px 0; font-size: 13px;
+}
+.pagination .page-info { color: var(--muted); }
+.pagination .page-controls { display: inline-flex; gap: 4px; align-items: center; }
+.pagination .page-num {
+  display: inline-block; min-width: 28px; padding: 4px 8px;
+  text-align: center; border: 1px solid var(--border); border-radius: 4px;
+  color: var(--fg); text-decoration: none; font-size: 12px;
+}
+.pagination .page-num:hover { border-color: var(--accent); color: var(--accent); }
+.pagination .page-current {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+  cursor: default;
+}
+.pagination .page-disabled { color: var(--muted); opacity: 0.5; cursor: not-allowed; }
+.pagination .page-disabled:hover { border-color: var(--border); color: var(--muted); }
+.pagination .page-ellipsis { color: var(--muted); padding: 0 4px; }
+.pagination .page-size select {
+  padding: 4px 8px; border: 1px solid var(--border);
+  border-radius: 4px; background: var(--bg); color: var(--fg);
+  font-size: 12px;
+}
+th.sortable a { color: inherit; text-decoration: none; display: inline-block; }
+th.sortable a:hover { color: var(--accent); }
+th.sortable .arrow { font-size: 10px; margin-left: 2px; }
+
+/* Chat */
+.chat-shell { max-width: 820px; margin: 0 auto; padding-bottom: 100px; }
+.chat-msgs { display: flex; flex-direction: column; gap: 14px; min-height: 280px; }
+.chat-bubble {
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 16px; line-height: 1.6;
+  max-width: 100%;
+}
+.chat-bubble.user {
+  background: var(--bg-soft); align-self: flex-end;
+  max-width: 80%; white-space: pre-wrap;
+}
+.chat-bubble.assistant { background: var(--bg); }
+.chat-bubble .meta { font-size: 11px; color: var(--muted); margin-top: 6px; }
+.chat-tools {
+  margin-top: 10px; padding: 8px 10px;
+  background: var(--bg-soft); border-radius: 6px;
+  font-size: 12px; color: var(--muted);
+}
+.chat-tools .row { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; }
+.chat-tools .row:last-child { margin-bottom: 0; }
+.chat-tools code {
+  font-size: 11px; background: var(--bg);
+  padding: 1px 4px; border-radius: 3px; color: var(--fg);
+}
+.chat-input-wrap {
+  position: sticky; bottom: 0; background: var(--bg);
+  padding: 14px 0 4px; border-top: 1px solid var(--border);
+}
+.chat-input-form { display: flex; gap: 8px; }
+.chat-input-form textarea {
+  flex: 1; padding: 10px 14px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--fg);
+  font: inherit; resize: vertical; min-height: 60px;
+}
+.chat-input-form button {
+  padding: 0 22px; border: 1px solid var(--accent);
+  background: var(--accent); color: #fff;
+  border-radius: 8px; cursor: pointer; font: inherit; font-weight: 500;
+}
+.chat-input-form button:disabled { opacity: 0.5; cursor: wait; }
+.chat-empty {
+  color: var(--muted); padding: 40px 24px; text-align: center;
+  border: 1px dashed var(--border); border-radius: 10px;
+}
+.chat-typing {
+  display: inline-block; color: var(--muted); font-style: italic;
+}
+.chat-typing::after {
+  content: "▍"; animation: blink 1s steps(2) infinite;
+  margin-left: 2px;
+}
+@keyframes blink { 50% { opacity: 0; } }
 `;
 
 export interface LayoutOpts {
@@ -203,6 +285,7 @@ export function layout({ title, body, query = "", flash }: LayoutOpts): string {
   <div class="shell">
     <h1><a href="/">ae-wiki</a></h1>
     <nav>
+      <a href="/chat">Chat</a>
       <a href="/theses">Theses</a>
       <a href="/entities?confidence=low">Red Links</a>
       <a href="/entities">Entities</a>
@@ -235,4 +318,30 @@ export function confidenceTag(c: string | null): string {
 export function pageLink(p: { id: string | bigint; slug: string; title: string; type?: string }): string {
   const t = p.type ? ` ${pageTag(p.type)}` : "";
   return `<a href="/pages/${encodeURIComponent(p.slug)}">${escape(p.title)}</a>${t} <span class="muted score">${escape(p.slug)}</span>`;
+}
+
+/** 渲染可排序表头 — 点击切 ASC/DESC，URL 注入 sortField/sortOrder。 */
+export function sortableHeader(opts: {
+  label: string;
+  field: string;
+  basePath: string;
+  keptParams: Record<string, string | undefined>;
+  currentField?: string;
+  currentOrder?: "ASC" | "DESC";
+}): string {
+  const isCurrent = opts.currentField === opts.field;
+  const nextOrder: "ASC" | "DESC" =
+    isCurrent && opts.currentOrder === "DESC" ? "ASC" : "DESC";
+  const arrow = isCurrent ? (opts.currentOrder === "DESC" ? "▼" : "▲") : "";
+
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(opts.keptParams)) {
+    if (v !== undefined && v !== "" && v !== null) p.set(k, String(v));
+  }
+  p.set("sortField", opts.field);
+  p.set("sortOrder", nextOrder);
+  p.set("currPage", "1"); // 切排序回首页
+
+  const href = `${opts.basePath}?${p.toString()}`;
+  return `<th class="sortable"><a href="${href}">${escape(opts.label)}<span class="arrow">${arrow}</span></a></th>`;
 }

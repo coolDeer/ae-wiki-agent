@@ -15,11 +15,12 @@ import { getEnv } from "~/core/env.ts";
 import {
   search as mcpSearch,
   getPage,
-  listEntities,
   recentActivity,
   queryFacts,
 } from "~/mcp/queries.ts";
-import { thesisList, thesisShow } from "~/skills/thesis/index.ts";
+// thesis CLI is read directly via SQL in viewTheses to support pagination.
+
+import { getSessionTurns, type ChatTurn } from "./chat.ts";
 
 import {
   confidenceTag,
@@ -27,9 +28,160 @@ import {
   layout,
   pageTag,
   renderMarkdown,
+  sortableHeader,
 } from "./templates.ts";
+import {
+  buildPageResult,
+  offsetOf,
+  parsePageRequest,
+  pickSortField,
+  renderPagination,
+  type PageRequest,
+} from "./pagination.ts";
 
 const env = getEnv();
+
+// ============================================================================
+// /chat
+// ============================================================================
+
+export function viewChat(sessionId: string): string {
+  const turns = getSessionTurns(sessionId);
+  const body = `
+<div class="chat-shell">
+  <h2 style="margin-bottom: 8px;">Ask the wiki</h2>
+  <p class="muted" style="margin-top: 0;">Natural-language Q&amp;A over your ingested research. Powered by ${escape(env.OPENAI_AGENT_MODEL)} + 7 MCP tools (search / get_page / query_facts / compare_table_facts / get_table_artifact / list_entities / recent_activity).</p>
+
+  <div id="chat-msgs" class="chat-msgs">
+    ${turns.length === 0
+      ? `<div class="chat-empty" id="chat-empty">
+          <p>试着问：</p>
+          <p style="margin: 4px 0;">"今天最有信息量的 source 是哪份？"</p>
+          <p style="margin: 4px 0;">"DeepSeek 最近有什么动态？"</p>
+          <p style="margin: 4px 0;">"列一下所有红链 company"</p>
+        </div>`
+      : turns.map(renderTurn).join("")}
+  </div>
+
+  <div class="chat-input-wrap">
+    <form id="chat-form" class="chat-input-form">
+      <textarea id="chat-input" name="message" placeholder="问个问题，回车发送，shift+回车换行" autofocus required></textarea>
+      <button type="submit" id="chat-send">发送</button>
+    </form>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">
+      <small class="muted">session: <code>${escape(sessionId.slice(0, 8))}</code></small>
+      <small><a href="#" id="chat-clear">清空对话</a></small>
+    </div>
+  </div>
+</div>
+
+<script>
+const msgs = document.getElementById('chat-msgs');
+const empty = document.getElementById('chat-empty');
+const form = document.getElementById('chat-form');
+const input = document.getElementById('chat-input');
+const sendBtn = document.getElementById('chat-send');
+
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    form.requestSubmit();
+  }
+});
+
+document.getElementById('chat-clear').addEventListener('click', async (e) => {
+  e.preventDefault();
+  if (!confirm('清空当前 chat session?')) return;
+  await fetch('/chat/clear', { method: 'POST' });
+  location.reload();
+});
+
+function bubble(role, text) {
+  const div = document.createElement('div');
+  div.className = 'chat-bubble ' + role;
+  div.innerHTML = text;
+  msgs.appendChild(div);
+  div.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  return div;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function renderAssistantContent(text) {
+  // 简易 markdown：保段落、粗体、斜体、code、wikilink → /pages/
+  const safe = escapeHtml(text)
+    .replace(/\\\\\\\[\\\\\\\[([^\\\]\\\|]+)(?:\\\\\\\|([^\\\]]+))?\\\\\\\]\\\\\\\]/g, (_m, slug, label) =>
+      '<a class="wikilink" href="/pages/' + encodeURIComponent(slug) + '">' + (label||slug) + '</a>')
+    .replace(/\\\*\\\*([^*]+)\\\*\\\*/g, '<strong>$1</strong>')
+    .replace(/\\\`([^\\\`]+)\\\`/g, '<code>$1</code>');
+  return '<div>' + safe.split(/\\n\\n+/).map(p => '<p>' + p.replace(/\\n/g, '<br>') + '</p>').join('') + '</div>';
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = input.value.trim();
+  if (!text) return;
+  if (empty) empty.remove();
+
+  bubble('user', '<div>' + escapeHtml(text).replace(/\\n/g, '<br>') + '</div>');
+  input.value = '';
+  sendBtn.disabled = true;
+
+  const placeholder = bubble('assistant', '<div class="chat-typing">thinking</div>');
+
+  try {
+    const r = await fetch('/chat/send', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: text }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    placeholder.innerHTML = renderAssistantContent(data.content || '');
+    if (data.tool_calls && data.tool_calls.length) {
+      const tools = document.createElement('div');
+      tools.className = 'chat-tools';
+      tools.innerHTML = '<div style="font-weight:500;margin-bottom:4px;">tool calls (' + data.tool_calls.length + ')</div>' +
+        data.tool_calls.map(tc =>
+          '<div class="row"><code>' + escapeHtml(tc.name) + '</code> <span class="muted">' + escapeHtml(JSON.stringify(tc.args)) + '</span> → ' + escapeHtml(tc.result_summary) + '</div>'
+        ).join('');
+      placeholder.appendChild(tools);
+    }
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = new Date().toLocaleTimeString();
+    placeholder.appendChild(meta);
+  } catch (err) {
+    placeholder.innerHTML = '<div style="color:var(--negative);">出错了: ' + escapeHtml(err.message) + '</div>';
+  } finally {
+    sendBtn.disabled = false;
+    input.focus();
+  }
+});
+</script>
+`;
+  return layout({ title: "Chat", body });
+}
+
+function renderTurn(t: ChatTurn): string {
+  if (t.role === "user") {
+    return `<div class="chat-bubble user"><div>${escape(t.content).replace(/\n/g, "<br>")}</div></div>`;
+  }
+  const tools = t.tool_calls && t.tool_calls.length > 0
+    ? `<div class="chat-tools">
+        <div style="font-weight:500;margin-bottom:4px;">tool calls (${t.tool_calls.length})</div>
+        ${t.tool_calls
+          .map(
+            (tc) =>
+              `<div class="row"><code>${escape(tc.name)}</code> <span class="muted">${escape(JSON.stringify(tc.args))}</span> → ${escape(tc.result_summary)}</div>`
+          )
+          .join("")}
+      </div>`
+    : "";
+  return `<div class="chat-bubble assistant">${renderMarkdown(t.content)}${tools}<div class="meta">${escape(t.ts.slice(11, 19))}</div></div>`;
+}
 
 // ============================================================================
 // /  — Home
@@ -145,7 +297,11 @@ function renderActivityRow(r: {
 // /search?q=...
 // ============================================================================
 
-export async function viewSearch(query: string, type?: string): Promise<string> {
+export async function viewSearch(
+  query: string,
+  type: string | undefined,
+  pageReq: PageRequest
+): Promise<string> {
   if (!query.trim()) {
     return layout({
       title: "Search",
@@ -153,8 +309,11 @@ export async function viewSearch(query: string, type?: string): Promise<string> 
     });
   }
 
-  const hits = (await mcpSearch(query, {
-    limit: 30,
+  // hybrid search 的 score 已经按 RRF 排过，分页就是对结果数组切片。
+  // 取 top-200 作为 candidate pool（够大，避免后页空），之后客户端分页。
+  const POOL = 200;
+  const allHits = (await mcpSearch(query, {
+    limit: POOL,
     type,
     keywordOnly: env.EMBEDDING_DISABLED,
   })) as Array<{
@@ -164,15 +323,20 @@ export async function viewSearch(query: string, type?: string): Promise<string> 
     title: string;
     ticker: string | null;
     score: number;
-    keyword_rank: number | null;
-    semantic_rank: number | null;
     snippet: string | null;
   }>;
+
+  const start = offsetOf(pageReq);
+  const slice = allHits.slice(start, start + pageReq.pageSize);
+  const result = buildPageResult(slice, allHits.length, pageReq);
+
+  const keptParams = { q: query, type };
 
   const body = `
 <h2>Search: "${escape(query)}"</h2>
 <form class="filter" method="get" action="/search">
   <input type="hidden" name="q" value="${escape(query)}">
+  <input type="hidden" name="pageSize" value="${pageReq.pageSize}">
   <select name="type" onchange="this.form.submit()">
     <option value="">all types</option>
     ${["company", "industry", "person", "concept", "source", "brief", "thesis"]
@@ -181,12 +345,12 @@ export async function viewSearch(query: string, type?: string): Promise<string> 
   </select>
 </form>
 
-${hits.length === 0
+${slice.length === 0
   ? `<div class="empty">no hits</div>`
   : `<table>
       <thead><tr><th>Title</th><th>Type</th><th>Slug</th><th>Score</th></tr></thead>
       <tbody>
-      ${hits
+      ${slice
         .map(
           (h) => `<tr>
             <td><a href="/pages/${encodeURIComponent(h.slug)}">${escape(h.title)}</a>
@@ -201,6 +365,8 @@ ${hits.length === 0
       </tbody>
     </table>`
 }
+${renderPagination(result, "/search", keptParams)}
+${allHits.length === POOL ? `<p class="muted">候选池上限 ${POOL}，更深结果不展示。请细化查询或限定 type。</p>` : ""}
 `;
   return layout({ title: `Search: ${query}`, body, query });
 }
@@ -424,15 +590,69 @@ function formatFactValue(f: {
 // /theses
 // ============================================================================
 
-export async function viewTheses(status?: string): Promise<string> {
-  const rows = await thesisList({
-    status: status as "active" | "monitoring" | "closed" | "invalidated" | undefined,
-    limit: 100,
-  });
+export async function viewTheses(
+  status: string | undefined,
+  pageReq: PageRequest
+): Promise<string> {
+  const SORT = pickSortField(
+    pageReq,
+    ["date_opened", "status", "direction", "conviction", "create_time"] as const,
+    "date_opened"
+  );
+
+  const statusClause = status ? sql`AND t.status = ${status}` : sql``;
+
+  const totalRows = await db.execute(sql`
+    SELECT COUNT(*)::int AS n
+    FROM theses t
+    JOIN pages p ON p.id = t.page_id
+    WHERE t.deleted = 0 AND p.deleted = 0
+      ${statusClause}
+  `);
+  const totalCount = (totalRows[0] as { n: number } | undefined)?.n ?? 0;
+
+  const orderByExpr =
+    SORT.field === "date_opened" ? sql`t.date_opened` :
+    SORT.field === "status" ? sql`t.status` :
+    SORT.field === "direction" ? sql`t.direction` :
+    SORT.field === "conviction" ? sql`t.conviction` :
+    sql`t.create_time`;
+  const dir = SORT.order === "ASC" ? sql`ASC` : sql`DESC`;
+
+  const rows = await db.execute(sql`
+    SELECT t.page_id::text AS page_id,
+           p.slug, p.title,
+           t.direction, t.conviction, t.status, t.date_opened,
+           tgt.slug AS target_slug
+    FROM theses t
+    JOIN pages p ON p.id = t.page_id
+    LEFT JOIN pages tgt ON tgt.id = t.target_page_id
+    WHERE t.deleted = 0 AND p.deleted = 0
+      ${statusClause}
+    ORDER BY ${orderByExpr} ${dir} NULLS LAST, t.page_id
+    LIMIT ${pageReq.pageSize} OFFSET ${offsetOf(pageReq)}
+  `);
+
+  const result = buildPageResult(rows, totalCount, pageReq);
+  const keptParams = {
+    status,
+    sortField: pageReq.sortField,
+    sortOrder: pageReq.sortOrder,
+  };
+  const sortHeader = (label: string, field: string) =>
+    sortableHeader({
+      label,
+      field,
+      basePath: "/theses",
+      keptParams: { status, pageSize: String(pageReq.pageSize) },
+      currentField: SORT.field,
+      currentOrder: SORT.order,
+    });
 
   const body = `
-<h2>Theses (${rows.length})</h2>
+<h2>Theses (${totalCount})</h2>
 <form class="filter" method="get" action="/theses">
+  <input type="hidden" name="pageSize" value="${pageReq.pageSize}">
   <select name="status" onchange="this.form.submit()">
     <option value="">all</option>
     ${["active", "monitoring", "closed", "invalidated"]
@@ -443,23 +663,31 @@ export async function viewTheses(status?: string): Promise<string> {
 ${rows.length === 0
   ? `<div class="empty">no theses</div>`
   : `<table>
-      <thead><tr><th>Name</th><th>Target</th><th>Direction</th><th>Conviction</th><th>Status</th><th>Opened</th></tr></thead>
+      <thead><tr>
+        <th>Name</th>
+        <th>Target</th>
+        ${sortHeader("Direction", "direction")}
+        ${sortHeader("Conviction", "conviction")}
+        ${sortHeader("Status", "status")}
+        ${sortHeader("Opened", "date_opened")}
+      </tr></thead>
       <tbody>
       ${rows
         .map(
           (r) => `<tr>
-            <td><a href="/pages/${escape(r.pageId.toString())}">${escape(r.title)}</a></td>
-            <td>${escape(r.targetSlug ?? "")}</td>
-            <td>${escape(r.direction ?? "")}</td>
-            <td>${escape(r.conviction ?? "")}</td>
-            <td>${escape(r.status ?? "")}</td>
-            <td class="muted">${escape(r.dateOpened ?? "")}</td>
+            <td><a href="/pages/${escape(String(r.page_id))}">${escape(String(r.title ?? ""))}</a></td>
+            <td>${r.target_slug ? `<a href="/pages/${encodeURIComponent(String(r.target_slug))}">${escape(String(r.target_slug))}</a>` : ""}</td>
+            <td>${escape(String(r.direction ?? ""))}</td>
+            <td>${escape(String(r.conviction ?? ""))}</td>
+            <td><span class="tag">${escape(String(r.status ?? ""))}</span></td>
+            <td class="muted">${escape(String(r.date_opened ?? ""))}</td>
           </tr>`
         )
         .join("")}
       </tbody>
     </table>`
 }
+${renderPagination(result, "/theses", keptParams)}
 `;
   return layout({ title: "Theses", body });
 }
@@ -468,31 +696,87 @@ ${rows.length === 0
 // /entities
 // ============================================================================
 
-export async function viewEntities(opts: {
-  type?: string;
-  sector?: string;
-  ticker?: string;
-  confidence?: string;
-}): Promise<string> {
-  const rows = (await listEntities({
+export async function viewEntities(
+  opts: {
+    type?: string;
+    sector?: string;
+    ticker?: string;
+    confidence?: string;
+  },
+  pageReq: PageRequest
+): Promise<string> {
+  const SORT = pickSortField(
+    pageReq,
+    ["title", "update_time", "create_time", "ticker", "sector", "confidence", "type"] as const,
+    "update_time"
+  );
+
+  const conds = [sql`p.deleted = 0`, sql`p.status != 'archived'`, sql`p.type IN ('company','industry','person','concept')`];
+  if (opts.type) conds.push(sql`p.type = ${opts.type}`);
+  if (opts.sector) conds.push(sql`p.sector = ${opts.sector}`);
+  if (opts.ticker) conds.push(sql`p.ticker = ${opts.ticker}`);
+  if (opts.confidence) conds.push(sql`p.confidence = ${opts.confidence}`);
+
+  // 用 join 拼 WHERE 子句
+  const whereClause = conds.reduce<ReturnType<typeof sql>>(
+    (acc, c, i) => (i === 0 ? c : sql`${acc} AND ${c}`),
+    sql``
+  );
+
+  const totalRows = await db.execute(sql`
+    SELECT COUNT(*)::int AS n FROM pages p WHERE ${whereClause}
+  `);
+  const totalCount = (totalRows[0] as { n: number } | undefined)?.n ?? 0;
+
+  const orderByExpr =
+    SORT.field === "title" ? sql`p.title` :
+    SORT.field === "create_time" ? sql`p.create_time` :
+    SORT.field === "ticker" ? sql`p.ticker` :
+    SORT.field === "sector" ? sql`p.sector` :
+    SORT.field === "confidence" ? sql`p.confidence` :
+    SORT.field === "type" ? sql`p.type` :
+    sql`p.update_time`;
+  const dir = SORT.order === "ASC" ? sql`ASC` : sql`DESC`;
+
+  const rows = await db.execute(sql`
+    SELECT p.id::text AS id, p.slug, p.type, p.title,
+           p.ticker, p.sector, p.confidence
+    FROM pages p
+    WHERE ${whereClause}
+    ORDER BY ${orderByExpr} ${dir} NULLS LAST, p.id
+    LIMIT ${pageReq.pageSize} OFFSET ${offsetOf(pageReq)}
+  `);
+
+  const result = buildPageResult(rows, totalCount, pageReq);
+  const keptParams = {
     type: opts.type,
     sector: opts.sector,
     ticker: opts.ticker,
     confidence: opts.confidence,
-    limit: 200,
-  })) as Array<{
-    page_id: string;
-    slug: string;
-    type: string;
-    title: string;
-    ticker: string | null;
-    sector: string | null;
-    confidence: string;
-  }>;
+    sortField: pageReq.sortField,
+    sortOrder: pageReq.sortOrder,
+  };
+  const headerKept = {
+    type: opts.type,
+    sector: opts.sector,
+    ticker: opts.ticker,
+    confidence: opts.confidence,
+    pageSize: String(pageReq.pageSize),
+  };
+  const sortHeader = (label: string, field: string) =>
+    sortableHeader({
+      label,
+      field,
+      basePath: "/entities",
+      keptParams: headerKept,
+      currentField: SORT.field,
+      currentOrder: SORT.order,
+    });
 
   const body = `
-<h2>Entities (${rows.length})</h2>
+<h2>Entities (${totalCount})</h2>
 <form class="filter" method="get" action="/entities">
+  <input type="hidden" name="pageSize" value="${pageReq.pageSize}">
   <select name="type">
     <option value="">all types</option>
     ${["company", "industry", "person", "concept"]
@@ -512,22 +796,29 @@ export async function viewEntities(opts: {
 ${rows.length === 0
   ? `<div class="empty">no entities</div>`
   : `<table>
-      <thead><tr><th>Title</th><th>Type</th><th>Ticker</th><th>Sector</th><th>Confidence</th></tr></thead>
+      <thead><tr>
+        ${sortHeader("Title", "title")}
+        ${sortHeader("Type", "type")}
+        ${sortHeader("Ticker", "ticker")}
+        ${sortHeader("Sector", "sector")}
+        ${sortHeader("Confidence", "confidence")}
+      </tr></thead>
       <tbody>
       ${rows
         .map(
           (r) => `<tr>
-            <td><a href="/pages/${encodeURIComponent(r.slug)}">${escape(r.title)}</a> <span class="muted score">${escape(r.slug)}</span></td>
-            <td>${pageTag(r.type)}</td>
-            <td>${escape(r.ticker ?? "")}</td>
-            <td>${escape(r.sector ?? "")}</td>
-            <td>${confidenceTag(r.confidence)}</td>
+            <td><a href="/pages/${encodeURIComponent(String(r.slug ?? ""))}">${escape(String(r.title ?? ""))}</a> <span class="muted score">${escape(String(r.slug ?? ""))}</span></td>
+            <td>${pageTag(String(r.type ?? ""))}</td>
+            <td>${escape(String(r.ticker ?? ""))}</td>
+            <td>${escape(String(r.sector ?? ""))}</td>
+            <td>${confidenceTag(r.confidence as string | null)}</td>
           </tr>`
         )
         .join("")}
       </tbody>
     </table>`
 }
+${renderPagination(result, "/entities", keptParams)}
 `;
   return layout({ title: "Entities", body });
 }
@@ -606,7 +897,10 @@ export async function viewOutputFile(filename: string): Promise<string> {
 // /queue
 // ============================================================================
 
-export async function viewQueue(): Promise<string> {
+export async function viewQueue(
+  opts: { name?: string; status?: string },
+  pageReq: PageRequest
+): Promise<string> {
   const byStatus = await db.execute(sql`
     SELECT name, status, COUNT(*)::int AS n
     FROM minion_jobs
@@ -615,14 +909,66 @@ export async function viewQueue(): Promise<string> {
     ORDER BY name, status
   `);
 
+  const SORT = pickSortField(
+    pageReq,
+    ["create_time", "started_at", "finished_at", "status", "name", "attempts"] as const,
+    "create_time"
+  );
+
+  const conds = [sql`deleted = 0`];
+  if (opts.name) conds.push(sql`name = ${opts.name}`);
+  if (opts.status) conds.push(sql`status = ${opts.status}`);
+  const where = conds.reduce<ReturnType<typeof sql>>(
+    (acc, c, i) => (i === 0 ? c : sql`${acc} AND ${c}`),
+    sql``
+  );
+
+  const totalRows = await db.execute(sql`
+    SELECT COUNT(*)::int AS n FROM minion_jobs WHERE ${where}
+  `);
+  const totalCount = (totalRows[0] as { n: number } | undefined)?.n ?? 0;
+
+  const orderByExpr =
+    SORT.field === "started_at" ? sql`started_at` :
+    SORT.field === "finished_at" ? sql`finished_at` :
+    SORT.field === "status" ? sql`status` :
+    SORT.field === "name" ? sql`name` :
+    SORT.field === "attempts" ? sql`attempts` :
+    sql`create_time`;
+  const dir = SORT.order === "ASC" ? sql`ASC` : sql`DESC`;
+
   const recentJobs = await db.execute(sql`
     SELECT id::text AS id, name, status, attempts, max_attempts,
            started_at, finished_at, create_time, error
     FROM minion_jobs
-    WHERE deleted = 0
-    ORDER BY create_time DESC
-    LIMIT 30
+    WHERE ${where}
+    ORDER BY ${orderByExpr} ${dir} NULLS LAST, id DESC
+    LIMIT ${pageReq.pageSize} OFFSET ${offsetOf(pageReq)}
   `);
+
+  const result = buildPageResult(recentJobs, totalCount, pageReq);
+  const keptParams = {
+    name: opts.name,
+    status: opts.status,
+    sortField: pageReq.sortField,
+    sortOrder: pageReq.sortOrder,
+  };
+  const headerKept = {
+    name: opts.name,
+    status: opts.status,
+    pageSize: String(pageReq.pageSize),
+  };
+  const sortHeader = (label: string, field: string) =>
+    sortableHeader({
+      label,
+      field,
+      basePath: "/queue",
+      keptParams: headerKept,
+      currentField: SORT.field,
+      currentOrder: SORT.order,
+    });
+
+  const distinctNames = Array.from(new Set(byStatus.map((r) => String(r.name))));
 
   const body = `
 <h2>Job queue</h2>
@@ -641,24 +987,50 @@ export async function viewQueue(): Promise<string> {
   }
 </div>
 
-<h3>Most recent jobs (30)</h3>
-<table>
-  <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Attempts</th><th>Created</th><th>Error</th></tr></thead>
-  <tbody>
-  ${recentJobs
-    .map(
-      (j) => `<tr>
-        <td class="muted score">${j.id}</td>
-        <td>${escape(String(j.name))}</td>
-        <td><span class="tag severity-${j.status === "failed" ? "warning" : "info"}">${escape(String(j.status))}</span></td>
-        <td>${j.attempts}/${j.max_attempts}</td>
-        <td class="muted score">${escape(String(j.create_time).slice(0, 19).replace("T", " "))}</td>
-        <td class="muted">${j.error ? escape(String(j.error).slice(0, 80)) : ""}</td>
-      </tr>`
-    )
-    .join("")}
-  </tbody>
-</table>
+<h3>Jobs (${totalCount})</h3>
+<form class="filter" method="get" action="/queue">
+  <input type="hidden" name="pageSize" value="${pageReq.pageSize}">
+  <select name="name" onchange="this.form.submit()">
+    <option value="">all names</option>
+    ${distinctNames
+      .map((n) => `<option value="${escape(n)}"${opts.name === n ? " selected" : ""}>${escape(n)}</option>`)
+      .join("")}
+  </select>
+  <select name="status" onchange="this.form.submit()">
+    <option value="">all status</option>
+    ${["waiting", "active", "paused", "completed", "failed", "cancelled"]
+      .map((s) => `<option value="${s}"${opts.status === s ? " selected" : ""}>${s}</option>`)
+      .join("")}
+  </select>
+</form>
+${recentJobs.length === 0
+  ? `<div class="empty">no jobs match</div>`
+  : `<table>
+    <thead><tr>
+      <th>ID</th>
+      ${sortHeader("Name", "name")}
+      ${sortHeader("Status", "status")}
+      ${sortHeader("Attempts", "attempts")}
+      ${sortHeader("Created", "create_time")}
+      <th>Error</th>
+    </tr></thead>
+    <tbody>
+    ${recentJobs
+      .map(
+        (j) => `<tr>
+          <td class="muted score">${j.id}</td>
+          <td>${escape(String(j.name))}</td>
+          <td><span class="tag severity-${j.status === "failed" ? "warning" : "info"}">${escape(String(j.status))}</span></td>
+          <td>${j.attempts}/${j.max_attempts}</td>
+          <td class="muted score">${escape(String(j.create_time).slice(0, 19).replace("T", " "))}</td>
+          <td class="muted">${j.error ? escape(String(j.error).slice(0, 80)) : ""}</td>
+        </tr>`
+      )
+      .join("")}
+    </tbody>
+  </table>`
+}
+${renderPagination(result, "/queue", keptParams)}
 `;
   return layout({ title: "Queue", body });
 }
