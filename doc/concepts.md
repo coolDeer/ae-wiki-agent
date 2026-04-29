@@ -256,15 +256,84 @@ slug 已存在？─┬─是 → 拿 pageId
 
 ## 9. facts：可查询的数值化记忆
 
-narrative 是给人 / LLM 读的；`facts` 是给程序查的。stage-5 三层抽取：
+narrative 是给人 / LLM 读的；`facts` 是给程序查的。stage-5 三层抽取**不是平行选择，是按可信度从高到低的兜底链**——agent 写得最规整的优先，没写的让程序解析，仍漏的让 LLM 兜底。
 
-| Tier | 来源 | 实现 |
-|---|---|---|
-| **A** | narrative 末尾的 `<!-- facts ... -->` YAML 块 | `stage-5-tier-a.ts` |
-| **B** | raw_data sidecar 的结构化表格 | `stage-5-tier-b.ts` |
-| **C** | LLM 从 prose 兜底抓漏 | `stage-5-tier-c.ts`（用 `OPENAI_FACT_EXTRACT_MODEL`） |
+```
+       ┌─────────────────┐
+Tier A │ <!-- facts ... --> YAML block
+       │ agent 在 narrative 末尾手写            ← 100% trust
+       │ 0 成本 / 0 误差 / 0 覆盖率上限         ← 但只有 agent 写了的才算
+       └─────────────────┘
+              ↓ 漏的进 ↓
+       ┌─────────────────┐
+Tier B │ raw_data sidecar 表格抽取
+       │ 启发式 header 识别 + 行列展开          ← 高 trust（确定性）
+       │ 0 成本 / 启发式没命中则 0 输出         ← 受 schema 约束
+       └─────────────────┘
+              ↓ 漏的进 ↓
+       ┌─────────────────┐
+Tier C │ OPENAI_FACT_EXTRACT_MODEL prose
+       │ 把 (entity, metric, period) 已抽过的传 LLM ← 中 trust
+       │ source_quote 必须是原文子串才放行       ← 有成本 / 可幻觉但有校验
+       └─────────────────┘
+              ↓
+        合并 dedup 落库 facts 表
+        每条 fact 标 metadata.extracted_by ∈ {tier_a, tier_b, tier_c}
+```
 
-每条 fact 写库：
+### Tier A — agent 手写 YAML（最可信）
+
+narrative 末尾必须带：
+
+```markdown
+<!-- facts
+- entity: companies/Sipai Health
+  metric: managed_corp_premium
+  period: "2025"
+  value: 1090
+  unit: cny_m
+  source_quote: "管理的年度企业端保费规模超过10.9亿元人民币"
+-->
+```
+
+- ✅ 0 成本、100% 决定性（YAML.parse）、agent reviewed
+- ❌ 只覆盖 agent 显式列出的；依赖 narrative 写作纪律
+- 实现：`stage-5-tier-a.ts`（35 行）
+
+### Tier B — 表格结构化抽取
+
+针对 `raw_data` sidecar（V2 chunker 已解析的表格），两种 layout：
+
+**Explicit table**（每行一个 fact，header 含 metric / value 关键词）：
+```
+| entity | metric  | period | value | unit  |
+| NVIDIA | revenue | FY27E  | 250   | usd_bn|
+```
+
+**Matrix table**（一行 N period 列展开 N 个 fact）：
+```
+| 公司   | 25年EPS | 26年EPS | 27年EPS |
+| NVIDIA | 4.8     | 9.5     | 15.2    |
+```
+
+- ✅ 0 成本（pure 字符串解析）；`table_id / row_index / column_index / cell_ref` provenance 完整 → MCP `get_table_artifact` / `compare_table_facts` 能反查原 cell
+- ❌ 启发式必须命中；row-per-event 型表格（如「财报日历: 公司 / 时间 / 关键展望」）正确忽略，去 sidecar 不入 fact
+- 实现：`stage-5-tier-b.ts`（中英文 header alias 都支持）
+
+### Tier C — LLM 兜底
+
+对前两层没抓到的，让 LLM 从 prose 挑漏。两个关键设计：
+
+1. **传 `alreadyKeys` 给 LLM**：`{entity}|{metric}|{period}` 三元组集合，prompt 显式说「这些已抽过，**只补漏**」——避免重复抽 + 减少 token
+2. **source_quote 必须是 narrative 子串**：LLM 编造引文 → 整条 fact 丢（防幻觉）
+
+- ✅ 覆盖散文里隐藏的事实；前两层都 miss 不会丢信息
+- ❌ 有 LLM 成本；非决定性（同 narrative 跑 N 次结果可能不同）
+- 关：`STAGE5_TIER_C_DISABLED=true`
+- 模型：`OPENAI_FACT_EXTRACT_MODEL`（默认 `gpt-5-mini`）
+- 实现：`stage-5-tier-c.ts`
+
+### facts 表结构
 
 ```
 facts (
@@ -276,13 +345,42 @@ facts (
   unit              → usd_m / pct / x / cny_bn / ...
   confidence        → 0-1
   valid_from / valid_to  → 时间旅行：valid_to=NULL 表示当前最新
-  metadata          → table_id / row_index / cell_ref / source_quote / ...
+  metadata          → extracted_by / source_quote / table_id / row_index / cell_ref / ...
 )
 ```
 
-**时间旅行机制**：当新 source 给出同 `(entity, metric, period)` 的更新值，老的 fact 标 `valid_to=today`（不是删除），新 fact `valid_to=NULL`。这样能查「3 月 15 日时 Arete 估的 NVDA FY27 EPS 是多少」。
+### 时间旅行 + 真幂等
 
-MCP `query_facts(entity, metric?, period?)` 是查询入口。
+当新 source 给出同 `(entity, metric, period)` 的**不同值**，老 fact 标 `valid_to=today`（不删除），新 fact `valid_to=NULL`。这样能查「3 月 15 日时 Arete 估的 NVDA FY27 EPS 是多少」。
+
+stage 5 在写之前先检查同 `(entity, metric, period)` 的当前 fact，如果 `value_numeric / value_text / unit` **完全相同**就跳过——`facts:re-extract` 重跑相同 narrative 不会膨胀 facts 表（会输出 `inserted=N unchanged=M skipped=K`）。
+
+### 三层在 fact 上留下「指纹」
+
+每条 fact 写库时 `metadata.extracted_by` 标 `'tier_a' | 'tier_b' | 'tier_c'`：
+
+```sql
+SELECT metadata->>'extracted_by' AS by, COUNT(*) FROM facts WHERE deleted=0 GROUP BY by;
+```
+
+用途：
+- **审计**：「这条 fact 是 LLM 抽的还是 agent 写的？」一查 metadata.extracted_by
+- **质量评估**：tier_c 多 + tier_a 少 → narrative 写作纪律不够，应改 SKILL.md 或培训 agent
+- **下游过滤**：严肃决策可在 MCP `query_facts` 加 filter「只用 tier_a + tier_b」
+
+### 设计哲学：为什么不直接全用 LLM
+
+| | 全 LLM 路径 | 分层路径 |
+|---|---|---|
+| 成本 | 每次 ingest 都 LLM 调用 | A+B 0 成本，只有漏的才进 C |
+| 决定性 | 同 narrative 跑 N 次结果不同 | A/B 完全决定性，C 才漂浮 |
+| 校准 | 全靠 LLM judgment | A 是 agent reviewed，B 跟原 cell 一一对应 |
+| 错误模式 | 幻觉混进数据 | C 幻觉被 source_quote 子串校验拦截，A/B 不可能幻觉 |
+| 召回上限 | 受 LLM 能力 | A 自觉 + B 表格全展开 + C 漏的兜底 |
+
+**核心思想**：把昂贵 / 不可信的工具（LLM）放在最后，便宜 / 可信的（YAML / 启发式）放在前面，让 LLM 只处理它真正擅长的事——「从散文里抽编号没列的细节」。
+
+MCP `query_facts(entity, metric?, period?, current_only?)` 是查询入口。
 
 ---
 
