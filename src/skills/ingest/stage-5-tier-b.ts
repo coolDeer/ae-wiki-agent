@@ -84,36 +84,38 @@ function fromArtifactTable(table: TableArtifact): TableLike {
 // Explicit table（headers 显式标 metric/value/...）
 // =============================================================================
 
+// Header 别名（normalize 后的小写 / CJK 形态）。中文 header 是中文 source 表格主流。
+const ENTITY_ALIASES = [
+  "entity", "company", "target", "subject", "ticker", "slug",
+  "公司", "公司名称", "股票", "股票代码", "标的", "名称",
+];
+const METRIC_ALIASES = [
+  "metric", "item", "kpi",
+  "指标", "项目", "科目", "内容",
+];
+const PERIOD_ALIASES = [
+  "period", "quarter", "timeframe", "date", "fiscal_period",
+  "期间", "季度", "财年", "日期",
+];
+const VALUE_ALIASES = [
+  "value", "data", "figure", "amount", "result", "number",
+  "数值", "数据", "金额", "数字",
+];
+const UNIT_ALIASES = [
+  "unit", "currency", "multiple",
+  "单位", "货币",
+];
+
 function extractExplicitFacts(
   table: TableLike,
   pageEntity: string | null
 ): YamlFact[] {
   const headers = table.headers.map(normalizeHeader);
-  const entityIdx = findHeaderIndex(headers, [
-    "entity",
-    "company",
-    "target",
-    "subject",
-    "ticker",
-    "slug",
-  ]);
-  const metricIdx = findHeaderIndex(headers, ["metric", "item", "kpi"]);
-  const periodIdx = findHeaderIndex(headers, [
-    "period",
-    "quarter",
-    "timeframe",
-    "date",
-    "fiscal_period",
-  ]);
-  const valueIdx = findHeaderIndex(headers, [
-    "value",
-    "data",
-    "figure",
-    "amount",
-    "result",
-    "number",
-  ]);
-  const unitIdx = findHeaderIndex(headers, ["unit", "currency", "multiple"]);
+  const entityIdx = findHeaderIndex(headers, ENTITY_ALIASES);
+  const metricIdx = findHeaderIndex(headers, METRIC_ALIASES);
+  const periodIdx = findHeaderIndex(headers, PERIOD_ALIASES);
+  const valueIdx = findHeaderIndex(headers, VALUE_ALIASES);
+  const unitIdx = findHeaderIndex(headers, UNIT_ALIASES);
 
   if (metricIdx === -1 || valueIdx === -1) return [];
 
@@ -171,26 +173,12 @@ function extractMatrixFacts(
   pageEntity: string | null
 ): YamlFact[] {
   const headers = table.headers.map(normalizeHeader);
-  const metricIdx = findHeaderIndex(headers, ["metric", "item", "kpi"]);
+  const metricIdx = findHeaderIndex(headers, METRIC_ALIASES);
   if (metricIdx === -1) return [];
 
-  const entityIdx = findHeaderIndex(headers, [
-    "entity",
-    "company",
-    "target",
-    "subject",
-    "ticker",
-    "slug",
-  ]);
-  const unitIdx = findHeaderIndex(headers, ["unit", "currency", "multiple"]);
-  const explicitValueIdx = findHeaderIndex(headers, [
-    "value",
-    "data",
-    "figure",
-    "amount",
-    "result",
-    "number",
-  ]);
+  const entityIdx = findHeaderIndex(headers, ENTITY_ALIASES);
+  const unitIdx = findHeaderIndex(headers, UNIT_ALIASES);
+  const explicitValueIdx = findHeaderIndex(headers, VALUE_ALIASES);
   if (explicitValueIdx !== -1) return [];
 
   const periodColumns = headers
@@ -275,10 +263,12 @@ function findHeaderIndex(headers: string[], aliases: string[]): number {
 }
 
 function normalizeHeader(header: string): string {
+  // 保留 a-z / 0-9 / CJK 字符（U+3400-9FFF 覆盖中日韩统一表意 + 兼容扩展），
+  // 其他全部当分隔符 → "_"。否则 "公司名称" 会被全部 strip 成空串。
   return stripMarkdown(header)
     .toLowerCase()
     .replace(/[%/()]+/g, " ")
-    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/[^a-z0-9\u3400-\u9fff]+/g, "_")
     .replace(/^_+|_+$/g, "");
 }
 
@@ -407,9 +397,23 @@ function looksLikePeriodHeader(header: string): boolean {
   const value = stripMarkdown(header).trim();
   if (value.length === 0) return false;
 
-  return /^(current|ttm|ltm|ntm|fy\d{2,4}[ae]?|[1-4]q\d{2,4}[ae]?|h[12]\d{2,4}[ae]?|\d{4}-\d{2}-\d{2}|\d{4}[ae]?)$/i.test(
-    value
-  );
+  // 英文：current / TTM / LTM / NTM / FY26 / FY26E / 1Q25A / H1 26 / 2026-04-15 / 2026E ...
+  if (
+    /^(current|ttm|ltm|ntm|fy\d{2,4}[ae]?|[1-4]q\d{2,4}[ae]?|h[12]\d{2,4}[ae]?|\d{4}-\d{2}-\d{2}|\d{4}[ae]?)$/i.test(
+      value
+    )
+  ) {
+    return true;
+  }
+
+  // 中文：常见研报表头
+  //   "25年预期EPS" / "26年" / "27PE" / "25年实际" / "2025E" / "1Q25"
+  //   "FY26下半年" / "Q3-FY26" / "上次给出的关键展望" → 不算
+  if (/^\d{2,4}年(预期|实际|目标)?(?:[\u4e00-\u9fff]+)?$/.test(value)) return true;
+  if (/^\d{2,4}(?:Q[1-4]|H[12]|PE|EV|EPS)?$/i.test(value)) return true;
+  if (/^FY?\d{2,4}(?:[ae]|下半年|上半年)?$/i.test(value)) return true;
+
+  return false;
 }
 
 function normalizePeriod(value: string): string | undefined {

@@ -71,9 +71,10 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
   const candidates = dedupeCandidates([...tierA, ...tierB, ...tierC]);
   if (candidates.length === 0) return;
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocal();
   let inserted = 0;
   let skipped = 0;
+  let unchanged = 0;
 
   for (const f of candidates) {
     const normalized = await normalize(f, ctx, f.extractedBy);
@@ -82,14 +83,16 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
       continue;
     }
 
-    // 同 (entity, metric, period) 旧 fact → valid_to=today
-    await db
-      .update(schema.facts)
-      .set({
-        validTo: today,
-        updateBy: ctx.actor,
-        updateTime: new Date(),
+    // 真幂等：先查同 (entity, metric, period) valid_to=NULL 的 current fact，
+    // 如果 value/unit 跟新 candidate 完全相同，跳过（不写新版本，不动老 fact）
+    const [current] = await db
+      .select({
+        id: schema.facts.id,
+        valueNumeric: schema.facts.valueNumeric,
+        valueText: schema.facts.valueText,
+        unit: schema.facts.unit,
       })
+      .from(schema.facts)
       .where(
         and(
           eq(schema.facts.entityPageId, normalized.entity_page_id),
@@ -98,9 +101,26 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
           isNull(schema.facts.validTo),
           eq(schema.facts.deleted, 0)
         )
-      );
+      )
+      .limit(1);
 
-    // 插入新 fact
+    if (current && factValueEquals(current, normalized)) {
+      unchanged++;
+      continue;
+    }
+
+    // 值变了（或本来就无 current）→ 老 fact 标 valid_to=today + 插新 fact
+    if (current) {
+      await db
+        .update(schema.facts)
+        .set({
+          validTo: today,
+          updateBy: ctx.actor,
+          updateTime: new Date(),
+        })
+        .where(eq(schema.facts.id, current.id));
+    }
+
     await db.insert(schema.facts).values(
       withCreateAudit(
         {
@@ -135,7 +155,44 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
     inserted++;
   }
 
-  console.log(`  [stage5] inserted=${inserted} skipped=${skipped}`);
+  console.log(
+    `  [stage5] inserted=${inserted} unchanged=${unchanged} skipped=${skipped}`
+  );
+}
+
+/**
+ * 本地时区今天的 YYYY-MM-DD。
+ * 用本地时区是因为：上游 mongo `createTime` 已经按本地时区写，
+ * facts.valid_from / valid_to 也表达"业务上的某天"。
+ * 用 UTC（toISOString().slice(0,10)）会在跨日时（如东八区凌晨 0-7 点）
+ * 产生 1 天错位，老 fact 的 valid_to 跑到 valid_from 之前。
+ */
+function todayLocal(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * 严格相等：value_numeric / value_text / unit 全等才算 unchanged。
+ * value_numeric 是 numeric 列，drizzle 返回 string；用字符串比可避免浮点抖动。
+ */
+function factValueEquals(
+  current: {
+    valueNumeric: string | null;
+    valueText: string | null;
+    unit: string | null;
+  },
+  candidate: NormalizedFact
+): boolean {
+  const sameNumeric =
+    (current.valueNumeric ?? null) === (candidate.value_numeric ?? null);
+  const sameText =
+    (current.valueText ?? null) === (candidate.value_text ?? null);
+  const sameUnit = (current.unit ?? null) === (candidate.unit ?? null);
+  return sameNumeric && sameText && sameUnit;
 }
 
 // =============================================================================
