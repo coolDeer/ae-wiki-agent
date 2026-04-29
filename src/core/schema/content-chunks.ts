@@ -34,6 +34,7 @@ export const contentChunks = pgTable(
     chunkText: text("chunk_text").notNull(),
     chunkType: text("chunk_type").notNull().default("text"),
     pageIdx: integer("page_idx"),
+    sectionPath: text("section_path").array(),
     embedding: vector("embedding", { dimensions: 1536 }),
     model: text("model").notNull().default("text-embedding-3-large"),
     tokenCount: integer("token_count"),

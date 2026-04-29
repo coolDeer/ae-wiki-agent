@@ -772,7 +772,7 @@ const rows = await sql`SELECT * FROM pages WHERE id = ${1}`;
 |---|---|---|
 | **0 单测 / E2E** | 重构会导致回归 | ⭐⭐⭐ |
 | Stage 5 Tier C LLM 兜底未实现 | 决策已固化（跳过 B，直接 C，见 `stage-5-facts.ts` 头注）；LLM 调用代码待写 | ⭐⭐ |
-| chunker 是段级（mineru content_list 待接） | 长 markdown 切分质量差 | ⭐ |
+| ~~chunker 是段级（mineru content_list 待接）~~ | ✅ V2 block chunker 已上线（v2.7.1） | — |
 | Embedding 默认关 | 搜索是纯 keyword，召回受限 | ⭐ |
 | `ingest:next` legacy 兼容入口 | 标 deprecated 但未移除；批量处理时易把噪声塞进 source 池 | ⭐ |
 

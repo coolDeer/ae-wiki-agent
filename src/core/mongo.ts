@@ -23,6 +23,7 @@ export interface ResearchReportRecord {
   parseCompletedAt?: Date;
   parseErrorMessage?: string | null;
   parsedContentListS3?: string | null;
+  parsedContentListV2S3?: string | null;
   parsedImagesS3Prefix?: string | null;
   parsedLayoutPdfS3?: string | null;
   parsedMarkdownS3?: string | null;

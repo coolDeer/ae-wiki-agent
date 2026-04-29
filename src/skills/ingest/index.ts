@@ -20,7 +20,7 @@
 import { asc, eq, isNull, and, sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { Actor } from "~/core/audit.ts";
-import { fetchRawMarkdown } from "~/core/raw-loader.ts";
+import { fetchContentListV2, fetchRawMarkdown } from "~/core/raw-loader.ts";
 import type { IngestContext } from "~/core/types.ts";
 
 import { stage1CreateSkeleton } from "./stage-1-skeleton.ts";
@@ -376,12 +376,15 @@ async function pickPending(opts: IngestOptions): Promise<(typeof schema.rawFiles
 async function buildContext(
   rf: typeof schema.rawFiles.$inferSelect
 ): Promise<IngestContext> {
-  const rawMarkdown = await fetchRawMarkdown(rf);
+  const [rawMarkdown, contentListV2] = await Promise.all([
+    fetchRawMarkdown(rf),
+    fetchContentListV2(rf),
+  ]);
   return {
     rawFileId: rf.id,
     pageId: 0n,
     rawMarkdown,
-    contentListJson: undefined,
+    contentListJson: contentListV2 ?? undefined,
     actor: Actor.systemIngest,
   };
 }

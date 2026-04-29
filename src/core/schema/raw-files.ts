@@ -19,6 +19,8 @@ export const rawFiles = pgTable(
     sourceId: text("source_id").notNull().default("default"),
     /** 上游 parsedMarkdownS3 直链 — ingest 时按需 fetch（不再落本地） */
     markdownUrl: text("markdown_url").notNull(),
+    /** 上游 parsedContentListV2S3 — mineru V2 block JSON；chunker 用，缺失时回退 markdown */
+    parsedContentListV2Url: text("parsed_content_list_v2_url"),
     researchId: text("research_id"),
     researchType: text("research_type"),
     orgCode: text("org_code"),

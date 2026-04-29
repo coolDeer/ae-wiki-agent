@@ -115,6 +115,7 @@ export async function fetchReports(
           .values({
             sourceId: "default",
             markdownUrl: doc.parsedMarkdownS3,
+            parsedContentListV2Url: doc.parsedContentListV2S3 ?? null,
             researchId: doc.researchId,
             researchType: type,
             orgCode: doc.orgCode ?? null,

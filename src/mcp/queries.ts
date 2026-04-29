@@ -11,9 +11,9 @@ import { eq, and, desc, isNull, sql as drizzleSql, gte } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { hybridSearch, type SearchOpts } from "~/core/search/hybrid.ts";
 import {
-  isMarkdownTableBundle,
-  type MarkdownTableArtifact,
-} from "~/core/markdown-tables.ts";
+  isTableBundle,
+  type TableArtifact,
+} from "~/core/v2-tables.ts";
 
 // ============================================================================
 // 1. search — hybrid 检索
@@ -394,7 +394,7 @@ export async function getTableArtifact(
     )
     .limit(1);
 
-  if (!raw || !isMarkdownTableBundle(raw.data)) {
+  if (!raw || !isTableBundle(raw.data)) {
     return {
       page: {
         id: page.id,
@@ -425,7 +425,7 @@ export async function getTableArtifact(
 async function loadRawTableArtifact(
   pageId: bigint,
   tableId: string
-): Promise<MarkdownTableArtifact | null> {
+): Promise<TableArtifact | null> {
   const [raw] = await db
     .select({ data: schema.rawData.data })
     .from(schema.rawData)
@@ -438,7 +438,7 @@ async function loadRawTableArtifact(
     )
     .limit(1);
 
-  if (!raw || !isMarkdownTableBundle(raw.data)) return null;
+  if (!raw || !isTableBundle(raw.data)) return null;
   return raw.data.tables.find((table) => table.table_id === tableId) ?? null;
 }
 

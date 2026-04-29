@@ -1,22 +1,36 @@
 /**
  * Stage 2: 内容分段
  *
- * 切分 raw markdown 为 chunks，写入 content_chunks（embedding 留空，等 Stage 6 异步算）。
+ * 必须有 V2 content_list（mineru `parsedContentListV2S3`）。chunker 走 v2-block：
+ * 结构化丢噪声 + section_path 全路径 + table 独立块。
  *
- * 策略由 env `WIKI_CHUNKER_STRATEGY` 决定（recursive | semantic | llm），
- * 表格段落始终走 markdown-tables 拆分（不让 chunker 把 table 拆碎）。
+ * 历史包袱（markdown-only chunker）已下线——`raw_files` 全量保证有 V2 URL。
+ *
+ * `raw_data` 表的表格 artifact 也从 V2 派生（buildTableBundleFromV2），
+ * 即 V2 是 chunker + sidecar 的统一事实源。下游 stage-5-facts / MCP 接口不变。
  */
 
 import type { IngestContext } from "~/core/types.ts";
 import { and, eq, sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { withAudit, withCreateAudit } from "~/core/audit.ts";
-import { chunkPipeline } from "~/core/chunkers/index.ts";
-import { buildMarkdownTableBundle, splitMarkdownByTables } from "~/core/markdown-tables.ts";
+import { buildTableBundleFromV2 } from "~/core/v2-tables.ts";
+import {
+  chunkContentListV2,
+  type V2ContentList,
+} from "~/core/chunkers/v2-block.ts";
 
 export async function stage2Chunk(ctx: IngestContext): Promise<void> {
-  const chunks = await chunkMarkdown(ctx.rawMarkdown, ctx.contentListJson);
-  const tableArtifacts = buildMarkdownTableBundle(ctx.rawMarkdown);
+  const v2 = asV2ContentList(ctx.contentListJson);
+  if (!v2) {
+    throw new Error(
+      `[stage2] raw_file #${ctx.rawFileId} 缺少 V2 content_list (parsed_content_list_v2_url)；` +
+        `所有 raw_files 必须有 V2，老数据已清空。检查上游 mongo doc 与 fetch-reports。`
+    );
+  }
+
+  const chunks = chunkContentListV2(v2);
+  const tableArtifacts = buildTableBundleFromV2(v2);
 
   if (chunks.length > 0) {
     await db.insert(schema.contentChunks).values(
@@ -27,7 +41,8 @@ export async function stage2Chunk(ctx: IngestContext): Promise<void> {
             chunkIndex: idx,
             chunkText: c.text,
             chunkType: c.type,
-            pageIdx: c.pageIdx ?? null,
+            pageIdx: c.pageIdx,
+            sectionPath: c.sectionPath,
           },
           ctx.actor
         )
@@ -41,40 +56,15 @@ export async function stage2Chunk(ctx: IngestContext): Promise<void> {
   console.log(`  [stage2] tables=${tableArtifacts.tables.length}`);
 }
 
-interface Chunk {
-  text: string;
-  type: "text" | "list" | "table" | "chart" | "compiled_truth";
-  pageIdx?: number;
-}
-
-async function chunkMarkdown(md: string, _contentListJson: unknown): Promise<Chunk[]> {
-  // TODO: 接入 mineru content_list.json 后，对 table/chart/list 保持更完整的结构边界。
-  const chunks: Chunk[] = [];
-
-  for (const segment of splitMarkdownByTables(md)) {
-    if (segment.type === "table") {
-      chunks.push({
-        text: segment.text,
-        type: "table",
-      });
-      continue;
-    }
-
-    const pieces = await chunkPipeline(segment.text);
-    for (const chunk of pieces) {
-      chunks.push({
-        text: chunk.text,
-        type: "text",
-      });
-    }
-  }
-
-  return chunks;
+function asV2ContentList(json: unknown): V2ContentList | null {
+  if (!Array.isArray(json) || json.length === 0) return null;
+  if (!Array.isArray(json[0])) return null;
+  return json as V2ContentList;
 }
 
 async function upsertTableArtifacts(
   pageId: bigint,
-  data: ReturnType<typeof buildMarkdownTableBundle>,
+  data: ReturnType<typeof buildTableBundleFromV2>,
   actor: string
 ): Promise<void> {
   const existing = await db

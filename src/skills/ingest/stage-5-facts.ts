@@ -30,10 +30,9 @@ import { withCreateAudit } from "~/core/audit.ts";
 import { resolveOrCreatePage } from "./_helpers.ts";
 import type { IngestContext } from "~/core/types.ts";
 import {
-  isMarkdownTableBundle,
-  parseMarkdownTables,
-  type MarkdownTableArtifact,
-} from "~/core/markdown-tables.ts";
+  isTableBundle,
+  type TableArtifact,
+} from "~/core/v2-tables.ts";
 import { extractTierC } from "./stage-5-tier-c.ts";
 
 interface YamlFact {
@@ -215,7 +214,7 @@ async function extractTierBFromTables(
 ): Promise<YamlFact[]> {
   const pageEntity = inferSingleEntitySlug(content);
   const facts: YamlFact[] = [];
-  const tableSources = await loadTableSources(pageId, content);
+  const tableSources = await loadTableSources(pageId);
 
   for (const table of tableSources) {
     facts.push(...extractExplicitFacts(table, pageEntity));
@@ -225,10 +224,7 @@ async function extractTierBFromTables(
   return dedupeYamlFacts(facts);
 }
 
-async function loadTableSources(
-  pageId: bigint,
-  content: string
-): Promise<TableLike[]> {
+async function loadTableSources(pageId: bigint): Promise<TableLike[]> {
   const [raw] = await db
     .select({ data: schema.rawData.data })
     .from(schema.rawData)
@@ -241,17 +237,10 @@ async function loadTableSources(
     )
     .limit(1);
 
-  if (raw && isMarkdownTableBundle(raw.data)) {
+  if (raw && isTableBundle(raw.data)) {
     return raw.data.tables.map(fromArtifactTable);
   }
-
-  return parseMarkdownTables(content).map((table) => ({
-    tableId: table.tableId,
-    headers: table.headers,
-    rows: table.rows,
-    raw: table.raw,
-    rowRaws: table.rowRaws,
-  }));
+  return [];
 }
 
 interface TableLike {
@@ -262,7 +251,7 @@ interface TableLike {
   rowRaws: string[];
 }
 
-function fromArtifactTable(table: MarkdownTableArtifact): TableLike {
+function fromArtifactTable(table: TableArtifact): TableLike {
   return {
     tableId: table.table_id,
     headers: table.headers,
