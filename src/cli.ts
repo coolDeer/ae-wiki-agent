@@ -51,6 +51,7 @@ function printHelp(): void {
                                           # 兜底：commit 后才发现不对（清理 page + 标 raw_file）
 
   ae-wiki worker                          # minion-worker 后台进程（兼容入口）
+  ae-wiki verify-schema                   # 跑完 migration 后自查表/列；缺列自愈
 
   # —— Durable agent runtime ——
   ae-wiki agent:run --skill <skill> [--prompt "..."] [--model X] [--max-turns N] [--follow]
@@ -288,9 +289,21 @@ async function main(): Promise<void> {
     }
 
     case "worker": {
+      const { connectWithRetry } = await import("./core/db.ts");
+      await connectWithRetry();
       const { runJobsCommand } = await import("./commands/jobs.ts");
       await runJobsCommand(["worker"]);
       break;
+    }
+
+    case "verify-schema": {
+      const { verifySchema } = await import("./core/schema-verify.ts");
+      const result = await verifySchema();
+      console.log(
+        `\n[verify-schema] checked=${result.checked} missing=${result.missing.length} healed=${result.healed.length} failed=${result.failed.length}`
+      );
+      if (result.missing.length === 0) console.log("  schema OK");
+      process.exit(result.failed.length > 0 ? 1 : 0);
     }
 
     case "agent:run":
@@ -616,6 +629,8 @@ async function main(): Promise<void> {
     case "web": {
       const portStr = getArg("--port");
       const port = portStr ? parseInt(portStr, 10) : 3000;
+      const { connectWithRetry } = await import("./core/db.ts");
+      await connectWithRetry();
       const { startWebServer } = await import("./web/server.ts");
       await startWebServer({ port });
       // Bun.serve 会保持进程不退；这里不能 process.exit

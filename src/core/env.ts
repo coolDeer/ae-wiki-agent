@@ -51,6 +51,16 @@ const EnvSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
 
+  // worker RSS watchdog：进程 RSS 超过此 MB 阈值时优雅退出（让 supervisor 重启）。
+  // 0 = 不启用（默认）。生产长跑建议 2048。
+  WIKI_WORKER_RSS_LIMIT_MB: z
+    .string()
+    .default("0")
+    .transform((v) => {
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    }),
+
   // 可选
   AWS_ACCESS_KEY_ID: z.string().optional(),
   AWS_SECRET_ACCESS_KEY: z.string().optional(),

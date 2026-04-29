@@ -17,6 +17,7 @@ import { addJob, completeJob, failJob } from "~/core/minions/queue.ts";
 import { enrichLoadContext } from "~/skills/enrich/index.ts";
 
 const POLL_INTERVAL_MS = 2000;
+const RSS_CHECK_INTERVAL_MS = 60_000;
 
 async function pickOne(): Promise<typeof schema.minionJobs.$inferSelect | null> {
   const skipEmbed = getEnv().EMBEDDING_DISABLED;
@@ -291,36 +292,103 @@ async function runEnrichEntity(
   };
 }
 
+/**
+ * RSS watchdog state — gbrain v0.22.2 借鉴版（精简）。
+ *
+ * 生产现象：worker 进程 RSS 几小时内从 68MB 涨到 ~15GB，停止 claim 新 job
+ * 但不 crash，cron 持续往队列塞，最后 stalled 死信率 18%。
+ *
+ * 修法：定期 + per-job 检查 process.memoryUsage().rss，超阈值标记 running=false
+ * 让主循环在下次迭代退出。supervisor / shell 那边的 systemd / launchd /
+ * Docker restart=always 会拉起新进程。
+ *
+ * env `WIKI_WORKER_RSS_LIMIT_MB`：阈值，0 = 关（默认）。生产建议 2048。
+ */
+interface WorkerState {
+  running: boolean;
+  shutdownReason: string | null;
+  jobsCompleted: number;
+}
+
+function checkRssLimit(state: WorkerState, limitMb: number, source: "post-job" | "periodic"): void {
+  if (limitMb <= 0) return;
+  if (!state.running) return;
+  const rssMb = Math.round(process.memoryUsage().rss / (1024 * 1024));
+  if (rssMb < limitMb) return;
+  const ts = new Date().toISOString().slice(11, 19);
+  console.warn(
+    `[watchdog ${ts}] rss=${rssMb}MB threshold=${limitMb}MB jobs_completed=${state.jobsCompleted} source=${source} — draining`
+  );
+  state.running = false;
+  state.shutdownReason = "watchdog";
+}
+
 export async function runWorker(): Promise<void> {
-  console.log(`[worker] minion-worker 启动 (interval=${POLL_INTERVAL_MS}ms)`);
-  while (true) {
-    try {
-      const job = await pickOne();
-      if (!job) {
-        await Bun.sleep(POLL_INTERVAL_MS);
-        continue;
-      }
+  const env = getEnv();
+  const rssLimitMb = env.WIKI_WORKER_RSS_LIMIT_MB;
+  const watchdogEnabled = rssLimitMb > 0;
+
+  console.log(
+    `[worker] minion-worker 启动 (interval=${POLL_INTERVAL_MS}ms, rss_limit=${watchdogEnabled ? `${rssLimitMb}MB` : "off"})`
+  );
+
+  const state: WorkerState = { running: true, shutdownReason: null, jobsCompleted: 0 };
+
+  const onSignal = (sig: string) => () => {
+    if (!state.running) return;
+    console.log(`[worker] ${sig} received, draining`);
+    state.running = false;
+    state.shutdownReason = sig;
+  };
+  process.on("SIGTERM", onSignal("SIGTERM"));
+  process.on("SIGINT", onSignal("SIGINT"));
+
+  let rssTimer: ReturnType<typeof setInterval> | null = null;
+  if (watchdogEnabled) {
+    rssTimer = setInterval(
+      () => checkRssLimit(state, rssLimitMb, "periodic"),
+      RSS_CHECK_INTERVAL_MS
+    );
+  }
+
+  try {
+    while (state.running) {
       try {
-        const result = await runJob(job);
-        if (result && typeof result === "object") {
-          const state = result as Record<string, unknown>;
-          if (state.paused === true || state.cancelled === true) {
-            continue;
-          }
-        }
-        await completeJob(job.id, Actor.systemJobs, result);
-      } catch (e) {
-        if (e instanceof JobPausedError || e instanceof JobCancelledError) {
+        const job = await pickOne();
+        if (!job) {
+          await Bun.sleep(POLL_INTERVAL_MS);
           continue;
         }
-        const err = (e as Error).message;
-        const failNow = job.attempts + 1 >= job.maxAttempts;
-        await failJob(job.id, Actor.systemJobs, err, !failNow);
-        console.error(`[worker] job ${job.id} ${failNow ? "FAILED" : "RETRY"}: ${err}`);
+        try {
+          const result = await runJob(job);
+          if (result && typeof result === "object") {
+            const stateR = result as Record<string, unknown>;
+            if (stateR.paused === true || stateR.cancelled === true) {
+              continue;
+            }
+          }
+          await completeJob(job.id, Actor.systemJobs, result);
+          state.jobsCompleted += 1;
+        } catch (e) {
+          if (e instanceof JobPausedError || e instanceof JobCancelledError) {
+            continue;
+          }
+          const err = (e as Error).message;
+          const failNow = job.attempts + 1 >= job.maxAttempts;
+          await failJob(job.id, Actor.systemJobs, err, !failNow);
+          console.error(`[worker] job ${job.id} ${failNow ? "FAILED" : "RETRY"}: ${err}`);
+        }
+        // per-job 检查：jobs_completed 计数才能涨；周期 timer 兜底全卡住的情况
+        checkRssLimit(state, rssLimitMb, "post-job");
+      } catch (e) {
+        console.error(`[worker] loop error:`, e);
+        await Bun.sleep(POLL_INTERVAL_MS);
       }
-    } catch (e) {
-      console.error(`[worker] loop error:`, e);
-      await Bun.sleep(POLL_INTERVAL_MS);
     }
+  } finally {
+    if (rssTimer) clearInterval(rssTimer);
+    console.log(
+      `[worker] stopped (reason=${state.shutdownReason ?? "unknown"}, jobs_completed=${state.jobsCompleted})`
+    );
   }
 }
