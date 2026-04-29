@@ -267,8 +267,18 @@ async function main(): Promise<void> {
         console.error("ingest:finalize 需要 page_id 参数");
         process.exit(1);
       }
+      const fromRaw = getArg("--from");
+      let fromStage: number | undefined;
+      if (fromRaw !== undefined) {
+        const n = parseInt(fromRaw, 10);
+        if (!Number.isFinite(n) || n < 4 || n > 8) {
+          console.error("--from 必须是 4-8 之间的整数（stage 编号）");
+          process.exit(1);
+        }
+        fromStage = n;
+      }
       const { ingestFinalize } = await import("./skills/ingest/index.ts");
-      await ingestFinalize(BigInt(pageIdStr));
+      await ingestFinalize(BigInt(pageIdStr), fromStage ? { fromStage } : {});
       break;
     }
 

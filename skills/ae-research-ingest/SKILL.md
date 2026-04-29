@@ -307,6 +307,27 @@ cd ae-wiki-agent && bun src/cli.ts ingest:finalize <pageId>
 
 source 和 brief 都跑同样的 5 个 stage —— brief 通常 facts/timeline 段无产出，是预期。
 
+### 断点续跑
+
+每个 stage 成功后写 `events.action='ingest_stage_done'`；失败写 `ingest_stage_failed`。
+重跑同一个 pageId 时，**已完成的 stage 自动跳过**：
+
+```bash
+# Stage 5 崩了，修了 bug，直接重跑：
+bun src/cli.ts ingest:finalize <pageId>
+# 输出：[stage4] skipped (已完成；用 --from 4 强制重跑)
+#      [stage5] running...
+```
+
+强制从某 stage 起重跑（覆盖已完成判断）：
+
+```bash
+bun src/cli.ts ingest:finalize <pageId> --from 5    # stage 5..8 都重跑
+bun src/cli.ts ingest:finalize <pageId> --from 4    # 全量重跑
+```
+
+适用场景：stage 实现升级想批量回填、怀疑某 stage 数据有 bug、上次 markIngested 失败需重置。
+
 ---
 
 ## 完整范例

@@ -300,18 +300,47 @@ export async function ingestSkip(
 }
 
 /**
- * Step 3/3: 跑 Stage 4-8 收尾，标记 raw_files 已 ingest。
+ * Step 4/4: 跑 Stage 4-8 收尾，标记 raw_files 已 ingest。
+ *
+ * **断点续跑**：每个 stage 成功后写 `ingest_stage_done` event，失败写 `ingest_stage_failed`。
+ * 重跑 finalize 时默认跳过已完成的 stage（崩溃中点续跑）。
+ *
+ * `--from N`（CLI flag）强制从 stage N 起重跑（N..8 视为未完成）；适合：
+ *   - stage 实现升级想批量回填
+ *   - 怀疑某 stage 数据有 bug，定向重跑
+ *   - 上一次确实跑完但 markIngested 失败
+ *
+ * 所有 stage 必须幂等（precedent：facts:re-extract / links:re-extract）。
  */
-export async function ingestFinalize(pageId: bigint): Promise<void> {
-  // 反查 raw_file（通过 ingested_page_id 还没被设置时不能用，所以从 events 找回 rawFileId）
+
+const FINALIZE_STAGES: Array<{
+  num: number;
+  name: string;
+  run: (ctx: IngestContext) => Promise<void>;
+}> = [
+  { num: 4, name: "links", run: stage4Links },
+  { num: 5, name: "facts", run: stage5Facts },
+  { num: 6, name: "jobs", run: stage6Jobs },
+  { num: 7, name: "timeline", run: stage7Timeline },
+  { num: 8, name: "thesis", run: stage8Thesis },
+];
+
+export interface FinalizeOptions {
+  /** 从此 stage 起强制重跑（覆盖已完成跳过逻辑）。N >= 此值的 stage 都重跑。 */
+  fromStage?: number;
+}
+
+export async function ingestFinalize(
+  pageId: bigint,
+  opts: FinalizeOptions = {}
+): Promise<void> {
+  // 反查 raw_file（通过 events.ingest_start 关联）
   const linked = await db
     .select({ id: schema.rawFiles.id, markdownUrl: schema.rawFiles.markdownUrl })
     .from(schema.rawFiles)
     .where(
       and(
         drizzleSql`${schema.rawFiles.deleted} = 0`,
-        // raw_files 还没标记 ingested_page_id（finalize 之前的状态）
-        // 我们靠 events 表里 ingest_start 的关联
         drizzleSql`EXISTS (
           SELECT 1 FROM events e
           WHERE e.action = 'ingest_start'
@@ -328,8 +357,13 @@ export async function ingestFinalize(pageId: bigint): Promise<void> {
     throw new Error(`无法定位 page #${pageId} 对应的 raw_file（events 中无 ingest_start 记录）`);
   }
 
-  const rawMarkdown = await fetchRawMarkdown(rf);
+  const fromStage = opts.fromStage ?? 0;
+  const doneStages = await loadDoneStages(pageId);
+  if (fromStage > 0) {
+    console.log(`[ingest:finalize] page #${pageId} --from=${fromStage} (强制重跑 ≥${fromStage})`);
+  }
 
+  const rawMarkdown = await fetchRawMarkdown(rf);
   const ctx: IngestContext = {
     rawFileId: rf.id,
     pageId,
@@ -338,13 +372,80 @@ export async function ingestFinalize(pageId: bigint): Promise<void> {
     actor: Actor.systemIngest,
   };
 
-  await stage4Links(ctx);
-  await stage5Facts(ctx);
-  await stage6Jobs(ctx);
-  await stage7Timeline(ctx);
-  await stage8Thesis(ctx);
+  for (const stage of FINALIZE_STAGES) {
+    const isDone = doneStages.has(stage.num);
+    const forceRerun = fromStage > 0 && stage.num >= fromStage;
+    if (isDone && !forceRerun) {
+      console.log(`  [stage${stage.num}] skipped (已完成；用 --from ${stage.num} 强制重跑)`);
+      continue;
+    }
+    try {
+      await stage.run(ctx);
+      await markStageDone(pageId, stage.num, stage.name, ctx.actor, forceRerun);
+    } catch (e) {
+      await markStageFailed(pageId, stage.num, stage.name, (e as Error).message, ctx.actor);
+      throw e;
+    }
+  }
+
   await markIngested(rf.id, ctx.pageId, ctx.actor);
   console.log(`✓ page #${pageId} finalized`);
+}
+
+async function loadDoneStages(pageId: bigint): Promise<Set<number>> {
+  const rows = await db
+    .select({ payload: schema.events.payload })
+    .from(schema.events)
+    .where(
+      and(
+        eq(schema.events.action, "ingest_stage_done"),
+        eq(schema.events.entityType, "page"),
+        eq(schema.events.entityId, pageId),
+        eq(schema.events.deleted, 0)
+      )
+    );
+  const out = new Set<number>();
+  for (const r of rows) {
+    const stage = (r.payload as { stage?: unknown } | null)?.stage;
+    if (typeof stage === "number") out.add(stage);
+  }
+  return out;
+}
+
+async function markStageDone(
+  pageId: bigint,
+  stage: number,
+  name: string,
+  actor: string,
+  rerun: boolean
+): Promise<void> {
+  await db.insert(schema.events).values({
+    actor,
+    action: "ingest_stage_done",
+    entityType: "page",
+    entityId: pageId,
+    payload: { stage, name, rerun },
+    createBy: actor,
+    updateBy: actor,
+  });
+}
+
+async function markStageFailed(
+  pageId: bigint,
+  stage: number,
+  name: string,
+  error: string,
+  actor: string
+): Promise<void> {
+  await db.insert(schema.events).values({
+    actor,
+    action: "ingest_stage_failed",
+    entityType: "page",
+    entityId: pageId,
+    payload: { stage, name, error },
+    createBy: actor,
+    updateBy: actor,
+  });
 }
 
 // ============================================================================
