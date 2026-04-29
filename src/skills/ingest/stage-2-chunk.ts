@@ -50,7 +50,11 @@ export async function stage2Chunk(ctx: IngestContext): Promise<void> {
     );
   }
 
-  await upsertTableArtifacts(ctx.pageId, tableArtifacts, ctx.actor);
+  // 0 表的 source（多数 acecamp / twitter / brief）不写空 sidecar，避免污染 raw_data。
+  // 当前没有"重新切 chunks 但表减少"的流程；将来若有，需要在这里加覆盖语义。
+  if (tableArtifacts.tables.length > 0) {
+    await upsertTableArtifacts(ctx.pageId, tableArtifacts, ctx.actor);
+  }
 
   console.log(`  [stage2] chunks=${chunks.length}`);
   console.log(`  [stage2] tables=${tableArtifacts.tables.length}`);
