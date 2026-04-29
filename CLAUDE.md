@@ -846,12 +846,12 @@ git commit -m "extract from llm-wiki"
 
 ## 进一步阅读
 
+- `./doc/concepts.md` — **系统概念导览**（pages / chunks / facts / theses / V2 / wikilink / triage / stages 一文打通；新人入门首选）
 - `./doc/architecture.md` — ingest 8-stage 详解 + 设计决策
+- `./doc/cli-commands.md` — 全 CLI 命令清单
 - `./doc/llm-touchpoints.md` — LLM 调用点地图
 - `./doc/gbrain-borrowings.md` — gbrain 借鉴清单
-- `./skills/*/SKILL.md` — 每个 skill 的工作流（agent 读这些）
-- `./infra/init-v2.sql` — schema 真相源
-- `src/core/schema/*.ts` — Drizzle schema（与 SQL 同步）
+- `./doc/table-artifacts.md` — sidecar 表格管道详解
 - `./skills/*/SKILL.md` — 每个 skill 的工作流（agent 读这些）
 - `./infra/init-v2.sql` — schema 真相源
 - `src/core/schema/*.ts` — Drizzle schema（与 SQL 同步）
