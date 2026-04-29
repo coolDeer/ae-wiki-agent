@@ -6,6 +6,7 @@ import OpenAI from "openai";
 import { Actor, withAudit, withCreateAudit } from "~/core/audit.ts";
 import { db, schema } from "~/core/db.ts";
 import { getEnv } from "~/core/env.ts";
+import { recordUsage } from "~/core/llm-usage.ts";
 import { addJob, getJob, updateJobProgress } from "~/core/minions/queue.ts";
 import type { AgentRunData } from "~/core/minions/types.ts";
 import { fetchRawMarkdown } from "~/core/raw-loader.ts";
@@ -402,6 +403,17 @@ export async function runAgentJob(job: typeof schema.minionJobs.$inferSelect): P
     const stopReason = choice?.finish_reason ?? null;
     const tokensIn = response.usage?.prompt_tokens ?? null;
     const tokensOut = response.usage?.completion_tokens ?? null;
+    const totalTokens = response.usage?.total_tokens ?? null;
+
+    void recordUsage({
+      source: "agent_runtime",
+      model: data.model,
+      tokensIn,
+      tokensOut,
+      totalTokens,
+      jobId: job.id,
+      metadata: { skill: data.skill, turn: assistantTurns + 1 },
+    });
 
     await persistAgentMessage(job.id, {
       turnIndex: nextTurnIndex,

@@ -19,7 +19,6 @@
     "worker": "bun run src/workers/minion-worker.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.32.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "drizzle-orm": "^0.36.0",
     "gray-matter": "^4.0.3",

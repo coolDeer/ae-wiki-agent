@@ -291,6 +291,7 @@ export function layout({ title, body, query = "", flash }: LayoutOpts): string {
       <a href="/entities">Entities</a>
       <a href="/outputs">Outputs</a>
       <a href="/queue">Queue</a>
+      <a href="/usage">Usage</a>
     </nav>
     <form class="search" action="/search" method="get">
       <input type="text" name="q" placeholder="search…" value="${escape(query)}">

@@ -13,6 +13,7 @@
 
 import OpenAI from "openai";
 import { getEnv } from "~/core/env.ts";
+import { recordUsage } from "~/core/llm-usage.ts";
 import {
   search as mcpSearch,
   getPage,
@@ -334,11 +335,23 @@ export async function chatSend(
         tools: TOOLS,
         tool_choice: "auto",
         stream: true,
+        stream_options: { include_usage: true },
         max_completion_tokens: 8000,
         reasoning_effort: "low",
       });
 
       for await (const chunk of stream) {
+        // 末尾 chunk 携带 usage（仅当 stream_options.include_usage = true）
+        if (chunk.usage) {
+          void recordUsage({
+            source: "web_chat",
+            model: env.OPENAI_AGENT_MODEL,
+            tokensIn: chunk.usage.prompt_tokens ?? null,
+            tokensOut: chunk.usage.completion_tokens ?? null,
+            totalTokens: chunk.usage.total_tokens ?? null,
+            metadata: { turn },
+          });
+        }
         const delta = chunk.choices[0]?.delta;
         if (!delta) continue;
         if (typeof delta.content === "string") assistantText += delta.content;

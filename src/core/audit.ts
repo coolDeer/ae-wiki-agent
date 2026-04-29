@@ -46,5 +46,6 @@ export const Actor = {
   systemJobs: "system:jobs",
   systemCron: "system:cron",
   systemInit: "system:init",
+  systemUsage: "system:usage",
   human: (name: string) => `human:${name}`,
 } as const;

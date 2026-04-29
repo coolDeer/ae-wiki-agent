@@ -1050,3 +1050,337 @@ ${renderPagination(result, "/queue", keptParams)}
 `;
   return layout({ title: "Queue", body });
 }
+
+// ============================================================================
+// /usage  —— LLM token 用量
+// ============================================================================
+
+/**
+ * 单价（USD per 1M tokens）。OpenAI 价格随时间变动，env 可覆盖：
+ *   PRICE_INPUT_USD_PER_1M     默认 0.30
+ *   PRICE_OUTPUT_USD_PER_1M    默认 2.50
+ *   PRICE_EMBEDDING_USD_PER_1M 默认 0.13
+ * 仅供粗估，权威账单以 OpenAI 后台为准。
+ */
+function pricesUsd(): { input: number; output: number; embedding: number } {
+  return {
+    input: parseFloat(process.env.PRICE_INPUT_USD_PER_1M ?? "0.30"),
+    output: parseFloat(process.env.PRICE_OUTPUT_USD_PER_1M ?? "2.50"),
+    embedding: parseFloat(process.env.PRICE_EMBEDDING_USD_PER_1M ?? "0.13"),
+  };
+}
+
+function fmtNum(n: number | null | undefined): string {
+  if (n == null) return "—";
+  return Number(n).toLocaleString("en-US");
+}
+
+function fmtUsd(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  return `$${n.toFixed(4)}`;
+}
+
+export async function viewUsage(): Promise<string> {
+  const prices = pricesUsd();
+
+  const totalsRows = (await db.execute(sql`
+    WITH t AS (
+      SELECT 'today' AS bucket, NOW()::date AS since UNION ALL
+      SELECT 'last_7d', (NOW() - INTERVAL '7 days')::date UNION ALL
+      SELECT 'last_30d', (NOW() - INTERVAL '30 days')::date
+    )
+    SELECT
+      t.bucket,
+      COALESCE(SUM(u.tokens_in), 0)::bigint AS tokens_in,
+      COALESCE(SUM(u.tokens_out), 0)::bigint AS tokens_out,
+      COUNT(u.id)::bigint AS calls,
+      COALESCE(SUM(CASE WHEN u.source = 'embedding' THEN u.total_tokens ELSE 0 END), 0)::bigint AS embed_tokens,
+      COALESCE(SUM(CASE WHEN u.source != 'embedding' THEN u.tokens_in ELSE 0 END), 0)::bigint AS chat_in,
+      COALESCE(SUM(CASE WHEN u.source != 'embedding' THEN u.tokens_out ELSE 0 END), 0)::bigint AS chat_out
+    FROM t
+    LEFT JOIN llm_usage u
+      ON u.deleted = 0 AND u.create_time >= t.since
+    GROUP BY t.bucket
+  `)) as unknown as Array<{
+    bucket: string;
+    tokens_in: string | number;
+    tokens_out: string | number;
+    calls: string | number;
+    embed_tokens: string | number;
+    chat_in: string | number;
+    chat_out: string | number;
+  }>;
+
+  const buckets = new Map(totalsRows.map((r) => [r.bucket, r]));
+  const card = (label: string, key: string) => {
+    const row = buckets.get(key);
+    const tin = row ? Number(row.tokens_in) : 0;
+    const tout = row ? Number(row.tokens_out) : 0;
+    const calls = row ? Number(row.calls) : 0;
+    const embedTok = row ? Number(row.embed_tokens) : 0;
+    const chatIn = row ? Number(row.chat_in) : 0;
+    const chatOut = row ? Number(row.chat_out) : 0;
+    const cost =
+      (chatIn / 1e6) * prices.input +
+      (chatOut / 1e6) * prices.output +
+      (embedTok / 1e6) * prices.embedding;
+    return `
+<div class="card">
+  <h3 style="margin:0 0 6px;">${escape(label)}</h3>
+  <div class="kv" style="grid-template-columns: 110px 1fr;">
+    <div class="k">Calls</div><div>${fmtNum(calls)}</div>
+    <div class="k">Tokens in</div><div>${fmtNum(tin)}</div>
+    <div class="k">Tokens out</div><div>${fmtNum(tout)}</div>
+    <div class="k">Embed tokens</div><div>${fmtNum(embedTok)}</div>
+    <div class="k">Est. cost</div><div>${fmtUsd(cost)}</div>
+  </div>
+</div>`;
+  };
+
+  const sourceRows = (await db.execute(sql`
+    SELECT
+      source,
+      COALESCE(model, 'unknown') AS model,
+      SUM(COALESCE(tokens_in, 0))::bigint   AS tokens_in,
+      SUM(COALESCE(tokens_out, 0))::bigint  AS tokens_out,
+      SUM(COALESCE(total_tokens, 0))::bigint AS total_tokens,
+      COUNT(*)::bigint AS calls
+    FROM llm_usage
+    WHERE deleted = 0
+      AND create_time >= NOW() - INTERVAL '30 days'
+    GROUP BY source, model
+    ORDER BY SUM(COALESCE(total_tokens, COALESCE(tokens_in,0) + COALESCE(tokens_out,0))) DESC NULLS LAST
+  `)) as unknown as Array<{
+    source: string;
+    model: string;
+    tokens_in: string | number;
+    tokens_out: string | number;
+    total_tokens: string | number;
+    calls: string | number;
+  }>;
+
+  const skillRows = (await db.execute(sql`
+    SELECT
+      COALESCE(j.data->>'skill', '(no skill)') AS skill,
+      COALESCE(u.model, 'unknown') AS model,
+      SUM(COALESCE(u.tokens_in, 0))::bigint  AS tokens_in,
+      SUM(COALESCE(u.tokens_out, 0))::bigint AS tokens_out,
+      COUNT(*)::bigint AS calls,
+      COUNT(DISTINCT u.job_id)::bigint AS jobs
+    FROM llm_usage u
+    LEFT JOIN minion_jobs j ON j.id = u.job_id
+    WHERE u.deleted = 0
+      AND u.source = 'agent_runtime'
+      AND u.create_time >= NOW() - INTERVAL '30 days'
+    GROUP BY skill, u.model
+    ORDER BY SUM(COALESCE(u.tokens_in, 0)) DESC NULLS LAST
+    LIMIT 50
+  `)) as unknown as Array<{
+    skill: string;
+    model: string;
+    tokens_in: string | number;
+    tokens_out: string | number;
+    calls: string | number;
+    jobs: string | number;
+  }>;
+
+  const dailyRows = (await db.execute(sql`
+    SELECT
+      DATE_TRUNC('day', create_time)::date AS day,
+      source,
+      SUM(COALESCE(tokens_in, 0))::bigint   AS tokens_in,
+      SUM(COALESCE(tokens_out, 0))::bigint  AS tokens_out,
+      SUM(COALESCE(total_tokens, 0))::bigint AS total_tokens,
+      COUNT(*)::bigint AS calls
+    FROM llm_usage
+    WHERE deleted = 0
+      AND create_time >= NOW() - INTERVAL '30 days'
+    GROUP BY 1, 2
+    ORDER BY 1 DESC, source
+  `)) as unknown as Array<{
+    day: string;
+    source: string;
+    tokens_in: string | number;
+    tokens_out: string | number;
+    total_tokens: string | number;
+    calls: string | number;
+  }>;
+
+  const recentRows = (await db.execute(sql`
+    SELECT
+      u.id, u.source, u.model, u.tokens_in, u.tokens_out, u.total_tokens,
+      u.job_id, u.metadata, u.create_time,
+      j.name AS job_name, j.data->>'skill' AS skill
+    FROM llm_usage u
+    LEFT JOIN minion_jobs j ON j.id = u.job_id
+    WHERE u.deleted = 0
+    ORDER BY u.create_time DESC
+    LIMIT 50
+  `)) as unknown as Array<{
+    id: string | number;
+    source: string;
+    model: string | null;
+    tokens_in: number | null;
+    tokens_out: number | null;
+    total_tokens: number | null;
+    job_id: string | number | null;
+    metadata: Record<string, unknown> | null;
+    create_time: string;
+    job_name: string | null;
+    skill: string | null;
+  }>;
+
+  const costForRow = (source: string, tin: number, tout: number, total: number) => {
+    if (source === "embedding") return (total / 1e6) * prices.embedding;
+    return (tin / 1e6) * prices.input + (tout / 1e6) * prices.output;
+  };
+
+  const body = `
+<h2>LLM Token Usage</h2>
+<p class="muted" style="margin-top:0;">
+  数据源 = <code>llm_usage</code> 表，覆盖 6 个调用点：
+  embedding / agent_runtime / web_chat / fact_extract / chunker_llm / query_expansion。
+</p>
+
+<h3>概览（最近窗口）</h3>
+<div class="grid" style="grid-template-columns: 1fr 1fr 1fr;">
+  ${card("Today", "today")}
+  ${card("Last 7 days", "last_7d")}
+  ${card("Last 30 days", "last_30d")}
+</div>
+
+<h3>按 source × model 聚合（30d）</h3>
+${sourceRows.length === 0
+  ? `<div class="empty">no usage in last 30 days</div>`
+  : `<table>
+    <thead><tr>
+      <th>Source</th><th>Model</th>
+      <th>Calls</th><th>Tokens in</th><th>Tokens out</th><th>Total</th>
+      <th>Est. cost</th>
+    </tr></thead>
+    <tbody>
+    ${sourceRows
+      .map((r) => {
+        const tin = Number(r.tokens_in);
+        const tout = Number(r.tokens_out);
+        const total = Number(r.total_tokens);
+        const cost = costForRow(r.source, tin, tout, total);
+        return `<tr>
+          <td><span class="tag">${escape(r.source)}</span></td>
+          <td class="muted score">${escape(r.model)}</td>
+          <td>${fmtNum(Number(r.calls))}</td>
+          <td>${fmtNum(tin)}</td>
+          <td>${fmtNum(tout)}</td>
+          <td>${fmtNum(total)}</td>
+          <td class="score">${fmtUsd(cost)}</td>
+        </tr>`;
+      })
+      .join("")}
+    </tbody>
+  </table>`
+}
+
+<h3>按 skill × model 聚合（agent_runtime, 30d）</h3>
+${skillRows.length === 0
+  ? `<div class="empty">no agent_runtime usage in last 30 days</div>`
+  : `<table>
+    <thead><tr>
+      <th>Skill</th><th>Model</th>
+      <th>Jobs</th><th>Calls</th>
+      <th>Tokens in</th><th>Tokens out</th><th>Est. cost</th>
+    </tr></thead>
+    <tbody>
+    ${skillRows
+      .map((r) => {
+        const tin = Number(r.tokens_in);
+        const tout = Number(r.tokens_out);
+        const cost = (tin / 1e6) * prices.input + (tout / 1e6) * prices.output;
+        return `<tr>
+          <td>${escape(r.skill)}</td>
+          <td class="muted score">${escape(r.model)}</td>
+          <td>${fmtNum(Number(r.jobs))}</td>
+          <td>${fmtNum(Number(r.calls))}</td>
+          <td>${fmtNum(tin)}</td>
+          <td>${fmtNum(tout)}</td>
+          <td class="score">${fmtUsd(cost)}</td>
+        </tr>`;
+      })
+      .join("")}
+    </tbody>
+  </table>`
+}
+
+<h3>每日趋势（30d，按 source）</h3>
+${dailyRows.length === 0
+  ? `<div class="empty">no usage</div>`
+  : `<table>
+    <thead><tr>
+      <th>Day</th><th>Source</th>
+      <th>Calls</th><th>Tokens in</th><th>Tokens out</th><th>Total</th><th>Est. cost</th>
+    </tr></thead>
+    <tbody>
+    ${dailyRows
+      .map((r) => {
+        const tin = Number(r.tokens_in);
+        const tout = Number(r.tokens_out);
+        const total = Number(r.total_tokens);
+        const cost = costForRow(r.source, tin, tout, total);
+        return `<tr>
+          <td class="score">${escape(String(r.day).slice(0, 10))}</td>
+          <td><span class="tag">${escape(r.source)}</span></td>
+          <td>${fmtNum(Number(r.calls))}</td>
+          <td>${fmtNum(tin)}</td>
+          <td>${fmtNum(tout)}</td>
+          <td>${fmtNum(total)}</td>
+          <td class="score">${fmtUsd(cost)}</td>
+        </tr>`;
+      })
+      .join("")}
+    </tbody>
+  </table>`
+}
+
+<h3>最近 50 条记录</h3>
+${recentRows.length === 0
+  ? `<div class="empty">no records yet — 跑一次 ingest / search / chat 后回看</div>`
+  : `<table>
+    <thead><tr>
+      <th>Time</th><th>Source</th><th>Model</th>
+      <th>Skill / Job</th>
+      <th>In</th><th>Out</th><th>Total</th>
+    </tr></thead>
+    <tbody>
+    ${recentRows
+      .map((r) => {
+        const tin = r.tokens_in == null ? 0 : Number(r.tokens_in);
+        const tout = r.tokens_out == null ? 0 : Number(r.tokens_out);
+        const total = r.total_tokens == null ? 0 : Number(r.total_tokens);
+        const skillOrJob = r.skill
+          ? escape(r.skill)
+          : r.job_id
+          ? `#${r.job_id}${r.job_name ? ` <span class="tag">${escape(r.job_name)}</span>` : ""}`
+          : "";
+        return `<tr>
+          <td class="muted score">${escape(String(r.create_time).slice(0, 19).replace("T", " "))}</td>
+          <td><span class="tag">${escape(r.source)}</span></td>
+          <td class="muted score">${escape(r.model ?? "")}</td>
+          <td>${skillOrJob}</td>
+          <td>${fmtNum(tin)}</td>
+          <td>${fmtNum(tout)}</td>
+          <td>${fmtNum(total)}</td>
+        </tr>`;
+      })
+      .join("")}
+    </tbody>
+  </table>`
+}
+
+<p class="muted" style="margin-top: 32px;">
+  价格估算单价：chat input <code>$${prices.input}</code> / 1M，chat output <code>$${prices.output}</code> / 1M，
+  embedding <code>$${prices.embedding}</code> / 1M。env
+  <code>PRICE_INPUT_USD_PER_1M</code> / <code>PRICE_OUTPUT_USD_PER_1M</code> /
+  <code>PRICE_EMBEDDING_USD_PER_1M</code> 可覆盖。仅供粗估，权威账单以 OpenAI 后台为准。
+</p>
+`;
+  return layout({ title: "Token Usage", body });
+}

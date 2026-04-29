@@ -38,6 +38,18 @@ const EnvSchema = z.object({
   WIKI_SOURCE_BOOST: z.string().optional(),
   // 硬排除：搜索时直接不进入候选池。格式 "prefix1,prefix2"
   WIKI_SEARCH_EXCLUDE: z.string().optional(),
+  // 分段策略：recursive (default) / semantic（句子 embedding + Sav-Gol）/ llm（OpenAI 找拐点）
+  WIKI_CHUNKER_STRATEGY: z.enum(["recursive", "semantic", "llm"]).default("recursive"),
+  // 多 query 扩展：开启后对 ≥3 词的 query 用 OPENAI_AGENT_MODEL 改写出 2 个备选并召回融合
+  WIKI_QUERY_EXPANSION: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  // search debug：打印 RRF / cosine / boost 中间值到 stderr
+  WIKI_SEARCH_DEBUG: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 
   // 可选
   AWS_ACCESS_KEY_ID: z.string().optional(),

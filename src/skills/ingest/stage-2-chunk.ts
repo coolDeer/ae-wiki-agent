@@ -3,20 +3,19 @@
  *
  * 切分 raw markdown 为 chunks，写入 content_chunks（embedding 留空，等 Stage 6 异步算）。
  *
- * 当前优先级：
- *   1. fallback 到 gbrain 风格 recursive chunker
- *   2. 后续再接 mineru content_list.json 的结构边界
+ * 策略由 env `WIKI_CHUNKER_STRATEGY` 决定（recursive | semantic | llm），
+ * 表格段落始终走 markdown-tables 拆分（不让 chunker 把 table 拆碎）。
  */
 
 import type { IngestContext } from "~/core/types.ts";
 import { and, eq, sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { withAudit, withCreateAudit } from "~/core/audit.ts";
-import { chunkText } from "~/core/chunkers/recursive.ts";
+import { chunkPipeline } from "~/core/chunkers/index.ts";
 import { buildMarkdownTableBundle, splitMarkdownByTables } from "~/core/markdown-tables.ts";
 
 export async function stage2Chunk(ctx: IngestContext): Promise<void> {
-  const chunks = chunkMarkdown(ctx.rawMarkdown, ctx.contentListJson);
+  const chunks = await chunkMarkdown(ctx.rawMarkdown, ctx.contentListJson);
   const tableArtifacts = buildMarkdownTableBundle(ctx.rawMarkdown);
 
   if (chunks.length > 0) {
@@ -48,7 +47,7 @@ interface Chunk {
   pageIdx?: number;
 }
 
-function chunkMarkdown(md: string, _contentListJson: unknown): Chunk[] {
+async function chunkMarkdown(md: string, _contentListJson: unknown): Promise<Chunk[]> {
   // TODO: 接入 mineru content_list.json 后，对 table/chart/list 保持更完整的结构边界。
   const chunks: Chunk[] = [];
 
@@ -61,7 +60,8 @@ function chunkMarkdown(md: string, _contentListJson: unknown): Chunk[] {
       continue;
     }
 
-    for (const chunk of chunkText(segment.text)) {
+    const pieces = await chunkPipeline(segment.text);
+    for (const chunk of pieces) {
       chunks.push({
         text: chunk.text,
         type: "text",

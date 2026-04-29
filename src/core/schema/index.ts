@@ -20,4 +20,5 @@ export * from "./events.ts";
 export * from "./minion-jobs.ts";
 export * from "./agent-messages.ts";
 export * from "./agent-tool-executions.ts";
+export * from "./llm-usage.ts";
 export * from "./config.ts";

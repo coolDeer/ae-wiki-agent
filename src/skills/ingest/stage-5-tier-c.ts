@@ -16,6 +16,7 @@
 
 import OpenAI from "openai";
 import { getEnv } from "~/core/env.ts";
+import { recordUsage } from "~/core/llm-usage.ts";
 
 interface TierCFact {
   entity: string;
@@ -156,12 +157,23 @@ async function callLLM(
         messages,
         response_format: { type: "json_object" },
         stream: true,
+        stream_options: { include_usage: true },
         max_completion_tokens: 8000,
         reasoning_effort: "low",
       });
 
       let text = "";
       for await (const chunk of stream) {
+        if (chunk.usage) {
+          void recordUsage({
+            source: "fact_extract",
+            model: env.OPENAI_FACT_EXTRACT_MODEL,
+            tokensIn: chunk.usage.prompt_tokens ?? null,
+            tokensOut: chunk.usage.completion_tokens ?? null,
+            totalTokens: chunk.usage.total_tokens ?? null,
+            metadata: { attempt },
+          });
+        }
         const delta = chunk.choices[0]?.delta?.content;
         if (delta) text += delta;
       }

@@ -25,6 +25,7 @@ import {
   viewQueue,
   viewSearch,
   viewTheses,
+  viewUsage,
 } from "./views.ts";
 import { parsePageRequest } from "./pagination.ts";
 import { chatSend, clearSession } from "./chat.ts";
@@ -129,6 +130,11 @@ export async function startWebServer(opts: ServeOpts = {}): Promise<void> {
         if (outputMatch && req.method === "GET") {
           const filename = decodeURIComponent(outputMatch[1] ?? "");
           return html(await viewOutputFile(filename));
+        }
+
+        // Usage
+        if (path === "/usage" && req.method === "GET") {
+          return html(await viewUsage());
         }
 
         // Queue
