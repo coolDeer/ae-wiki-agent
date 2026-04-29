@@ -380,6 +380,17 @@ SELECT metadata->>'extracted_by' AS by, COUNT(*) FROM facts WHERE deleted=0 GROU
 
 **核心思想**：把昂贵 / 不可信的工具（LLM）放在最后，便宜 / 可信的（YAML / 启发式）放在前面，让 LLM 只处理它真正擅长的事——「从散文里抽编号没列的细节」。
 
+### 跟其他系统的 fact 抽取策略对比
+
+| 系统 | 策略 | 错误模式 |
+|---|---|---|
+| **LangChain RAG / 大多数 agentic RAG** | 全 LLM，无分层 — query 时直接喂 chunk 让 LLM 抽 | LLM 幻觉混进结果；同一 query 跑两次结果可能不同；成本随 query 量线性涨 |
+| **Stanford CoreNLP / OpenIE** | 全启发式 + 训练好的 NER/RE 模型，无 LLM | 召回受限于模式覆盖；新 metric / 新句式抽不到；零幻觉但漏抓多 |
+| **Diffbot / 商业知识图谱** | 启发式 + 重训练的 NER + 弱监督 | 训练数据外的领域召回掉得快；运维成本高（要持续标注） |
+| **ae-wiki-agent**（本系统） | A：agent 主动写 YAML / B：启发式表格抽取 / C：LLM 兜底 prose | A/B 决定性 0 幻觉；C 幻觉被 `source_quote` 子串校验拦截；漏抓由 C 兜；成本绝大部分被 A/B 吃掉 |
+
+跟主流 agentic RAG 路径的关键差异：**fact 不是 query-time 临时抽的，是 ingest-time 一次抽好落库**。downstream MCP `query_facts` / `compare_table_facts` 直接命中结构化表，不需要 LLM 重新 reason。代价是 ingest 阶段重，但 query 阶段几乎零延迟、零幻觉、零成本。
+
 MCP `query_facts(entity, metric?, period?, current_only?)` 是查询入口。
 
 ---
