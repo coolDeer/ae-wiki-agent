@@ -31,7 +31,7 @@ async function pickOne(): Promise<typeof schema.minionJobs.$inferSelect | null> 
       SELECT id FROM minion_jobs
       WHERE status = 'waiting' AND deleted = 0
         ${skipEmbed ? sql`AND name != 'embed_chunks'` : sql``}
-      ORDER BY create_time
+      ORDER BY priority DESC, create_time ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     )

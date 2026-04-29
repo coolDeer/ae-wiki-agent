@@ -296,16 +296,19 @@ async function cosineReScore(
   if (map.size === 0) return results;
 
   const maxRrf = Math.max(...results.map((r) => r.score));
+  // 缺 embedding 时给中性 cosine（0.5），保证最终 score 与有 embedding 的 chunk 同刻度
+  // 否则 raw RRF（可能 1.0）会跟 blended（0.7 + 0.3·cos ≤ 1）打架，系统性偏向 unembedded chunks
+  const NEUTRAL_COS = 0.5;
   return results
     .map((r) => {
       const emb = map.get(r.chunkId.toString());
-      if (!emb) return r;
-      const cos = cosineSimilarity(queryEmbedding, emb);
       const normRrf = maxRrf > 0 ? r.score / maxRrf : 0;
+      const cos = emb ? cosineSimilarity(queryEmbedding, emb) : NEUTRAL_COS;
       const blended = 0.7 * normRrf + 0.3 * cos;
       if (debug) {
+        const tag = emb ? "" : " [no-emb fallback cos=0.5]";
         console.error(
-          `[search-debug] ${r.slug}:${r.chunkId} cosine=${cos.toFixed(4)} norm_rrf=${normRrf.toFixed(4)} blended=${blended.toFixed(4)}`
+          `[search-debug] ${r.slug}:${r.chunkId} cosine=${cos.toFixed(4)} norm_rrf=${normRrf.toFixed(4)} blended=${blended.toFixed(4)}${tag}`
         );
       }
       return { ...r, score: blended };

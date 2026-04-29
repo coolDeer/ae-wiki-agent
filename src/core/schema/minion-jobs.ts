@@ -17,6 +17,11 @@ export const minionJobs = pgTable(
       .generatedByDefaultAsIdentity(),
     name: text("name").notNull(),
     status: text("status").notNull().default("waiting"),
+    /**
+     * 数字越大越优先；100=系统关键，80=embed_chunks（agent 搜索依赖），
+     * 50=默认（enrich/detect/agent_run/...），20=后台 backfill。
+     */
+    priority: integer("priority").notNull().default(50),
     data: jsonb("data").notNull(),
     attempts: integer("attempts").notNull().default(0),
     maxAttempts: integer("max_attempts").notNull().default(3),
@@ -30,6 +35,7 @@ export const minionJobs = pgTable(
   (t) => ({
     pendingIdx: index("idx_jobs_pending").on(t.name, t.createTime),
     statusIdx: index("idx_jobs_status").on(t.status, t.createTime),
+    pickIdx: index("idx_jobs_pick").on(t.priority, t.createTime),
   })
 );
 

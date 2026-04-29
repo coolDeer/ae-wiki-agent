@@ -17,6 +17,8 @@ export async function stage6Jobs(ctx: IngestContext): Promise<void> {
       {
         name: "embed_chunks",
         status: "waiting",
+        // 抬高优先级：enrich agent 调 search 依赖 source 的 chunks 已 embed
+        priority: 80,
         data: { pageId: ctx.pageId.toString() },
       },
       ctx.actor
