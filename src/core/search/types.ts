@@ -48,6 +48,8 @@ export interface ChunkCandidate {
   chunkId: bigint;
   chunkText: string;
   chunkType: string;
+  /** V2 chunker 写入；老数据为 null。e.g. ["专家观点","Q3 风险"] */
+  sectionPath: string[] | null;
 
   /** 通道内排序得分（已乘 source_factor） */
   score: number;
@@ -67,4 +69,6 @@ export interface SearchHit {
   bestChunk: string | null;
   chunkId: bigint | null;
   chunkType: string | null;
+  /** 命中 chunk 的 section_path（V2 chunker 写入，markdown chunker 老数据为 null） */
+  sectionPath: string[] | null;
 }

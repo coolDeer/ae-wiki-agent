@@ -110,10 +110,11 @@ export async function searchKeyword(
       pp.page_rank   AS page_rank,
       c.id           AS chunk_id,
       c.chunk_text   AS chunk_text,
-      c.chunk_type   AS chunk_type
+      c.chunk_type   AS chunk_type,
+      c.section_path AS section_path
     FROM page_pool pp
     LEFT JOIN LATERAL (
-      SELECT cc.id, cc.chunk_text, cc.chunk_type,
+      SELECT cc.id, cc.chunk_text, cc.chunk_type, cc.section_path,
              ts_rank(to_tsvector('simple', cc.chunk_text), to_tsquery('simple', ${tsExpr})) AS chunk_rank
       FROM content_chunks cc
       WHERE cc.page_id = pp.id
@@ -136,6 +137,12 @@ export async function searchKeyword(
       chunkId: BigInt(r.chunk_id as string | number | bigint),
       chunkText: (r.chunk_text as string) ?? "",
       chunkType: (r.chunk_type as string) ?? "text",
+      sectionPath: normalizeSectionPath(r.section_path),
       score: parseFloat(String(r.page_rank ?? 0)),
     }));
+}
+
+function normalizeSectionPath(value: unknown): string[] | null {
+  if (Array.isArray(value)) return value.map((s) => String(s));
+  return null;
 }

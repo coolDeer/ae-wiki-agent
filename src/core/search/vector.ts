@@ -47,6 +47,7 @@ export async function searchVector(
         c.page_id     AS page_id,
         c.chunk_text  AS chunk_text,
         c.chunk_type  AS chunk_type,
+        c.section_path AS section_path,
         c.embedding <=> ${queryEmbLiteral}::vector AS dist,
         p.slug   AS slug,
         p.type   AS type,
@@ -66,7 +67,7 @@ export async function searchVector(
       LIMIT ${poolSize * 3}
     )
     SELECT
-      chunk_id, page_id, chunk_text, chunk_type, dist,
+      chunk_id, page_id, chunk_text, chunk_type, section_path, dist,
       slug, type, title, ticker,
       (1.0 / (1.0 + dist)) * source_factor AS score
     FROM candidate
@@ -83,6 +84,9 @@ export async function searchVector(
     chunkId: BigInt(r.chunk_id as string | number | bigint),
     chunkText: (r.chunk_text as string) ?? "",
     chunkType: (r.chunk_type as string) ?? "text",
+    sectionPath: Array.isArray(r.section_path)
+      ? (r.section_path as unknown[]).map((s) => String(s))
+      : null,
     score: parseFloat(String(r.score ?? 0)),
   }));
 }

@@ -57,11 +57,31 @@ cd ae-wiki-agent && bun src/cli.ts ingest:peek
   "title": "...",
   "researchType": "twitter",
   "rawCharCount": 9112,
-  "preview": "...前 1500 字..."
+  "preview": "...前 1500 字...",
+  "hasContentListV2": true,
+  "v2Stats": {
+    "pageCount": 26,
+    "blockCount": 247,
+    "tableCount": 17,
+    "titleCount": 11,
+    "topLevelSections": ["¶ 本周板块观点", "¶ 前沿趋势", "¶ 海外", ...]
+  },
+  "warning": null
 }
 ```
 
 返回 `null` 时表示没有待处理 raw_file，结束本轮。
+
+**用 `v2Stats` 辅助 triage**（0 阅读量也能粗判）：
+
+| 信号 | 解读 |
+|---|---|
+| `pageCount >= 10` + `tableCount >= 3` | 大概率是数据型研报/周报 → **commit** |
+| `pageCount = 1` + `titleCount <= 3` | 短素材（tweet / chat 散点）→ 通常 **brief** 或 **pass** |
+| `topLevelSections` 含 `Q&A`、`专家观点`、`Earnings` 等 | 深度访谈 → **commit** |
+| `tableCount = 0` + `pageCount = 1` | 文字流动态 → 看 preview 决定 brief / pass |
+
+**`hasContentListV2: false` 的处理**：上游 mineru 没产出 V2，commit 会在 stage-2 失败。直接 `ingest:pass <id> --reason "V2 缺失"` 跳过；运维介入修上游后重启 ingest 流程。
 
 > ⚠️ raw 正文不再落本地。peek 已经把全文 fetch 过一次（CLI 进程内已缓存）；
 > agent 端如要看完整原文，直接打开 `markdownUrl` 读取；短素材通常只看 `preview` 就够。
@@ -255,17 +275,18 @@ platform: twitter
 
 ## Step 4: Write（落库 narrative）
 
-source 和 brief 共用同一个 write 命令：
+source 和 brief 共用同一个 write 命令。三种入口任选：
 
 ```bash
+# A. --file 标志（推荐）：先写文件再读
+bun src/cli.ts ingest:write <pageId> --file raw/narrative-<pageId>.md
+
+# B. heredoc：短素材直接行内
 cd ae-wiki-agent && bun src/cli.ts ingest:write <pageId> <<'EOF'
 <narrative 全文>
 EOF
-```
 
-或写文件后管道：
-
-```bash
+# C. stdin redirect：兼容老用法
 bun src/cli.ts ingest:write <pageId> < /tmp/narrative.md
 ```
 

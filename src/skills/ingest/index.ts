@@ -22,6 +22,7 @@ import { db, schema } from "~/core/db.ts";
 import { Actor } from "~/core/audit.ts";
 import { fetchContentListV2, fetchRawMarkdown } from "~/core/raw-loader.ts";
 import type { IngestContext } from "~/core/types.ts";
+import { summarizeV2, type V2Stats } from "~/core/v2-stats.ts";
 
 import { stage1CreateSkeleton } from "./stage-1-skeleton.ts";
 import { stage2Chunk } from "./stage-2-chunk.ts";
@@ -43,26 +44,45 @@ interface IngestOptions {
 
 const PEEK_PREVIEW_CHARS = 1500;
 
-/**
- * Peek：列下一份候选 raw_file，返回 preview（不写库）。
- * agent 看完 preview 后调 ingest:commit（继续）或 ingest:pass（跳过）。
- */
-export async function ingestPeek(): Promise<{
+export interface PeekResult {
   rawFileId: bigint;
   markdownUrl: string;
   title: string;
   researchType: string | null;
   rawCharCount: number;
   preview: string;
-} | null> {
+  /** V2 content_list 是否可用（缺则 commit 后 stage-2 会 throw） */
+  hasContentListV2: boolean;
+  /** V2 结构信号（hasContentListV2=false 时为 null）— 帮助 0 阅读量做 triage */
+  v2Stats: V2Stats | null;
+  /** V2 不可用时的告警，agent 应直接 pass（reason 引用此告警） */
+  warning?: string;
+}
+
+/**
+ * Peek：列下一份候选 raw_file，返回 preview + V2 结构信号（不写库）。
+ * agent 看完后调 ingest:commit（继续）/ ingest:brief（轻量）/ ingest:pass（跳过）。
+ */
+export async function ingestPeek(): Promise<PeekResult | null> {
   const [rf] = await pickPending({ limit: 1 });
   if (!rf) return null;
 
-  const rawMarkdown = await fetchRawMarkdown(rf);
+  const [rawMarkdown, v2] = await Promise.all([
+    fetchRawMarkdown(rf),
+    fetchContentListV2(rf),
+  ]);
   const preview =
     rawMarkdown.length > PEEK_PREVIEW_CHARS
       ? rawMarkdown.slice(0, PEEK_PREVIEW_CHARS) + "\n... [truncated]"
       : rawMarkdown;
+
+  const hasV2 = Array.isArray(v2) && v2.length > 0 && Array.isArray(v2[0]);
+  const v2Stats = hasV2 ? summarizeV2(v2!) : null;
+  const warning = hasV2
+    ? undefined
+    : `V2 content_list 缺失（parsed_content_list_v2_url=${
+        rf.parsedContentListV2Url ?? "null"
+      }）。commit 会在 stage-2 失败；建议 ingest:pass 跳过此 raw。`;
 
   return {
     rawFileId: rf.id,
@@ -71,6 +91,9 @@ export async function ingestPeek(): Promise<{
     researchType: rf.researchType,
     rawCharCount: rawMarkdown.length,
     preview,
+    hasContentListV2: hasV2,
+    v2Stats,
+    ...(warning ? { warning } : {}),
   };
 }
 

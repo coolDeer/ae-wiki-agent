@@ -3,9 +3,10 @@
  * ae-wiki CLI 入口
  *
  * Ingest 走三段式（gbrain "thin harness, fat skill" 模式）：
- *   ae-wiki ingest:next                    # 拿待处理 raw_file 上下文
- *   ae-wiki ingest:write <id> < file.md    # stdin 把 agent 写的 narrative 落库
- *   ae-wiki ingest:finalize <id>           # 跑 Stage 4-8 收尾
+ *   ae-wiki ingest:next                              # 拿待处理 raw_file 上下文
+ *   ae-wiki ingest:write <id> --file file.md         # 从文件读 narrative 落库
+ *   ae-wiki ingest:write <id> < file.md              # 或者从 stdin
+ *   ae-wiki ingest:finalize <id>                     # 跑 Stage 4-8 收尾
  *
  * 编排 skill：skills/ae-research-ingest/SKILL.md（agent 读后执行）。
  *
@@ -42,7 +43,7 @@ function printHelp(): void {
                                           # peek 后判定无关：标 raw_file skip（不建 page）
   ae-wiki ingest:commit <raw_file_id>     # peek 后判定值得（核心投资素材）：建 page (type=source)
   ae-wiki ingest:brief <raw_file_id>      # peek 后判定为前沿动态（弱相关）：建 page (type=brief)
-  ae-wiki ingest:write <page_id>          # 从 stdin 读 narrative，落 pages.content + page_versions
+  ae-wiki ingest:write <page_id> [--file <path>]  # 从 --file 或 stdin 读 narrative，落 pages.content + page_versions
   ae-wiki ingest:finalize <page_id>       # 跑 Stage 4-8 收尾
 
   # —— 兼容入口 / 兜底 ——
@@ -250,10 +251,27 @@ async function main(): Promise<void> {
         process.exit(1);
       }
       const { ingestWriteNarrative } = await import("./skills/ingest/index.ts");
-      const narrative = await Bun.stdin.text();
-      if (!narrative.trim()) {
-        console.error("stdin 为空，请用管道传 narrative：bun cli ingest:write <id> < file.md");
-        process.exit(1);
+      const fileFlagIdx = args.indexOf("--file");
+      let narrative: string;
+      if (fileFlagIdx !== -1) {
+        const filePath = args[fileFlagIdx + 1];
+        if (!filePath) {
+          console.error("--file 需要路径参数：bun cli ingest:write <id> --file <path>");
+          process.exit(1);
+        }
+        narrative = await Bun.file(filePath).text();
+        if (!narrative.trim()) {
+          console.error(`文件为空：${filePath}`);
+          process.exit(1);
+        }
+      } else {
+        narrative = await Bun.stdin.text();
+        if (!narrative.trim()) {
+          console.error(
+            "stdin 为空。用 --file <path> 或管道：bun cli ingest:write <id> --file file.md / < file.md"
+          );
+          process.exit(1);
+        }
       }
       await ingestWriteNarrative(BigInt(pageIdStr), narrative);
       break;

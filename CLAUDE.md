@@ -770,24 +770,34 @@ const rows = await sql`SELECT * FROM pages WHERE id = ${1}`;
 
 | 项 | 影响 | 优先级 |
 |---|---|---|
-| **0 单测 / E2E** | 重构会导致回归 | ⭐⭐⭐ |
-| Stage 5 Tier C LLM 兜底未实现 | 决策已固化（跳过 B，直接 C，见 `stage-5-facts.ts` 头注）；LLM 调用代码待写 | ⭐⭐ |
-| ~~chunker 是段级（mineru content_list 待接）~~ | ✅ V2 block chunker 已上线（v2.7.1） | — |
+| **stage 1/3/4/5/6/7/8 缺单测** | 重构有回归风险；已有 v2-chunker / v2-tables 各 23/20 测试 | ⭐⭐⭐ |
+| `ingest:finalize` 不可断点续跑 | 中途崩溃需整体重跑；events 表无 stage 完成标记 | ⭐⭐ |
+| brief → source 升级路径缺失 | 需撤销 ingest 后重跑；高频但不便 | ⭐⭐ |
 | Embedding 默认关 | 搜索是纯 keyword，召回受限 | ⭐ |
 | `ingest:next` legacy 兼容入口 | 标 deprecated 但未移除；批量处理时易把噪声塞进 source 池 | ⭐ |
+| stage-5-facts.ts 686 行偏大 | 可拆 tier-a / tier-b-tables 子模块（tier-c 已拆出） | ⭐ |
 
-### 近期完成（2026-04 triage 重构）
+### 近期完成（2026-04 V2 chunker + sidecar 重构）
 
-- ✅ **Triage 三分流程**：`ingest:peek` → `commit / brief / pass` 三选一（之前是二分 next/skip）。SKILL.md 已更新成默认工作流
-- ✅ **`page.type='brief'`**：轻量前沿动态归宿（slug 前缀 `briefs/`，4 段精简模板，不强制 facts/timeline YAML）
-- ✅ **`raw_files.skipped_at + skip_reason`**（migration v2.4.0）：跟 `deleted=1` 语义分开；`pickPending` 已加过滤；带 backfill 脚本
-- ✅ **`ingest:pass / commit / brief / skip`** 四个新 CLI 命令上线（src/skills/ingest/index.ts）
-- ✅ **Stage 3 frontmatter 解析**：narrative 顶部 YAML 块用 `gray-matter` 解析后合并进 `pages.frontmatter`（之前丢弃）
-- ✅ **Stage 4 link_type 默认 `'mention'`**（之前空字符串）；旧数据已批量回填
-- ✅ **`enrich_entity` minion handler 上线**：通过 `agent_run` 队列调起 `ae-enrich`（`src/core/minions/worker.ts`）
-- ✅ **Durable agent runtime**：`agent_messages` / `agent_tool_executions` + supervisor / queue / worker 拆出 `src/core/minions/`；`ae-wiki agent:* / jobs:*` CLI 全套
-- ✅ **MCP 表格 artifact**：`raw_data.source='tables'` + `get_table_artifact` / `compare_table_facts` / `query_facts(table_only)` 三件套（见 `doc/table-artifacts.md`）
-- ✅ **`lint_run` / `facts_expire` minion job**：`ae-wiki lint:run` / `facts:expire` CLI 同步入口，亦可通过队列定时跑（`src/skills/lint`, `src/skills/facts/expire.ts`）
+- ✅ **V2 block-aware chunker**：`src/core/chunkers/v2-block.ts` 消费 `parsedContentListV2S3`，drop page_*/header/footer，section_path 全路径，table 独立块，list ≤2400 token 原子保留（migration v2.7.1）
+- ✅ **V2 sourced table sidecar**：`src/core/v2-tables.ts` HTML→grid（rowspan/colspan）→ TableBundle，写 `raw_data.source='tables'`；`kind` 切换 `markdown_tables` → `tables`
+- ✅ **markdown chunker / parser 全部下线**：`chunkers/{recursive,semantic,llm}.ts` + `markdown-tables.ts` 删除；`WIKI_CHUNKER_STRATEGY` env 移除
+- ✅ **stage-2 强制 V2**：raw_files 必须有 V2 URL，stage-2 缺则 throw；stage-5-facts narrative fallback 也下线
+- ✅ **content_chunks.section_path TEXT[]**：V2 chunker 写入；待 hybrid search / MCP 消费
+- ✅ **Stage 5 Tier C LLM 兜底**：`stage-5-tier-c.ts` 已实现并接入 stage-5-facts（OPENAI_FACT_EXTRACT_MODEL 默认 gpt-5-mini，env STAGE5_TIER_C_DISABLED 关）
+- ✅ **43 测试**：v2-chunker 23 / v2-tables 20，共 212 expects 全绿
+
+### 历史完成（2026-04 triage 重构）
+
+- ✅ **Triage 三分流程**：`ingest:peek` → `commit / brief / pass` 三选一
+- ✅ **`page.type='brief'`**：4 段精简模板，不强制 facts/timeline YAML
+- ✅ **`raw_files.skipped_at + skip_reason`**（migration v2.4.0）
+- ✅ **Stage 3 frontmatter 解析**：narrative 顶部 YAML 用 gray-matter 合并进 pages.frontmatter
+- ✅ **Stage 4 link_type 默认 `'mention'`**
+- ✅ **`enrich_entity` minion handler**：通过 `agent_run` 队列调起 ae-enrich
+- ✅ **Durable agent runtime**：`agent_messages` / `agent_tool_executions` + supervisor / queue / worker
+- ✅ **MCP 表格 artifact**：`get_table_artifact` / `compare_table_facts` / `query_facts(table_only)`
+- ✅ **`lint_run` / `facts_expire` minion job**：CLI + 队列双入口
 
 ---
 

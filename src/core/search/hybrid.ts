@@ -382,6 +382,7 @@ function toSearchHit(r: RankedChunk): SearchHit {
     bestChunk: r.chunkText || null,
     chunkId: r.chunkId,
     chunkType: r.chunkType,
+    sectionPath: r.sectionPath ?? null,
   };
 }
 
