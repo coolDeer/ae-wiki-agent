@@ -142,10 +142,13 @@ fetch-reports → research-ingest → enrich → thesis-track（按需）
 # 数据获取
 bun src/cli.ts fetch-reports [--limit N] [--dry-run]
 
-# Ingest 三段式（gbrain "thin harness, fat skill" 模式）
-bun src/cli.ts ingest:next                      # 取下一份 raw_file，建 page 骨架
-bun src/cli.ts ingest:write <pageId>            # stdin 写 agent 生成的 narrative
-bun src/cli.ts ingest:finalize <pageId>         # 跑 Stage 4-8 派生
+# Ingest triage 流程（gbrain "thin harness, fat skill" 模式）
+bun src/cli.ts ingest:peek                      # 看下一份 raw（不写库）+ V2 结构信号
+bun src/cli.ts ingest:commit <rawId>            # 深度 source（type='source'）
+bun src/cli.ts ingest:brief  <rawId>            # 轻量 brief（type='brief'）
+bun src/cli.ts ingest:pass   <rawId> --reason "..."  # 噪声跳过
+bun src/cli.ts ingest:write  <pageId> [--file <path>] # 落 narrative
+bun src/cli.ts ingest:finalize <pageId> [--from N]   # 跑 Stage 4-8 派生（断点可续）
 
 # Enrich 红链
 bun src/cli.ts enrich:list [--type T] [--limit N]
@@ -440,15 +443,19 @@ aecapllc API 不定期出新 `researchTypeName`：
   - 无映射 → `article`
 - **不扩展 schema enum**：enum 是"语义分类"（抽象），researchType 是"来源标识"（具体），两者分离
 
-### Ingest 三段式
+### Ingest triage 流程
 
 ```
-ingest:next         → 取 raw_file，HTTP fetch markdown_url，建 pages 骨架，切 chunks
+ingest:peek         → 看下一份 raw_file（不写库）：preview + V2 结构信号
+                      返回 {rawFileId, hasContentListV2, v2Stats:{pageCount,tableCount,...}, preview}
+agent               → 三选一：commit (深 source) / brief (轻量) / pass (噪声)
+ingest:commit|brief → HTTP fetch markdown + V2，建 pages 骨架，切 chunks（V2 chunker）
                       返回 {pageId, markdownUrl, ...}
-agent               → 通过 markdownUrl 拉原文（preview 已在 peek 输出），按 source 模板写 narrative
-                      （可主动 search 已有 wiki 页交叉引用）
-ingest:write        → stdin 落 narrative，写 page_versions
-ingest:finalize     → 重新 fetch markdown_url，跑 Stage 4 链接 / 5 facts / 6 jobs / 7 timeline / 8 thesis
+agent               → 通过 markdownUrl 拉原文，按 source/brief 模板写 narrative
+                      （主动 search 已有 wiki 页做交叉引用）
+ingest:write        → 从 --file 或 stdin 落 narrative，写 page_versions
+ingest:finalize     → 跑 Stage 4 链接 / 5 facts / 6 jobs / 7 timeline / 8 thesis
+                      （写 ingest_stage_done events，崩溃后下次默认续跑；--from N 强制重跑）
 ```
 
 > 大型文档（>50 页）分章节处理，每段确认。
@@ -774,7 +781,6 @@ const rows = await sql`SELECT * FROM pages WHERE id = ${1}`;
 | `ingest:finalize` 不可断点续跑 | 中途崩溃需整体重跑；events 表无 stage 完成标记 | ⭐⭐ |
 | brief → source 升级路径缺失 | 需撤销 ingest 后重跑；高频但不便 | ⭐⭐ |
 | Embedding 默认关 | 搜索是纯 keyword，召回受限 | ⭐ |
-| `ingest:next` legacy 兼容入口 | 标 deprecated 但未移除；批量处理时易把噪声塞进 source 池 | ⭐ |
 | stage-5-facts.ts 686 行偏大 | 可拆 tier-a / tier-b-tables 子模块（tier-c 已拆出） | ⭐ |
 
 ### 近期完成（2026-04 V2 chunker + sidecar 重构）

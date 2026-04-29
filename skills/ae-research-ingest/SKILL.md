@@ -381,16 +381,6 @@ bun src/cli.ts ingest:skip <pageId> --reason "..."
 
 ---
 
-## 兼容入口（不推荐）
-
-```bash
-bun src/cli.ts ingest:next        # = peek + 自动 commit（直接建 type='source'，不走 triage）
-```
-
-仅用于"明确知道一定要 commit 走 source"的场景。批量处理时容易把 twitter 噪声塞进 source 池，请避免。
-
----
-
 ## 完成后建议链式触发
 
 按 `CLAUDE.md` 的工作流：

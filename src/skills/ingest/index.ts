@@ -4,15 +4,15 @@
  * core 不做 LLM 推理，只做确定性落库。"理解原文 → 写 narrative" 由 agent 层
  * （`skills/ae-research-ingest/SKILL.md`）执行，调多段式 CLI 串联：
  *
- *   推荐流程（triage 一等公民）：
- *     1. ingest:peek                 — 列下一份候选 raw（不写库），返回 preview
+ *   Triage 流程：
+ *     1. ingest:peek                 — 列下一份候选 raw（不写库），返回 V2 信号 + preview
  *     2a. ingest:pass <rf> --reason  — agent 判定无关，标 raw_file 跳过
- *     2b. ingest:commit <rf>         — agent 判定值得，建 page 骨架 + chunks（Stage 1+2）
- *     3. ingest:write <pg>           — agent 通过 stdin 写 narrative
- *     4. ingest:finalize <pg>        — 跑 Stage 4-8 收尾
+ *     2b. ingest:commit <rf>         — agent 判定值得（深度 source），建 page 骨架 + chunks（Stage 1+2）
+ *     2c. ingest:brief  <rf>         — agent 判定为前沿动态（轻量 brief），建 page 骨架 + chunks
+ *     3. ingest:write <pg> [--file] — agent 通过 --file 或 stdin 写 narrative
+ *     4. ingest:finalize <pg> [--from N] — 跑 Stage 4-8 收尾（断点可续）
  *
- *   兜底：ingest:skip <pg> --reason  — 已 commit 后才发现不对（清理 page + 标 raw_file）
- *   兼容：ingest:next                — = peek + commit（直接建骨架，不走 triage；对短素材已不推荐）
+ *   兜底：ingest:skip <pg> --reason  — 已 commit/brief 后才发现不对（清理 page + 标 raw_file）
  *
  * 详细见 doc/architecture.md §4.1 与 skills/ae-research-ingest/SKILL.md。
  */
@@ -223,36 +223,7 @@ async function commitInternal(
 // ============================================================================
 
 /**
- * Step 1/3 (legacy): 取下一个待处理 raw_file，跑 Stage 1+2，返回上下文供 agent 处理。
- *
- * 等价于 peek + 自动 commit。新代码推荐显式分开走 triage 流程。
- */
-export async function ingestPrepareNext(): Promise<{
-  rawFileId: bigint;
-  pageId: bigint;
-  markdownUrl: string;
-  title: string;
-  researchType: string | null;
-} | null> {
-  const [rf] = await pickPending({ limit: 1 });
-  if (!rf) return null;
-
-  console.log(`[ingest:next] picked raw_file #${rf.id}: ${rf.title}`);
-  const ctx = await buildContext(rf);
-  ctx.pageId = await stage1CreateSkeleton(ctx, rf);
-  await stage2Chunk(ctx);
-
-  return {
-    rawFileId: rf.id,
-    pageId: ctx.pageId,
-    markdownUrl: rf.markdownUrl,
-    title: rf.title ?? "(untitled)",
-    researchType: rf.researchType,
-  };
-}
-
-/**
- * Step 2/3: agent 写完 narrative 后落库（pages.content + page_versions snapshot）。
+ * Step 2/4: agent 写完 narrative 后落库（pages.content + page_versions snapshot）。
  */
 export async function ingestWriteNarrative(
   pageId: bigint,

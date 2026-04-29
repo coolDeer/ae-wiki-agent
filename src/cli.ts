@@ -2,11 +2,13 @@
 /**
  * ae-wiki CLI 入口
  *
- * Ingest 走三段式（gbrain "thin harness, fat skill" 模式）：
- *   ae-wiki ingest:next                              # 拿待处理 raw_file 上下文
- *   ae-wiki ingest:write <id> --file file.md         # 从文件读 narrative 落库
- *   ae-wiki ingest:write <id> < file.md              # 或者从 stdin
- *   ae-wiki ingest:finalize <id>                     # 跑 Stage 4-8 收尾
+ * Ingest triage 流程（gbrain "thin harness, fat skill" 模式）：
+ *   ae-wiki ingest:peek                              # 看下一份 raw（不写库），返回 V2 信号 + preview
+ *   ae-wiki ingest:commit <raw_id>                   # 深度 source（建 page type=source）
+ *   ae-wiki ingest:brief  <raw_id>                   # 轻量 brief（建 page type=brief）
+ *   ae-wiki ingest:pass   <raw_id> --reason "..."    # 噪声跳过（不建 page）
+ *   ae-wiki ingest:write  <id> --file file.md        # 从文件读 narrative 落库
+ *   ae-wiki ingest:finalize <id>                     # 跑 Stage 4-8 收尾（断点可续）
  *
  * 编排 skill：skills/ae-research-ingest/SKILL.md（agent 读后执行）。
  *
@@ -46,10 +48,9 @@ function printHelp(): void {
   ae-wiki ingest:write <page_id> [--file <path>]  # 从 --file 或 stdin 读 narrative，落 pages.content + page_versions
   ae-wiki ingest:finalize <page_id>       # 跑 Stage 4-8 收尾
 
-  # —— 兼容入口 / 兜底 ——
-  ae-wiki ingest:next                     # legacy：peek + 自动 commit（短素材不推荐）
+  # —— 兜底 ——
   ae-wiki ingest:skip <page_id> --reason "..."
-                                          # 兜底：commit 后才发现不对（清理 page + 标 raw_file）
+                                          # commit/brief 后才发现不对（清理 page + 标 raw_file）
 
   ae-wiki worker                          # minion-worker 后台进程（兼容入口）
   ae-wiki verify-schema                   # 跑完 migration 后自查表/列；缺列自愈
@@ -139,9 +140,11 @@ async function main(): Promise<void> {
       break;
     }
 
-    case "ingest": {
+    case "ingest":
+    case "ingest:next": {
       console.error(
-        "命令 `ingest` 已废弃。改用三段式：ingest:next → agent 写 narrative → ingest:write → ingest:finalize\n" +
+        "命令 `ingest` / `ingest:next` 已下线。改用 triage 流程：\n" +
+          "  ingest:peek → ingest:commit | ingest:brief | ingest:pass → ingest:write → ingest:finalize\n" +
           "见 skills/ae-research-ingest/SKILL.md"
       );
       process.exit(1);
@@ -220,25 +223,6 @@ async function main(): Promise<void> {
           title: result.title,
           researchType: result.researchType,
           pageType: "brief",
-        })
-      );
-      break;
-    }
-
-    case "ingest:next": {
-      const { ingestPrepareNext } = await import("./skills/ingest/index.ts");
-      const result = await ingestPrepareNext();
-      if (!result) {
-        console.log("(没有待处理的 raw_files)");
-        process.exit(0);
-      }
-      console.log(
-        jsonStringify({
-          rawFileId: result.rawFileId.toString(),
-          pageId: result.pageId.toString(),
-          markdownUrl: result.markdownUrl,
-          title: result.title,
-          researchType: result.researchType,
         })
       );
       break;
