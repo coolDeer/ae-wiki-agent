@@ -778,7 +778,6 @@ const rows = await sql`SELECT * FROM pages WHERE id = ${1}`;
 | 项 | 影响 | 优先级 |
 |---|---|---|
 | **stage 1/3/4/5/6/7/8 缺单测** | 重构有回归风险；已有 v2-chunker / v2-tables / v2-stats 50 测试 | ⭐⭐⭐ |
-| brief → source 升级路径缺失 | 需撤销 ingest 后重跑；高频但不便 | ⭐⭐ |
 | Embedding 默认关 | 搜索是纯 keyword，召回受限 | ⭐ |
 | stage-5-facts.ts 686 行偏大 | 可拆 tier-a / tier-b-tables 子模块（tier-c 已拆出） | ⭐ |
 
@@ -790,6 +789,7 @@ const rows = await sql`SELECT * FROM pages WHERE id = ${1}`;
 - ✅ **stage-2 强制 V2**：raw_files 必须有 V2 URL，stage-2 缺则 throw；stage-5-facts narrative fallback 也下线
 - ✅ **content_chunks.section_path TEXT[]**：V2 chunker 写入；待 hybrid search / MCP 消费
 - ✅ **Stage 5 Tier C LLM 兜底**：`stage-5-tier-c.ts` 已实现并接入 stage-5-facts（OPENAI_FACT_EXTRACT_MODEL 默认 gpt-5-mini，env STAGE5_TIER_C_DISABLED 关）
+- ✅ **`ingest:promote`**：brief → source 升级，改 type/slug + 软删老 stage_done events，等待 7 段 narrative 重写 + finalize 全跑
 - ✅ **`ingest:finalize` 断点续跑**：每 stage 成功写 `ingest_stage_done` event，重跑自动跳过已完成；`--from N` 强制 stage N..8 重跑
 - ✅ **`ingest:peek` V2 信号**：返回 `hasContentListV2 / pageCount / tableCount / titleCount / topLevelSections`，agent 0 阅读量也能粗判 commit/brief/pass
 - ✅ **`search` 透传 section_path**：MCP search 返回 `section_path`，让 V2 chunker 写入的层级信息被消费

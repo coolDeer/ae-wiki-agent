@@ -300,6 +300,123 @@ export async function ingestSkip(
 }
 
 /**
+ * Promote：把 type='brief' 的 page 升级为 type='source'。
+ *
+ * 用例：peek 时判 brief，写完轻量 narrative + finalize 后才意识到内容值得深度
+ * source 化（频繁场景）。promote 之后，agent 再用 7 段 source 模板重写 narrative
+ * （`ingest:write`），然后 `ingest:finalize` 会自动从 stage 4 重跑（已完成 events 被软删）。
+ *
+ * 这一步只做 **元数据切换**，不动 content / chunks / facts / links：
+ *   1. page.type 'brief' → 'source'
+ *   2. page.slug `briefs/...` → `sources/...`
+ *   3. raw_files.triage_decision 'brief' → 'commit'
+ *   4. soft-delete 老的 ingest_stage_done events（让 finalize 全量重跑）
+ *   5. 写 ingest_promote audit event
+ *
+ * 反向（source → brief）当前不支持——deep ingest 不应回退。
+ */
+export async function ingestPromote(
+  pageId: bigint,
+  actor: string
+): Promise<{ oldSlug: string; newSlug: string; rawFileId: bigint | null }> {
+  const [page] = await db
+    .select({
+      id: schema.pages.id,
+      slug: schema.pages.slug,
+      type: schema.pages.type,
+    })
+    .from(schema.pages)
+    .where(and(eq(schema.pages.id, pageId), eq(schema.pages.deleted, 0)))
+    .limit(1);
+  if (!page) throw new Error(`page #${pageId} 不存在或已删除`);
+  if (page.type !== "brief") {
+    throw new Error(
+      `page #${pageId} 当前 type='${page.type}'，promote 仅支持 brief→source`
+    );
+  }
+  if (!page.slug.startsWith("briefs/")) {
+    throw new Error(
+      `page #${pageId} slug='${page.slug}' 不以 briefs/ 开头；promote 不知如何重命名`
+    );
+  }
+
+  const oldSlug = page.slug;
+  const newSlug = `sources/${oldSlug.slice("briefs/".length)}`;
+
+  // 反查 raw_file
+  const linked = await db
+    .select({ id: schema.rawFiles.id })
+    .from(schema.rawFiles)
+    .where(
+      drizzleSql`EXISTS (
+        SELECT 1 FROM events e
+        WHERE e.action = 'ingest_start'
+          AND e.entity_type = 'page'
+          AND e.entity_id = ${pageId}
+          AND (e.payload->>'rawFileId')::bigint = ${schema.rawFiles.id}
+      )`
+    )
+    .limit(1);
+  const rawFileId = linked[0]?.id ?? null;
+
+  // 1+2. page.type + slug
+  await db
+    .update(schema.pages)
+    .set({
+      type: "source",
+      slug: newSlug,
+      updateBy: actor,
+      updateTime: new Date(),
+    })
+    .where(eq(schema.pages.id, pageId));
+
+  // 3. raw_files.triage_decision
+  if (rawFileId !== null) {
+    await db
+      .update(schema.rawFiles)
+      .set({
+        triageDecision: "commit",
+        updateBy: actor,
+        updateTime: new Date(),
+      })
+      .where(eq(schema.rawFiles.id, rawFileId));
+  }
+
+  // 4. soft-delete 老 ingest_stage_done events（让 finalize 重跑全 stage）
+  await db
+    .update(schema.events)
+    .set({ deleted: 1, updateBy: actor, updateTime: new Date() })
+    .where(
+      and(
+        eq(schema.events.action, "ingest_stage_done"),
+        eq(schema.events.entityType, "page"),
+        eq(schema.events.entityId, pageId),
+        eq(schema.events.deleted, 0)
+      )
+    );
+
+  // 5. 写 promote event
+  await db.insert(schema.events).values({
+    actor,
+    action: "ingest_promote",
+    entityType: "page",
+    entityId: pageId,
+    payload: { oldSlug, newSlug, rawFileId: rawFileId?.toString() ?? null },
+    createBy: actor,
+    updateBy: actor,
+  });
+
+  console.log(
+    `✓ page #${pageId} promoted: ${oldSlug} → ${newSlug}\n` +
+      `  下一步：用 7 段 source 模板重写 narrative，再跑 ingest:finalize\n` +
+      `    bun src/cli.ts ingest:write ${pageId} --file <path>\n` +
+      `    bun src/cli.ts ingest:finalize ${pageId}`
+  );
+
+  return { oldSlug, newSlug, rawFileId };
+}
+
+/**
  * Step 4/4: 跑 Stage 4-8 收尾，标记 raw_files 已 ingest。
  *
  * **断点续跑**：每个 stage 成功后写 `ingest_stage_done` event，失败写 `ingest_stage_failed`。

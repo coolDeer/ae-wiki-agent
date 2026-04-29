@@ -48,9 +48,10 @@ function printHelp(): void {
   ae-wiki ingest:write <page_id> [--file <path>]  # 从 --file 或 stdin 读 narrative，落 pages.content + page_versions
   ae-wiki ingest:finalize <page_id>       # 跑 Stage 4-8 收尾
 
-  # —— 兜底 ——
+  # —— 兜底 / 升级 ——
   ae-wiki ingest:skip <page_id> --reason "..."
                                           # commit/brief 后才发现不对（清理 page + 标 raw_file）
+  ae-wiki ingest:promote <page_id>        # brief → source：改 type/slug，老 stage_done 软删，等待重写 narrative
 
   ae-wiki worker                          # minion-worker 后台进程（兼容入口）
   ae-wiki verify-schema                   # 跑完 migration 后自查表/列；缺列自愈
@@ -297,6 +298,26 @@ async function main(): Promise<void> {
       const { ingestSkip } = await import("./skills/ingest/index.ts");
       const result = await ingestSkip(BigInt(pageIdStr), reason, actor);
       console.log(jsonStringify({ pageId: pageIdStr, rawFileId: result.rawFileId?.toString() ?? null }));
+      break;
+    }
+
+    case "ingest:promote": {
+      const pageIdStr = args[0];
+      if (!pageIdStr) {
+        console.error("ingest:promote 需要 page_id 参数（type='brief' 的 page）");
+        process.exit(1);
+      }
+      const actor = getArg("--actor") ?? "agent:claude";
+      const { ingestPromote } = await import("./skills/ingest/index.ts");
+      const result = await ingestPromote(BigInt(pageIdStr), actor);
+      console.log(
+        jsonStringify({
+          pageId: pageIdStr,
+          oldSlug: result.oldSlug,
+          newSlug: result.newSlug,
+          rawFileId: result.rawFileId?.toString() ?? null,
+        })
+      );
       break;
     }
 

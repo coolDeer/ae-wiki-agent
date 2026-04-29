@@ -402,6 +402,37 @@ bun src/cli.ts ingest:skip <pageId> --reason "..."
 
 ---
 
+## 升级：brief → source
+
+如果一篇 brief 在写完后被发现值得深度处理（reading 后觉得信息密度足够支撑 7 段 source 模板），用 `ingest:promote` 把它升级：
+
+```bash
+bun src/cli.ts ingest:promote <pageId>
+```
+
+这一步只切换 **元数据**：
+- `page.type` `brief` → `source`
+- `page.slug` `briefs/...` → `sources/...`
+- `raw_files.triage_decision` `brief` → `commit`
+- 老的 `ingest_stage_done` events 软删（让 finalize 全 stage 重跑）
+
+之后 agent 必须做的两件事：
+
+```bash
+# 1. 用 7 段 source 模板重写 narrative
+bun src/cli.ts ingest:write <pageId> --file <path-to-7段.md>
+
+# 2. 跑 finalize（自动从 stage 4 开始全跑，因为 stage_done 已软删）
+bun src/cli.ts ingest:finalize <pageId>
+```
+
+**注意事项**：
+- 已 ingest 的 chunks / facts / links 不会自动清理；finalize 重跑时会以新 narrative 重新抽取，但残留数据要靠 stage 内部 dedupe 处理（precedent: facts:re-extract / links:re-extract）
+- 反向（source → brief）当前不支持。深度处理过的内容不应回退
+- promote 之后 wikilink 文本可能仍是 `[[briefs/...]]`，但 links 表用 page_id 关联，不会断；只是显示文本可能略陈旧
+
+---
+
 ## 完成后建议链式触发
 
 按 `CLAUDE.md` 的工作流：
