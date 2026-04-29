@@ -21,9 +21,6 @@ export const rawFiles = pgTable(
     markdownUrl: text("markdown_url").notNull(),
     /** 上游 parsedContentListV2S3 — mineru V2 block JSON；chunker 用，缺失时回退 markdown */
     parsedContentListV2Url: text("parsed_content_list_v2_url"),
-    /** ResearchReportRecord._id (hex)；唯一去重键 */
-    recordId: text("record_id"),
-    /** 上游 researchId（**非**唯一，同 researchId 可对应多份文件） */
     researchId: text("research_id"),
     researchType: text("research_type"),
     orgCode: text("org_code"),
@@ -41,10 +38,7 @@ export const rawFiles = pgTable(
     ...auditFields,
   },
   (t) => ({
-    recordIdUnique: uniqueIndex("uq_raw_files_record_id")
-      .on(t.recordId)
-      .where(sql`deleted = 0 AND record_id IS NOT NULL`),
-    researchIdIdx: index("idx_raw_files_research_id")
+    researchIdUnique: uniqueIndex("uq_raw_files_research_id")
       .on(t.researchId)
       .where(sql`deleted = 0 AND research_id IS NOT NULL`),
     pendingIdx: index("idx_raw_files_pending").on(t.createTime),

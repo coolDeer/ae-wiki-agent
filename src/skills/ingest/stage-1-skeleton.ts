@@ -50,7 +50,6 @@ export async function stage1CreateSkeleton(
           status: "active",
           confidence: "medium",
           frontmatter: {
-            record_id: rawFile.recordId,
             research_id: rawFile.researchId,
             research_type: rawFile.researchType,
             markdown_url: rawFile.markdownUrl,

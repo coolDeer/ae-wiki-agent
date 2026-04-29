@@ -22,7 +22,7 @@
              ▼
 ┌───────────────────────────────────────────────────────────────────┐
 │ raw_files (登记 + URL，不落正文)                                  │
-│   record_id 去重 / triage_decision / parsed_content_list_v2_url   │
+│   research_id 去重 / triage_decision / parsed_content_list_v2_url │
 └────────────┬──────────────────────────────────────────────────────┘
              │ ingest:peek → commit | brief | pass
              │ ingest:write → finalize (stage 1-8)
@@ -73,8 +73,7 @@ raw_files (
   id,
   markdown_url,                   -- mongo doc.parsedMarkdownS3 直链
   parsed_content_list_v2_url,     -- mongo doc.parsedContentListV2S3 直链 (V2 必备)
-  record_id,                      -- mongo doc._id (hex)，⭐ partial unique 去重键
-  research_id,                    -- mongo doc.researchId（**非**唯一，仅作分组）
+  research_id,                    -- mongo doc.researchId（partial unique，去重）
   research_type,                  -- mongo doc.researchType 字符串映射
   title, tags, mongo_doc,
   triage_decision,                -- 'pending' | 'pass' | 'commit' | 'brief'
@@ -84,9 +83,7 @@ raw_files (
 )
 ```
 
-> 上游业务约定：同一 `researchId` 可能对应多份不同文件（不同稿次 / 配套附件），所以
-> 真唯一键是 mongo `_id`。`extractRecordId()` 鲁棒提取 hex 字符串（覆盖 ObjectId
-> 实例 / EJSON `$oid` / 已是 string 三种形态）。
+> 上游已保证 `researchId` 唯一；研究项有重复时加 `-n` 后缀区分。
 
 **重点**：raw markdown / V2 JSON **不落本地**；ingest 阶段按 URL HTTP 拉。这样 mongo 同步是秒级的（之前是分钟级）。
 

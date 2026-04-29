@@ -25,7 +25,7 @@
          ↓
 ┌────────────────────────────────────────────────────┐
 │  raw_files 表 ─ 元数据 + markdown_url（S3 直链）   │
-│                  record_id 去重；不再落本地文件    │
+│                  research_id 去重；不再落本地文件  │
 └────────┬───────────────────────────────────────────┘
          │ ingest:peek/commit/write/finalize（按需 fetch URL）
          ↓
@@ -189,7 +189,7 @@ bun src/cli.ts links:re-extract <pageId>
 | **`theses`** | **投资论点状态机** | page_id, target_page_id, direction, conviction, status, catalysts, validation_conditions |
 | **`signals`** | **自动事件流** | signal_type, severity, entity_page_id, thesis_page_id |
 | `timeline_entries` | 结构化事件 | entity_page_id, event_date, event_type, summary |
-| `raw_files` | mongo 原文登记 | record_id (unique), research_id (group), markdown_url, triage_decision, ingested_page_id, skipped_at |
+| `raw_files` | mongo 原文登记 | research_id, markdown_url, triage_decision, ingested_page_id, skipped_at, skip_reason |
 | `raw_data` | JSONB sidecar (含 `source='tables'` 表格 artifact) | page_id, source, data |
 | `page_versions` | 快照 | page_id, content, reason, snapshot_at |
 | `events` | 审计 log（含 `lint_run` / `facts_expire` 报告） | actor, action, entity_type, entity_id, payload |
@@ -427,10 +427,9 @@ frontmatter 中 `tags` 使用 YAML 列表，小写英文，多词用短横线：
 
 ### 去重（fetch-reports 已自动处理）
 
-- `raw_files.record_id` partial unique（`WHERE deleted=0 AND record_id IS NOT NULL`）
-- `record_id` = mongo `ResearchReportRecord._id`（hex），由 `extractRecordId()` 鲁棒提取
-- **`research_id` 不唯一**：上游约定同 researchId 可对应多份不同文件；研究方一份 researchId 多稿场景已覆盖
-- `ON CONFLICT (record_id) WHERE deleted = 0 AND record_id IS NOT NULL DO NOTHING`：重推 mongo 同 _id 不重复入库
+- `raw_files.research_id` partial unique（`WHERE deleted=0 AND research_id IS NOT NULL`）
+- 上游已保证 `researchId` 唯一（重复研究项加 `-n` 后缀区分）
+- `ON CONFLICT (research_id) WHERE deleted = 0 AND research_id IS NOT NULL DO NOTHING`：mongo 同 research_id 重推不重复入库
 
 ### Research type 处理
 

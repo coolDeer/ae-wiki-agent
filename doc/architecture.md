@@ -138,7 +138,7 @@
                    ▲
                    │ ae-fetch-reports skill (手动 / 任意外部 scheduler)
                    │ (1) 查 ResearchReportRecord WHERE parseStatus='completed'
-                   │ (2) INSERT raw_files (markdown_url + record_id 去重；研究方一份 researchId 可对应多稿)
+                   │ (2) INSERT raw_files (markdown_url + research_id 去重)
                    │   raw 正文不落盘，ingest 时按需 fetch markdown_url
 ```
 
@@ -1112,7 +1112,7 @@ source 页正常应有 facts ≥ 1，brief 0 facts 是预期。
 
 ### 4.4 增量 vs 全量
 
-- **增量**：fetch-reports 幂等（partial unique on `record_id` = mongo `_id`；`research_id` 不唯一）；`ingestPickPending()` 过滤 `ingested_at IS NULL AND skipped_at IS NULL AND triage_decision='pending'`
+- **增量**：fetch-reports 幂等（partial unique on research_id 去重）；`ingestPickPending()` 过滤 `ingested_at IS NULL AND skipped_at IS NULL AND triage_decision='pending'`
 - **全量重建**：派生 stage 可逐 page 重跑，无需重 fetch；schema 升级时通过 `infra/migrations/vX.Y.Z-*.sql` + `scripts/run-X-migration.mjs` 跑迁移
 
 ### 4.5 维护任务（不在 ingest 主路径）
