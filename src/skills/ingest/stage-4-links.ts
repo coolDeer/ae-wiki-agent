@@ -14,7 +14,7 @@
  *   - 链接周围 context 提取（前后 N 字符）— 现在留空
  */
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { withCreateAudit } from "~/core/audit.ts";
 import { resolveOrCreatePage, slugToType } from "./_helpers.ts";
@@ -61,36 +61,22 @@ export async function stage4Links(ctx: IngestContext): Promise<void> {
     if (slug === page.slug) continue; // 不给自己建链
     if (!slugToType(slug)) continue;
 
-    // 自动 resolve / 创建
+    // resolveOrCreatePage 内部负责入队 enrich_entity（仅在真正新建时）。
+    // 这里仅记录 createdEntities 用于 stage 日志输出。
     const beforeCheck = await db
       .select({ id: schema.pages.id })
       .from(schema.pages)
-      .where(eq(schema.pages.slug, slug))
+      .where(and(eq(schema.pages.slug, slug), eq(schema.pages.deleted, 0)))
       .limit(1);
     const wasExisting = beforeCheck.length > 0;
 
     const targetId = await resolveOrCreatePage(slug, {
       actor: ctx.actor,
       autoCreate: true,
+      sourcePageId: ctx.pageId,
     });
     if (!targetId) continue;
-    if (!wasExisting) {
-      createdEntities++;
-      await db.insert(schema.minionJobs).values(
-        withCreateAudit(
-          {
-            name: "enrich_entity",
-            status: "waiting",
-            data: {
-              pageId: targetId.toString(),
-              slug,
-              sourcePageId: ctx.pageId.toString(),
-            },
-          },
-          ctx.actor
-        )
-      );
-    }
+    if (!wasExisting) createdEntities++;
 
     const inserted = await db
       .insert(schema.links)

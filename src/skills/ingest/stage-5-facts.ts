@@ -174,6 +174,7 @@ async function normalize(
   const entityPageId = await resolveOrCreatePage(f.entity, {
     actor: ctx.actor,
     autoCreate: true,
+    sourcePageId: ctx.pageId,
   });
   if (!entityPageId) return null;
 
