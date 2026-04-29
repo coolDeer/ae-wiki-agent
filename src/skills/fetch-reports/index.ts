@@ -1,17 +1,23 @@
 /**
  * fetch-reports skill
  *
- * 从上游 MongoDB ResearchReportRecord 集合同步元数据 + S3 markdown URL 到
- * raw_files 表。**不下载正文**——ingest 阶段按需 HTTP fetch。
+ * 从上游 MongoDB ResearchReportRecord 集合同步元数据 + S3 URL 到 raw_files 表。
+ * **不下载正文**——ingest 阶段按需 HTTP fetch。
  *
- * 去重：靠 raw_files.research_id partial unique index（INSERT ... ON CONFLICT DO NOTHING）。
+ * 去重：靠 raw_files.record_id partial unique index（INSERT ... ON CONFLICT DO NOTHING）。
+ * record_id = mongo doc._id；researchId 不唯一（同 id 可对应多份文件，由上游业务约定）。
  *
  * 详细流程见 doc/architecture.md §4.1 Stage 0 / §6.2 fetch-reports。
  */
 
 import { sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
-import { closeMongo, getResearchCollection, researchTypeName } from "~/core/mongo.ts";
+import {
+  closeMongo,
+  extractRecordId,
+  getResearchCollection,
+  researchTypeName,
+} from "~/core/mongo.ts";
 import { Actor } from "~/core/audit.ts";
 
 interface FetchReportsOptions {
@@ -95,11 +101,20 @@ export async function fetchReports(
       continue;
     }
 
-    // 去重：靠 research_id UNIQUE
+    let recordId: string;
+    try {
+      recordId = extractRecordId(doc._id);
+    } catch (e) {
+      result.failed++;
+      console.error(`✗ <_id 提取失败>: ${(e as Error).message}`);
+      continue;
+    }
+
+    // 去重：靠 record_id partial unique
     const existing = await db
       .select({ id: schema.rawFiles.id })
       .from(schema.rawFiles)
-      .where(drizzleSql`${schema.rawFiles.researchId} = ${doc.researchId}`)
+      .where(drizzleSql`${schema.rawFiles.recordId} = ${recordId}`)
       .limit(1);
     if (existing.length > 0) {
       result.skippedExisting++;
@@ -116,6 +131,7 @@ export async function fetchReports(
             sourceId: "default",
             markdownUrl: doc.parsedMarkdownS3,
             parsedContentListV2Url: doc.parsedContentListV2S3 ?? null,
+            recordId,
             researchId: doc.researchId,
             researchType: type,
             orgCode: doc.orgCode ?? null,
@@ -131,9 +147,9 @@ export async function fetchReports(
             updateTime: doc.updateTime,
           })
           .onConflictDoNothing({
-            target: schema.rawFiles.researchId,
-            // partial unique index: uq_raw_files_research_id
-            where: drizzleSql`deleted = 0 AND research_id IS NOT NULL`,
+            target: schema.rawFiles.recordId,
+            // partial unique index: uq_raw_files_record_id
+            where: drizzleSql`deleted = 0 AND record_id IS NOT NULL`,
           });
       }
 
@@ -141,7 +157,7 @@ export async function fetchReports(
       console.log(`✓ ${type}/${doc.title}`);
     } catch (e) {
       result.failed++;
-      console.error(`✗ ${doc.researchId}: ${(e as Error).message}`);
+      console.error(`✗ ${recordId}: ${(e as Error).message}`);
     }
   }
 

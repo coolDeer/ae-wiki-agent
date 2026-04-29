@@ -1,9 +1,15 @@
 import { MongoClient, type Collection, type Db } from "mongodb";
 import { getEnv } from "./env.ts";
 
-/** 上游 ResearchReportRecord 文档的 TS 类型（与示例 JSON 对齐）。 */
+/** 上游 ResearchReportRecord 文档的 TS 类型（与示例 JSON 对齐）。
+ *
+ * **`_id` 是真唯一**（ObjectId hex），`researchId` 不唯一（同 id 可对应多份文件）。
+ * 用 {@link extractRecordId} 把任意 `_id` 形态拍成 hex 字符串。
+ */
 export interface ResearchReportRecord {
-  _id: { $oid?: string } | string; // MongoDB ObjectId
+  // mongo Node 驱动默认返回 ObjectId 实例（含 toHexString）；EJSON 解析后是 { $oid }；
+  // ad-hoc 也可能直接是 hex 字符串。三种都允许。
+  _id: { toHexString?: () => string; $oid?: string } | string;
   reportUrl: string;
   researchId: string;
   researchType: number;            // 见 architecture.md ResearchType 枚举
@@ -88,4 +94,22 @@ const RESEARCH_TYPE_NAMES: Record<number, string> = {
 
 export function researchTypeName(t: number): string {
   return RESEARCH_TYPE_NAMES[t] ?? `unknown_${t}`;
+}
+
+/**
+ * 把 mongo doc._id 拍成 hex 字符串（去重键）。
+ * 兼容三种形态：
+ *   1. mongodb 驱动默认的 ObjectId 实例（含 .toHexString()）
+ *   2. EJSON 解析出来的 `{ $oid: 'hex' }` 对象
+ *   3. 已经是 hex string
+ */
+export function extractRecordId(rawId: ResearchReportRecord["_id"]): string {
+  if (rawId == null) throw new Error("ResearchReportRecord._id 为空");
+  if (typeof rawId === "string") return rawId;
+  if (typeof rawId === "object") {
+    if (typeof rawId.toHexString === "function") return rawId.toHexString();
+    if (typeof rawId.$oid === "string") return rawId.$oid;
+  }
+  // 兜底：toString 取代（ObjectId 的 toString 默认返回 hex）
+  return String(rawId);
 }

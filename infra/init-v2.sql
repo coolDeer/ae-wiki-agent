@@ -280,7 +280,8 @@ CREATE TABLE IF NOT EXISTS raw_files (
   source_id         TEXT        NOT NULL DEFAULT 'default',
   markdown_url      TEXT        NOT NULL,                       -- 上游 parsedMarkdownS3 直链；ingest 按需 fetch（不再落盘）
   parsed_content_list_v2_url TEXT,                              -- 上游 parsedContentListV2S3；mineru V2 block JSON，chunker 用
-  research_id       TEXT,                                       -- 上游 ResearchReportRecord.researchId
+  record_id         TEXT,                                       -- 上游 ResearchReportRecord._id (hex)；唯一去重键
+  research_id       TEXT,                                       -- 上游 researchId（同 id 可对应多份文件，**非**唯一）
   research_type     TEXT,                                       -- 'meeting_minutes' | 'arete' | 'twitter' | ...
   org_code          TEXT,                                       -- 上游 orgCode (如 'JG1000')，后续作为组织权限基础
   title             TEXT,
@@ -558,8 +559,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_timeline_dedup
   WHERE deleted = 0;
 
 -- 3.9 raw_files
-CREATE UNIQUE INDEX IF NOT EXISTS uq_raw_files_research_id
-  ON raw_files (research_id) WHERE deleted = 0 AND research_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_raw_files_record_id
+  ON raw_files (record_id) WHERE deleted = 0 AND record_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_raw_files_research_id   ON raw_files (research_id) WHERE deleted = 0 AND research_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_raw_files_pending       ON raw_files (create_time DESC) WHERE triage_decision = 'pending' AND ingested_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_raw_files_research_type ON raw_files (research_type);
 CREATE INDEX IF NOT EXISTS idx_raw_files_triage_decision ON raw_files (triage_decision);

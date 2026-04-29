@@ -81,9 +81,14 @@ mongo.ResearchReportRecord
   WHERE parseStatus='completed' AND parsedMarkdownS3 IS NOT NULL
   ORDER BY createTime DESC
         ↓
-INSERT INTO raw_files (markdownUrl=parsedMarkdownS3, researchId, researchType,
-                       title, mongoDoc=<full doc as JSONB>, parseStatus, ...)
-  ON CONFLICT (research_id) WHERE deleted=0 DO NOTHING   (去重)
+INSERT INTO raw_files (
+  markdown_url = parsedMarkdownS3,
+  parsed_content_list_v2_url = parsedContentListV2S3,
+  record_id = extractRecordId(_id),    -- 唯一去重键
+  research_id = researchId,            -- 非唯一，仅作分组列
+  research_type, title, mongo_doc, parse_status, ...
+)
+ON CONFLICT (record_id) WHERE deleted=0 DO NOTHING   (去重)
         ↓
 ae-research-ingest:peek 拿 raw_file → fetch(markdownUrl) → 处理
 ```
@@ -95,7 +100,7 @@ ae-research-ingest:peek 拿 raw_file → fetch(markdownUrl) → 处理
 - **默认日期窗口 = 本地时区昨天 [00:00, 24:00)**，按 `createTime` 过滤；`--all` 才退回旧的"全量未同步"行为
 - 用 `createTime`（不是 `updateTime`）的原因：上游会对历史报告做批量 reparse / 元数据更新，这会刷新 `updateTime` 但不变 `createTime`；按 `createTime` 过滤才能拿到"真正昨天新进的内容"，避免历史 backfill 灌进队列
 - mongo cursor 始终按 `createTime` 倒序，`--limit N` 控制条数
-- **去重靠 `raw_files.research_id` partial unique index**（`WHERE deleted=0`），重复跑无副作用
+- **去重靠 `raw_files.record_id` partial unique index**（`record_id` = mongo `_id`，`WHERE deleted=0`），重复跑无副作用。**注意**：`research_id` 不唯一，同 researchId 可对应多份不同文件
 - **不要在没确认的情况下连跑 ingest**：先把新文件清单展示给用户，由用户决定是否继续
 - 单条 INSERT 失败不中断整体（catch 里只记 `failed++`），最后汇总报错
 - **跟老项目的 Python 脚本无关**：本项目没有 `scripts/fetch_reports.py`，没有 `.meta.json` sidecar——所有元数据进 `raw_files.mongo_doc` JSONB 字段
