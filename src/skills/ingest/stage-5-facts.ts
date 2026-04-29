@@ -1,79 +1,34 @@
 /**
- * Stage 5: 三层 Fact 抽取
+ * Stage 5 Fact 抽取 orchestrator —— 三层调度 + 落库。
  *
- * Tier A: <!-- facts ... --> YAML block 直读（agent 在 Stage 3 写入）  ✓ 实现
- * Tier B: narrative markdown table fallback                          ✓ MVP
- * Tier C: LLM 兜底（OPENAI_FACT_EXTRACT_MODEL，默认 gpt-5-mini）       ✓ 实现 (stage-5-tier-c.ts)
+ * 三层抽取（实现拆到独立模块）：
+ *   - Tier A: stage-5-tier-a.ts — `<!-- facts ... -->` YAML 直读
+ *   - Tier B: stage-5-tier-b.ts — markdown table 结构化解析
+ *   - Tier C: stage-5-tier-c.ts — LLM 兜底（OPENAI_FACT_EXTRACT_MODEL，env STAGE5_TIER_C_DISABLED 关）
  *
- * 流程：
- *   1. 读 page.content
- *   2. Tier A 解析 YAML 块
- *   3. Tier B 从 markdown table 补漏
- *   4. Tier C 把 (entity, metric, period) 三元组传给 LLM，让它从 prose 里挑漏抓
- *      - source_quote 必须是 narrative 子串（normalized whitespace），防幻觉
- *      - fail-soft：API 抛错时跳过，不中断 finalize
- *      - 关闭：env STAGE5_TIER_C_DISABLED=true
- *   5. 对每条 candidate:
- *      - resolveOrCreatePage(entity slug) → entity_page_id
- *      - 校验 + 单位归一（pct 自动 100→1）
- *      - 同 (entity, metric, period) 已有 fact 标 valid_to=today（覆盖语义）
- *      - INSERT 新 fact，metadata.extracted_by ∈ {tier_a, tier_b, tier_c}
- *
- * 为什么 Tier B 仍保留：表格里高频出现的 period matrix（FY26E / FY27E ...）
- *   走结构化 parser 比 LLM 准确度高、零成本。Tier C 是漏网之鱼的兜底。
+ * orchestrator 职责（保留在本文件）：
+ *   1. 取 page.content
+ *   2. 跑 A / B 两层
+ *   3. 用 (entity, metric, period) 三元组算 alreadyKeys，传给 Tier C 让它从 prose 补漏
+ *   4. dedupe + normalize（含 pct 自动归一 100→1）
+ *   5. 同 (entity, metric, period) 旧 fact 标 valid_to=today（覆盖语义）
+ *   6. INSERT 新 fact，metadata.extracted_by ∈ {tier_a, tier_b, tier_c}
  */
 
 import { eq, and, isNull, sql as drizzleSql } from "drizzle-orm";
-import * as YAML from "yaml";
 import { db, schema } from "~/core/db.ts";
 import { withCreateAudit } from "~/core/audit.ts";
 import { resolveOrCreatePage } from "./_helpers.ts";
 import type { IngestContext } from "~/core/types.ts";
-import {
-  isTableBundle,
-  type TableArtifact,
-} from "~/core/v2-tables.ts";
+import { extractTierA } from "./stage-5-tier-a.ts";
+import { extractTierBFromTables } from "./stage-5-tier-b.ts";
 import { extractTierC } from "./stage-5-tier-c.ts";
-
-interface YamlFact {
-  entity: string;
-  metric: string;
-  period?: string;
-  value: number | string;
-  unit?: string;
-  source_quote?: string;
-  confidence?: number;
-  table_id?: string;
-  row_index?: number;
-  column_index?: number;
-  period_header?: string;
-  metric_header?: string;
-  cell_ref?: string;
-  header_path?: string[];
-}
-
-interface NormalizedFact {
-  entity_page_id: bigint;
-  metric: string;
-  period: string | null;
-  value_numeric: string | null;
-  value_text: string | null;
-  unit: string | null;
-  confidence: string;
-  source_quote: string | null;
-  extracted_by: "tier_a" | "tier_b" | "tier_c";
-  table_id: string | null;
-  row_index: number | null;
-  column_index: number | null;
-  period_header: string | null;
-  metric_header: string | null;
-  cell_ref: string | null;
-  header_path: string[] | null;
-}
-
-interface CandidateFact extends YamlFact {
-  extractedBy: "tier_a" | "tier_b" | "tier_c";
-}
+import type {
+  CandidateFact,
+  ExtractedBy,
+  NormalizedFact,
+  YamlFact,
+} from "./stage-5-types.ts";
 
 export async function stage5Facts(ctx: IngestContext): Promise<void> {
   const [page] = await db
@@ -83,19 +38,18 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
     .limit(1);
   if (!page) return;
 
-  const tierA = extractTierA(page.content).map((fact) => ({
+  const tierA: CandidateFact[] = extractTierA(page.content).map((fact) => ({
     ...fact,
     extractedBy: "tier_a" as const,
   }));
-  const tierB = (await extractTierBFromTables(ctx.pageId, page.content)).map((fact) => ({
-    ...fact,
-    extractedBy: "tier_b" as const,
-  }));
+  const tierB: CandidateFact[] = (
+    await extractTierBFromTables(ctx.pageId, page.content)
+  ).map((fact) => ({ ...fact, extractedBy: "tier_b" as const }));
 
   console.log(`  [stage5] tier A: ${tierA.length} candidate facts`);
   console.log(`  [stage5] tier B: ${tierB.length} candidate facts`);
 
-  // Tier C：把已抽到的 (entity, metric, period) 三元组传给 LLM，让它从 prose 补漏
+  // Tier C：把 A+B 已有的 (entity, metric, period) 传过去，让 LLM 只补漏
   const alreadyKeys = new Set<string>();
   for (const f of [...tierA, ...tierB]) {
     alreadyKeys.add(
@@ -184,240 +138,19 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
   console.log(`  [stage5] inserted=${inserted} skipped=${skipped}`);
 }
 
-function extractTierA(content: string): YamlFact[] {
-  const m = content.match(/<!--\s*facts\s*\n([\s\S]+?)\n\s*-->/);
-  if (!m || !m[1]) return [];
-
-  try {
-    const parsed = YAML.parse(m[1]);
-    if (!Array.isArray(parsed)) {
-      console.warn("  [stage5:tierA] facts block 不是数组");
-      return [];
-    }
-    return parsed.filter(
-      (f: unknown): f is YamlFact =>
-        typeof f === "object" &&
-        f !== null &&
-        "entity" in f &&
-        "metric" in f &&
-        "value" in f
-    );
-  } catch (e) {
-    console.warn(`  [stage5:tierA] YAML 解析失败:`, (e as Error).message);
-    return [];
-  }
-}
-
-async function extractTierBFromTables(
-  pageId: bigint,
-  content: string
-): Promise<YamlFact[]> {
-  const pageEntity = inferSingleEntitySlug(content);
-  const facts: YamlFact[] = [];
-  const tableSources = await loadTableSources(pageId);
-
-  for (const table of tableSources) {
-    facts.push(...extractExplicitFacts(table, pageEntity));
-    facts.push(...extractMatrixFacts(table, pageEntity));
-  }
-
-  return dedupeYamlFacts(facts);
-}
-
-async function loadTableSources(pageId: bigint): Promise<TableLike[]> {
-  const [raw] = await db
-    .select({ data: schema.rawData.data })
-    .from(schema.rawData)
-    .where(
-      and(
-        eq(schema.rawData.pageId, pageId),
-        eq(schema.rawData.source, "tables"),
-        eq(schema.rawData.deleted, 0)
-      )
-    )
-    .limit(1);
-
-  if (raw && isTableBundle(raw.data)) {
-    return raw.data.tables.map(fromArtifactTable);
-  }
-  return [];
-}
-
-interface TableLike {
-  tableId: string;
-  headers: string[];
-  rows: string[][];
-  raw: string;
-  rowRaws: string[];
-}
-
-function fromArtifactTable(table: TableArtifact): TableLike {
-  return {
-    tableId: table.table_id,
-    headers: table.headers,
-    rows: table.rows,
-    raw: table.raw_markdown,
-    rowRaws: table.row_markdowns,
-  };
-}
-
-function extractExplicitFacts(
-  table: TableLike,
-  pageEntity: string | null
-): YamlFact[] {
-  const headers = table.headers.map(normalizeHeader);
-  const entityIdx = findHeaderIndex(headers, ["entity", "company", "target", "subject", "ticker", "slug"]);
-  const metricIdx = findHeaderIndex(headers, ["metric", "item", "kpi"]);
-  const periodIdx = findHeaderIndex(headers, ["period", "quarter", "timeframe", "date", "fiscal_period"]);
-  const valueIdx = findHeaderIndex(headers, ["value", "data", "figure", "amount", "result", "number"]);
-  const unitIdx = findHeaderIndex(headers, ["unit", "currency", "multiple"]);
-
-  if (metricIdx === -1 || valueIdx === -1) return [];
-
-  const facts: YamlFact[] = [];
-  for (let rowIdx = 0; rowIdx < table.rows.length; rowIdx++) {
-    const row = table.rows[rowIdx] ?? [];
-    const rowRaw = table.rowRaws[rowIdx] ?? table.raw;
-
-    const entity = resolveEntitySlug(
-      entityIdx === -1 ? "" : row[entityIdx] ?? "",
-      pageEntity
-    );
-    if (!entity) continue;
-
-    const metricMeta = parseMetricCell(row[metricIdx] ?? "");
-    if (!metricMeta.metric) continue;
-
-    const parsedValue = parseValueCell(
-      row[valueIdx] ?? "",
-      unitIdx === -1 ? null : row[unitIdx] ?? null,
-      metricMeta.unit
-    );
-    if (!parsedValue) continue;
-
-    facts.push({
-      entity,
-      metric: metricMeta.metric,
-      period: periodIdx === -1 ? undefined : normalizePeriod(row[periodIdx] ?? ""),
-      value: parsedValue.value,
-      unit: parsedValue.unit ?? metricMeta.unit ?? undefined,
-      source_quote: rowRaw,
-      table_id: table.tableId,
-      row_index: rowIdx,
-      column_index: valueIdx,
-      period_header:
-        periodIdx === -1 ? undefined : (table.headers[periodIdx] ?? undefined),
-      metric_header: table.headers[metricIdx] ?? undefined,
-      cell_ref: toCellRef(rowIdx, valueIdx),
-      header_path: compactHeaders([
-        table.headers[metricIdx] ?? undefined,
-        table.headers[valueIdx] ?? undefined,
-      ]),
-    });
-  }
-
-  return facts;
-}
-
-function extractMatrixFacts(
-  table: TableLike,
-  pageEntity: string | null
-): YamlFact[] {
-  const headers = table.headers.map(normalizeHeader);
-  const metricIdx = findHeaderIndex(headers, ["metric", "item", "kpi"]);
-  if (metricIdx === -1) return [];
-
-  const entityIdx = findHeaderIndex(headers, ["entity", "company", "target", "subject", "ticker", "slug"]);
-  const unitIdx = findHeaderIndex(headers, ["unit", "currency", "multiple"]);
-  const explicitValueIdx = findHeaderIndex(headers, ["value", "data", "figure", "amount", "result", "number"]);
-  if (explicitValueIdx !== -1) return [];
-
-  const periodColumns = headers
-    .map((header, idx) => ({ header, idx, raw: table.headers[idx] ?? "" }))
-    .filter(({ idx }) => idx !== metricIdx && idx !== entityIdx && idx !== unitIdx)
-    .filter(({ raw }) => looksLikePeriodHeader(raw));
-
-  if (periodColumns.length === 0) return [];
-
-  const facts: YamlFact[] = [];
-  for (let rowIdx = 0; rowIdx < table.rows.length; rowIdx++) {
-    const row = table.rows[rowIdx] ?? [];
-    const rowRaw = table.rowRaws[rowIdx] ?? table.raw;
-    const entity = resolveEntitySlug(
-      entityIdx === -1 ? "" : row[entityIdx] ?? "",
-      pageEntity
-    );
-    if (!entity) continue;
-
-    const metricMeta = parseMetricCell(row[metricIdx] ?? "");
-    if (!metricMeta.metric) continue;
-
-    const inheritedUnit =
-      metricMeta.unit ?? (unitIdx === -1 ? null : parseUnitText(row[unitIdx] ?? ""));
-
-    for (const column of periodColumns) {
-      const parsedValue = parseValueCell(
-        row[column.idx] ?? "",
-        null,
-        inheritedUnit
-      );
-      if (!parsedValue) continue;
-
-      facts.push({
-        entity,
-        metric: metricMeta.metric,
-        period: normalizePeriod(column.raw),
-        value: parsedValue.value,
-        unit: parsedValue.unit ?? inheritedUnit ?? undefined,
-        source_quote: rowRaw,
-        table_id: table.tableId,
-        row_index: rowIdx,
-        column_index: column.idx,
-        period_header: column.raw,
-        metric_header: table.headers[metricIdx] ?? undefined,
-        cell_ref: toCellRef(rowIdx, column.idx),
-        header_path: compactHeaders([
-          table.headers[metricIdx] ?? undefined,
-          column.raw,
-        ]),
-      });
-    }
-  }
-
-  return facts;
-}
+// =============================================================================
+// dedupe + normalize（orchestrator 私有）
+// =============================================================================
 
 function dedupeCandidates(facts: CandidateFact[]): CandidateFact[] {
   const seen = new Set<string>();
   const result: CandidateFact[] = [];
-
   for (const fact of facts) {
     const key = candidateKey(fact);
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(fact);
   }
-
-  return result;
-}
-
-function dedupeYamlFacts(facts: YamlFact[]): YamlFact[] {
-  const seen = new Set<string>();
-  const result: YamlFact[] = [];
-
-  for (const fact of facts) {
-    const key = [
-      fact.entity.trim(),
-      fact.metric.trim(),
-      (fact.period ?? "").trim(),
-      String(fact.value).trim(),
-      (fact.unit ?? "").trim(),
-    ].join("|");
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(fact);
-  }
-
   return result;
 }
 
@@ -431,195 +164,10 @@ function candidateKey(fact: CandidateFact): string {
   ].join("|");
 }
 
-function findHeaderIndex(headers: string[], aliases: string[]): number {
-  return headers.findIndex((header) => aliases.includes(header));
-}
-
-function normalizeHeader(header: string): string {
-  return stripMarkdown(header)
-    .toLowerCase()
-    .replace(/[%/()]+/g, " ")
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
-
-function parseMetricCell(cell: string): { metric: string | null; unit: string | null } {
-  const stripped = stripMarkdown(cell).trim();
-  if (stripped.length === 0) return { metric: null, unit: null };
-
-  const unitMatch = stripped.match(/\(([^)]+)\)\s*$/);
-  const unit = unitMatch ? parseUnitText(unitMatch[1] ?? "") : null;
-  const metricText = stripped.replace(/\(([^)]+)\)\s*$/, "").trim();
-  const metric = metricText
-    .toLowerCase()
-    .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-
-  return {
-    metric: metric.length > 0 ? metric : null,
-    unit,
-  };
-}
-
-function parseValueCell(
-  cell: string,
-  unitCell: string | null,
-  inheritedUnit: string | null
-): { value: number | string; unit: string | null } | null {
-  const stripped = stripMarkdown(cell).trim();
-  if (
-    stripped.length === 0 ||
-    /^(-|n\/a|na|nm|none)$/i.test(stripped)
-  ) {
-    return null;
-  }
-
-  const explicitUnit = parseUnitText(unitCell ?? "") ?? inheritedUnit;
-  let working = stripped;
-  let detectedUnit = explicitUnit;
-
-  if (working.includes("%")) {
-    detectedUnit = "pct";
-    working = working.replace(/%/g, "");
-  }
-
-  const currencyPrefix = working.match(/^\s*(USD|US\$|\$|JPY|¥|CNY|RMB|CN¥|EUR|€|GBP|£)\s*/i)?.[1] ?? null;
-  if (currencyPrefix) {
-    working = working.replace(/^\s*(USD|US\$|\$|JPY|¥|CNY|RMB|CN¥|EUR|€|GBP|£)\s*/i, "");
-  }
-
-  const scaleMatch = working.match(/\s*(bn|billion|b|mm|million|m|k|x)\s*$/i)?.[1] ?? null;
-  if (scaleMatch) {
-    working = working.replace(/\s*(bn|billion|b|mm|million|m|k|x)\s*$/i, "");
-  }
-
-  const numericText = working.replace(/,/g, "").trim();
-  if (/^[+-]?\d*\.?\d+$/.test(numericText)) {
-    const value = Number(numericText);
-    if (!Number.isFinite(value)) return null;
-
-    if (!detectedUnit) {
-      detectedUnit = inferUnitFromCurrencyAndScale(currencyPrefix, scaleMatch);
-    }
-
-    return {
-      value,
-      unit: detectedUnit,
-    };
-  }
-
-  return {
-    value: stripped,
-    unit: detectedUnit,
-  };
-}
-
-function inferUnitFromCurrencyAndScale(
-  currencyPrefix: string | null,
-  scale: string | null
-): string | null {
-  const currency = currencyPrefix?.toLowerCase() ?? "";
-  const normalizedScale = scale?.toLowerCase() ?? "";
-
-  if (normalizedScale === "x") return "x";
-
-  if (currency === "$" || currency === "usd" || currency === "us$") {
-    if (normalizedScale === "m" || normalizedScale === "mm" || normalizedScale === "million") return "usd_m";
-    if (normalizedScale === "bn" || normalizedScale === "b" || normalizedScale === "billion") return "usd_bn";
-    return "usd";
-  }
-  if (currency === "¥" || currency === "jpy") {
-    if (normalizedScale === "m" || normalizedScale === "mm" || normalizedScale === "million") return "jpy_m";
-    return "jpy";
-  }
-  if (currency === "cny" || currency === "rmb" || currency === "cn¥") {
-    if (normalizedScale === "bn" || normalizedScale === "b" || normalizedScale === "billion") return "cny_bn";
-    if (normalizedScale === "m" || normalizedScale === "mm" || normalizedScale === "million") return "cny_m";
-    return "cny";
-  }
-  if (currency === "€" || currency === "eur") return "eur";
-  if (currency === "£" || currency === "gbp") return "gbp";
-
-  if (normalizedScale === "x") return "x";
-  return null;
-}
-
-function parseUnitText(text: string): string | null {
-  const normalized = stripMarkdown(text)
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (normalized.length === 0) return null;
-  if (normalized === "%" || normalized.includes("pct") || normalized.includes("percent")) return "pct";
-  if (normalized === "x" || normalized.includes("turn")) return "x";
-  if (/(usd|us\$|\$).*(bn|billion| b)/.test(normalized)) return "usd_bn";
-  if (/(usd|us\$|\$).*(mm|million| m)/.test(normalized)) return "usd_m";
-  if (/(jpy|¥).*(mm|million| m)/.test(normalized)) return "jpy_m";
-  if (/(cny|rmb|cn¥).*(bn|billion| b)/.test(normalized)) return "cny_bn";
-  if (/(cny|rmb|cn¥).*(mm|million| m)/.test(normalized)) return "cny_m";
-  if (normalized === "usd" || normalized === "$") return "usd";
-  if (normalized === "jpy" || normalized === "¥") return "jpy";
-  if (normalized === "cny" || normalized === "rmb" || normalized === "cn¥") return "cny";
-  return normalized.replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || null;
-}
-
-function looksLikePeriodHeader(header: string): boolean {
-  const value = stripMarkdown(header).trim();
-  if (value.length === 0) return false;
-
-  return /^(current|ttm|ltm|ntm|fy\d{2,4}[ae]?|[1-4]q\d{2,4}[ae]?|h[12]\d{2,4}[ae]?|\d{4}-\d{2}-\d{2}|\d{4}[ae]?)$/i.test(
-    value
-  );
-}
-
-function normalizePeriod(value: string): string | undefined {
-  const stripped = stripMarkdown(value).trim();
-  return stripped.length > 0 ? stripped : undefined;
-}
-
-function resolveEntitySlug(cell: string, fallback: string | null): string | null {
-  const explicit = extractEntitySlugs(cell);
-  if (explicit.length === 1) return explicit[0] ?? null;
-
-  const stripped = stripMarkdown(cell).trim();
-  if (/^(companies|industries|persons|concepts)\/.+/.test(stripped)) {
-    return stripped;
-  }
-
-  if (explicit.length === 0) return fallback;
-  return null;
-}
-
-function inferSingleEntitySlug(content: string): string | null {
-  const slugs = extractEntitySlugs(content);
-  const unique = Array.from(new Set(slugs));
-  return unique.length === 1 ? (unique[0] ?? null) : null;
-}
-
-function extractEntitySlugs(text: string): string[] {
-  const matches = Array.from(
-    text.matchAll(/\[\[((?:companies|industries|persons|concepts)\/[^\]|]+)(?:\|[^\]]+)?\]\]/g)
-  );
-  return matches.map((match) => match[1] ?? "").filter((slug) => slug.length > 0);
-}
-
-function stripMarkdown(text: string): string {
-  return text
-    .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2")
-    .replace(/\[\[([^\]]+)\]\]/g, "$1")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/\*\*([^*]+)\*\*/g, "$1")
-    .replace(/\*([^*]+)\*/g, "$1")
-    .replace(/<[^>]+>/g, "")
-    .trim();
-}
-
 async function normalize(
   f: YamlFact,
   ctx: IngestContext,
-  extractedBy: "tier_a" | "tier_b" | "tier_c"
+  extractedBy: ExtractedBy
 ): Promise<NormalizedFact | null> {
   if (!f.entity || typeof f.entity !== "string") return null;
 
@@ -675,12 +223,4 @@ async function normalize(
     cell_ref: f.cell_ref ?? null,
     header_path: Array.isArray(f.header_path) ? f.header_path : null,
   };
-}
-
-function toCellRef(rowIndex: number, columnIndex: number): string {
-  return `r${rowIndex}c${columnIndex}`;
-}
-
-function compactHeaders(headers: Array<string | undefined>): string[] {
-  return headers.filter((header): header is string => Boolean(header && header.trim().length > 0));
 }
