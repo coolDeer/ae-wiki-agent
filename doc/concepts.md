@@ -320,6 +320,22 @@ signals (
 - **stage-8** 在 ingest 完成时扫一遍：本 source 提到的实体里有没有 active thesis 的 target → 写一条 `thesis_validation` signal（`severity='info'`，提示 PM 「新 source 触及」）
 - **`detect_signals` minion job**（worker 异步跑）：跨 source 比对发现 expectation gap
 
+### Enrich vs Thesis-track：wiki 的两层
+
+经常被混淆，一句话区分：
+
+> **`ae-enrich` 是「让 wiki 长出来」，`ae-thesis-track` 是「让 wiki 帮你做决策」。**
+
+| | `ae-enrich` | `ae-thesis-track` |
+|---|---|---|
+| 关心 | 个体页面**内容** | 跨页面的投资**判断** |
+| 数据形态 | narrative + 元数据（ticker/sector/aliases） | catalysts / conditions / conviction（状态机） |
+| 触发 | stage 4 自动入队 + `enrich:next` 手动 | PM 表态 / 周期 review，从 0 → 开仓 |
+| 典型操作 | 把空壳红链填满，`confidence: low → medium/high` | open / write / update --add-catalyst / --mark-condition / close |
+| 失败语义 | 信息不足时保 `low`，等下次 source 来再补 | invalidated / stop_loss → `thesis:close --reason ...` |
+
+可以这么记：enrich 是**编辑器**，thesis-track 是**仪表盘**。两者通过 `pages` 共享底层数据，但服务的人和频率不同——enrich 是后台持续跑的（红链一长出来就派活），thesis-track 是 PM 每周 review 时才动。
+
 ---
 
 ## 11. 八阶段 ingest pipeline
@@ -450,13 +466,14 @@ query
 
 ## 17. 心智模型 TL;DR
 
-如果你只能记 5 件事：
+如果你只能记 6 件事：
 
 1. **万物皆 page** — 一种数据形态对齐 search / 反链 / 审计
 2. **三选一 triage** — `commit (深度)` / `brief (轻量)` / `pass (噪声)`
 3. **content_chunks 给搜索，raw_data 给精确取数** — 两条管道都从 V2 派生
 4. **Wikilink 自动长出红链 entity** — `confidence='low'` → 后台 enrich 升级
 5. **facts 是时间旅行** — 旧值 `valid_to=today`，新值 `valid_to=NULL`
+6. **enrich 让 wiki 长出来，thesis-track 让 wiki 帮你做决策** — 一个填内容，一个跑状态机
 
 ---
 
