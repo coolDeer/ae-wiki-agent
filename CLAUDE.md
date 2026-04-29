@@ -705,12 +705,26 @@ const rows = await sql`SELECT * FROM pages WHERE id = ${1}`;
 | `MONGODB_COLLECTION` | — | ResearchReportRecord | |
 | `OPENAI_API_KEY` | ✅ | — | embedding 用 |
 | `OPENAI_EMBEDDING_MODEL` | — | text-embedding-3-large | |
-| `EMBEDDING_DISABLED` | — | false | true 时跳过 embedding 调用，搜索退化为 keyword-only |
+| `EMBEDDING_DISABLED` | — | false | ⚠️ 见下方说明；线上务必保持 false |
 | `OPENAI_AGENT_MODEL` | — | `gpt-5-mini` | durable agent runtime 默认模型 |
 | `OPENAI_FACT_EXTRACT_MODEL` | — | `gpt-5-mini` | 预留给未来 Stage 5 Tier C fact 抽取 |
 | `WORKSPACE_DIR` | — | `.` | wiki/output/ 等派生产物根目录；raw 已不再落盘 |
 | `WIKI_SOURCE_BOOST` | — | — | `"prefix:1.5,..."` 覆盖默认 source-boost 表 |
 | `WIKI_SEARCH_EXCLUDE` | — | — | 硬排除 slug 前缀，逗号分隔 |
+
+### ⚠️ `EMBEDDING_DISABLED` 的影响
+
+仅供本地调试 / 省 OpenAI 费用时使用。**上线必须保持 `false`（或删除该行）**，否则会触发：
+
+| 影响 | 后果 |
+|---|---|
+| `minion-worker.ts` 跳过 `embed_chunks` job | 新 ingest 进来的 `content_chunks.embedding` 永远是 NULL（任务留 waiting，开关打开后会自动追跑回填） |
+| `hybrid.ts` `wantVector=false` | 搜索退化为纯 keyword（PostgreSQL `ts_rank` only），失去 RRF 多路融合 + cosine re-score |
+| `web/views.ts` / `web/chat.ts` 强制 `keywordOnly` | Web/Chat 入口同样退化 |
+
+实际症状：query 必须命中 chunk_text 字面量才能召回；同义词、近义表达全部失效；`pages` 没拼出 `to_tsquery` 也跑不出结果。
+
+排查：`SELECT COUNT(*) FROM content_chunks WHERE embedding IS NULL AND deleted=0` 查空 embedding；`bun src/cli.ts worker` 起 minion-worker 后 `embed_chunks` job 会追跑（前提：`EMBEDDING_DISABLED=false`）。
 
 ---
 
@@ -778,7 +792,6 @@ const rows = await sql`SELECT * FROM pages WHERE id = ${1}`;
 | 项 | 影响 | 优先级 |
 |---|---|---|
 | **stage 1/3/4/5/6/7/8 缺单测** | 重构有回归风险；已有 v2-chunker / v2-tables / v2-stats 50 测试 | ⭐⭐⭐ |
-| Embedding 默认关 | 搜索是纯 keyword，召回受限 | ⭐ |
 | stage-5-facts.ts 686 行偏大 | 可拆 tier-a / tier-b-tables 子模块（tier-c 已拆出） | ⭐ |
 
 ### 近期完成（2026-04 V2 chunker + sidecar 重构）
