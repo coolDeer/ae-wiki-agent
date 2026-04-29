@@ -156,6 +156,17 @@ tr:last-child td { border-bottom: none; }
   color: var(--muted); white-space: nowrap;
 }
 .snippet { color: var(--muted); font-size: 13px; }
+.snippet mark { background: rgba(255, 200, 0, 0.35); color: inherit; padding: 0 1px; border-radius: 2px; }
+.crumb {
+  display: inline-block; font-size: 11px; color: var(--muted);
+  margin: 2px 0; font-family: ui-monospace, monospace;
+}
+.crumb .sep { opacity: 0.6; padding: 0 4px; }
+.hit-meta {
+  display: inline-flex; gap: 6px; align-items: center;
+  margin-left: 6px; font-size: 11px; color: var(--muted);
+}
+.hit-meta time { font-family: ui-monospace, monospace; }
 ul.plain { list-style: none; padding: 0; margin: 0; }
 ul.plain li { padding: 6px 0; border-bottom: 1px solid var(--border); }
 ul.plain li:last-child { border-bottom: none; }
@@ -314,6 +325,78 @@ export function pageTag(type: string): string {
 export function confidenceTag(c: string | null): string {
   if (!c) return "";
   return `<span class="tag confidence-${escape(c)}">${escape(c)}</span>`;
+}
+
+/**
+ * Query-aware snippet：从 chunk_text 里找命中 token 的 ±N 字符窗口，
+ * 把命中 token 用 <mark> 包起来。比 chunk_text.slice(0, 200) 实用得多。
+ *
+ * - 中文：拆 1+ 字 token 直接 includes 匹配
+ * - 英文：>=2 字 word-boundary 匹配
+ * - 没命中时：fallback 到 head 切片
+ *
+ * 返回已 escape + 加 <mark> 的 HTML 片段（不再过 escape）。
+ */
+export function highlightSnippet(
+  chunkText: string,
+  query: string,
+  windowChars = 200
+): string {
+  if (!chunkText) return "";
+  const tokens = extractQueryTokens(query);
+  if (tokens.length === 0) {
+    // fallback: head 切片
+    const head = chunkText.slice(0, windowChars).trim();
+    return escape(head) + (chunkText.length > windowChars ? "…" : "");
+  }
+
+  // 找最早 token 命中位置
+  const lowerText = chunkText.toLowerCase();
+  let firstHit = -1;
+  for (const t of tokens) {
+    const idx = lowerText.indexOf(t);
+    if (idx >= 0 && (firstHit === -1 || idx < firstHit)) firstHit = idx;
+  }
+
+  // 没命中：从头切（同 fallback）
+  if (firstHit === -1) {
+    const head = chunkText.slice(0, windowChars).trim();
+    return escape(head) + (chunkText.length > windowChars ? "…" : "");
+  }
+
+  // 取 ±N/2 窗口
+  const half = Math.floor(windowChars / 2);
+  const start = Math.max(0, firstHit - half);
+  const end = Math.min(chunkText.length, firstHit + windowChars - half);
+  const slice = chunkText.slice(start, end);
+
+  // 高亮：先 escape 原文，再用 token 正则替换为 <mark>
+  let html = escape(slice);
+  for (const t of tokens) {
+    // 已 escape 后，t 字符串本身可能含 escape 后的字符，但 token 都是字母/数字/CJK
+    const re = new RegExp(escapeRegex(t), "gi");
+    html = html.replace(re, (m) => `<mark>${m}</mark>`);
+  }
+  const prefix = start > 0 ? "…" : "";
+  const suffix = end < chunkText.length ? "…" : "";
+  return prefix + html + suffix;
+}
+
+function extractQueryTokens(query: string): string[] {
+  const out = new Set<string>();
+  // ASCII tokens >= 2 chars
+  for (const m of query.toLowerCase().matchAll(/[a-z0-9_-]{2,}/g)) {
+    out.add(m[0]);
+  }
+  // CJK tokens：每段连续 CJK 当一个 token（>= 1 字）
+  for (const m of query.matchAll(/[\u3400-\u9fff]+/g)) {
+    out.add(m[0]);
+  }
+  return Array.from(out);
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export function pageLink(p: { id: string | bigint; slug: string; title: string; type?: string }): string {

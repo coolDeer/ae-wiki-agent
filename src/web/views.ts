@@ -25,6 +25,7 @@ import { getSessionTurns, type ChatTurn } from "./chat.ts";
 import {
   confidenceTag,
   escape,
+  highlightSnippet,
   layout,
   pageTag,
   renderMarkdown,
@@ -340,11 +341,16 @@ export async function viewSearch(
     ticker: string | null;
     score: number;
     snippet: string | null;
+    section_path: string[] | null;
   }>;
 
   const start = offsetOf(pageReq);
   const slice = allHits.slice(start, start + pageReq.pageSize);
   const result = buildPageResult(slice, allHits.length, pageReq);
+
+  // 批量查 visible slice 的 page metadata（confidence + create_time）
+  // hybrid search 当前不返回这俩，但展示给用户能快速判断结果可信度 / 时效。
+  const meta = await fetchHitMeta(slice.map((h) => h.slug));
 
   const keptParams = { q: query, type };
 
@@ -367,16 +373,35 @@ ${slice.length === 0
       <thead><tr><th>Title</th><th>Type</th><th>Slug</th><th>Score</th></tr></thead>
       <tbody>
       ${slice
-        .map(
-          (h) => `<tr>
-            <td><a href="/pages/${encodeURIComponent(h.slug)}">${escape(h.title)}</a>
-              ${h.snippet ? `<div class="snippet">${escape(h.snippet)}</div>` : ""}
+        .map((h) => {
+          const m = meta.get(h.slug);
+          const confidenceBadge = m?.confidence ? confidenceTag(m.confidence) : "";
+          const timeBadge = m?.createTime
+            ? `<time datetime="${m.createTime.toISOString()}">${m.createTime
+                .toISOString()
+                .slice(0, 10)}</time>`
+            : "";
+          const crumb =
+            h.section_path && h.section_path.length > 0
+              ? `<div class="crumb">${h.section_path
+                  .map(escape)
+                  .join('<span class="sep">›</span>')}</div>`
+              : "";
+          const snippetHtml = h.snippet
+            ? `<div class="snippet">${highlightSnippet(h.snippet, query)}</div>`
+            : "";
+          return `<tr>
+            <td>
+              <a href="/pages/${encodeURIComponent(h.slug)}">${escape(h.title)}</a>
+              <span class="hit-meta">${confidenceBadge}${timeBadge}</span>
+              ${crumb}
+              ${snippetHtml}
             </td>
             <td>${pageTag(h.type)}</td>
             <td class="muted score">${escape(h.slug)}</td>
             <td class="score">${h.score.toFixed(4)}</td>
-          </tr>`
-        )
+          </tr>`;
+        })
         .join("")}
       </tbody>
     </table>`
@@ -385,6 +410,32 @@ ${renderPagination(result, "/search", keptParams)}
 ${allHits.length === POOL ? `<p class="muted">候选池上限 ${POOL}，更深结果不展示。请细化查询或限定 type。</p>` : ""}
 `;
   return layout({ title: `Search: ${query}`, body, query });
+}
+
+interface HitMeta {
+  confidence: string | null;
+  createTime: Date | null;
+}
+
+/** 一次 SQL 拉本页 slice 的 confidence + create_time。slice 通常 ≤ 25。 */
+async function fetchHitMeta(slugs: string[]): Promise<Map<string, HitMeta>> {
+  const out = new Map<string, HitMeta>();
+  if (slugs.length === 0) return out;
+  const rows = await db.execute(sql`
+    SELECT slug, confidence, create_time
+    FROM pages
+    WHERE deleted = 0 AND slug IN (${sql.join(
+      slugs.map((s) => sql`${s}`),
+      sql`, `
+    )})
+  `);
+  for (const r of rows as unknown as Array<Record<string, unknown>>) {
+    out.set(String(r.slug), {
+      confidence: (r.confidence as string | null) ?? null,
+      createTime: r.create_time ? new Date(String(r.create_time)) : null,
+    });
+  }
+  return out;
 }
 
 // ============================================================================
