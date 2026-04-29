@@ -53,7 +53,7 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
   const alreadyKeys = new Set<string>();
   for (const f of [...tierA, ...tierB]) {
     alreadyKeys.add(
-      `${f.entity.trim()}|${f.metric.trim()}|${(f.period ?? "").trim()}`
+      `${String(f.entity).trim()}|${String(f.metric).trim()}|${String(f.period ?? "").trim()}`
     );
   }
   const tierCRaw = await extractTierC(page.content, alreadyKeys);
@@ -156,11 +156,11 @@ function dedupeCandidates(facts: CandidateFact[]): CandidateFact[] {
 
 function candidateKey(fact: CandidateFact): string {
   return [
-    fact.entity.trim(),
-    fact.metric.trim(),
-    (fact.period ?? "").trim(),
+    String(fact.entity).trim(),
+    String(fact.metric).trim(),
+    String(fact.period ?? "").trim(),
     String(fact.value).trim(),
-    (fact.unit ?? "").trim(),
+    String(fact.unit ?? "").trim(),
   ].join("|");
 }
 

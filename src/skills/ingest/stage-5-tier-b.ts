@@ -253,11 +253,11 @@ function dedupeYamlFacts(facts: YamlFact[]): YamlFact[] {
   const result: YamlFact[] = [];
   for (const fact of facts) {
     const key = [
-      fact.entity.trim(),
-      fact.metric.trim(),
-      (fact.period ?? "").trim(),
+      String(fact.entity).trim(),
+      String(fact.metric).trim(),
+      String(fact.period ?? "").trim(),
       String(fact.value).trim(),
-      (fact.unit ?? "").trim(),
+      String(fact.unit ?? "").trim(),
     ].join("|");
     if (seen.has(key)) continue;
     seen.add(key);

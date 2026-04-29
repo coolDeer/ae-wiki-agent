@@ -20,16 +20,32 @@ export function extractTierA(content: string): YamlFact[] {
       console.warn("  [stage5:tierA] facts block 不是数组");
       return [];
     }
-    return parsed.filter(
-      (f: unknown): f is YamlFact =>
-        typeof f === "object" &&
-        f !== null &&
-        "entity" in f &&
-        "metric" in f &&
-        "value" in f
-    );
+    return parsed
+      .filter(
+        (f: unknown): f is YamlFact =>
+          typeof f === "object" &&
+          f !== null &&
+          "entity" in f &&
+          "metric" in f &&
+          "value" in f
+      )
+      .map(normalizeFactStringFields);
   } catch (e) {
     console.warn(`  [stage5:tierA] YAML 解析失败:`, (e as Error).message);
     return [];
   }
+}
+
+/**
+ * YAML 把纯数字字段（如 `period: 2020` 或 `unit: 1`）解析成 number。
+ * DB period / unit / source_quote 列都是 TEXT；下游 dedupe key 也用 .trim()。
+ * 这里在出口处把这几个字段强制 string 化。`value` 保留原始类型（normalize 会处理）。
+ */
+function normalizeFactStringFields(f: YamlFact): YamlFact {
+  return {
+    ...f,
+    period: f.period == null ? undefined : String(f.period),
+    unit: f.unit == null ? undefined : String(f.unit),
+    source_quote: f.source_quote == null ? undefined : String(f.source_quote),
+  };
 }

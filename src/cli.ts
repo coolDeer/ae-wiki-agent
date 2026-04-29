@@ -166,6 +166,9 @@ async function main(): Promise<void> {
           researchType: result.researchType,
           rawCharCount: result.rawCharCount,
           preview: result.preview,
+          hasContentListV2: result.hasContentListV2,
+          v2Stats: result.v2Stats,
+          ...(result.warning ? { warning: result.warning } : {}),
         })
       );
       break;
