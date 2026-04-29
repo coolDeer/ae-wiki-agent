@@ -464,7 +464,51 @@ query
 
 ---
 
-## 17. 心智模型 TL;DR
+## 17. 8 个 skill 全景对比
+
+按「**生产数据**还是**消费数据**」分两组。生产者写 wiki 表，消费者读 wiki 表生成派生产物。
+
+### Producer：往 wiki 里写
+
+| skill | 关心 | 数据形态 | 主入口 | 何时用 | 失败 / 边缘处理 |
+|---|---|---|---|---|---|
+| `ae-fetch-reports` | mongo 同步 | `raw_files` 元数据 + S3 URL | `bun cli fetch-reports [date\|--all]` | 每天定时 / "拉今天研报" | 上游 markdown_url 缺失 → skip 单条；mongo cursor 中断 → 整体重跑幂等 |
+| `ae-research-ingest` | raw → 结构化 wiki | `pages` + `content_chunks` + `raw_data` + `facts` + `links` + `timeline_entries` | `$ae-research-ingest [N]` 或 `ingest:peek/commit/brief/pass/write/finalize` | fetch 后 / "ingest 一下" | V2 缺失 → 直接 pass；narrative 写错 → `ingest:skip`；finalize stage 崩 → 续跑 / `--from N` |
+| `ae-enrich` | **个体页面**内容（红链补全） | narrative + 元数据（ticker / sector / aliases） | `enrich:next` 手动 / stage 4 自动入队 minion | 红链多了 / "补全 X" | source 信息不足 → 保 `low` 等下次 source；enrich 后才发现错 → 重跑覆盖 |
+| `ae-thesis-track` | **跨页面**的投资判断（状态机） | `theses.catalysts` / `validation_conditions` / `conviction` JSONB | `thesis:open/write/update/show/list/close` | PM 表态 / "看下论点" / 周期 review | conditions 反例 → mark unmet；关键 invalidated → `close --reason invalidated` / `stop_loss` |
+
+### Consumer：从 wiki 派生产物
+
+| skill | 关心 | 输出 | 何时用 | 输出位置 |
+|---|---|---|---|---|
+| `ae-daily-review` | epistemic 复盘（7 个标准问题） | 当日 ingest 增量的认知变化 / 反共识数据 / 红队挑战 | 当日 ingest 完成后 | `wiki/output/daily-review-{date}.md` |
+| `ae-daily-summarize` | PM operational 简报（IC briefing 风格） | 9 章节：执行摘要 / 市场快照 / 组合影响 / 新建仓 / 减仓对冲 / 风险预警 / 催化剂日历 / 研究任务 / 路演要点 | review 之后 | `wiki/output/daily-summarize-{date}.md` |
+| `ae-analyze-ideabot` | 单个 IdeaBot idea 综合分析 | 拉 IdeaBot 仓位 / score / events，跟 wiki 已有公司 / 论点交叉分析 | 用户问某 idea | `wiki/output/ideabot-{name}-{date}.md` |
+| `ae-analyze-timebot` | 团队工时回顾 | 拉一周工时数据 + 给每个分析师生成研究建议 | 周工时复盘 | `wiki/output/timebot-{weekOf}.md` |
+
+### 最易混淆：enrich vs thesis-track
+
+详见 §10 末尾。一句话：**enrich 让 wiki 长出来（编辑器），thesis-track 让 wiki 帮你做决策（仪表盘）**。
+
+### 一图看清调用链
+
+```
+Producer 链 (写)
+   fetch-reports → research-ingest → enrich (自动) ↘
+                                                    pages / facts / links / theses / signals ...
+                                  ↓                ↗                                          ↑
+                              thesis-track (按需) ┘                                          │
+                                                                                              │
+Consumer 链 (读 + 生成)                                                                       │
+   daily-review                                                                              │
+   daily-summarize                                                                           │
+   analyze-ideabot          →  output/*.md  ←  全靠从这里读 ────────────────────────────────┘
+   analyze-timebot
+```
+
+---
+
+## 18. 心智模型 TL;DR
 
 如果你只能记 6 件事：
 
@@ -477,7 +521,7 @@ query
 
 ---
 
-## 18. 进一步阅读
+## 19. 进一步阅读
 
 - [architecture.md](./architecture.md) — schema DDL + 设计原则 + 迁移历史（v1 → v2）
 - [cli-commands.md](./cli-commands.md) — 全 CLI 命令清单与 flag 详解
