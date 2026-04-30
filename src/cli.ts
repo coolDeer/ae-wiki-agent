@@ -80,6 +80,9 @@ function printHelp(): void {
   ae-wiki enrich:next [--type T] [--skip N]     # 取下一个红链 + backlink 上下文
   ae-wiki enrich:save <page_id> [--ticker X] [--sector Y] [--aliases A,B] [--confidence high|medium]
                                                 # 从 stdin 读 narrative 落库 + 更新元数据
+  ae-wiki enrich:retype <page_id> --new-type company|industry|concept|thesis [--new-slug X] [--reason "..."]
+                                                # 红链 type 错了（companies/Trainium → concepts/Trainium）
+                                                # 默认仅换 dir 前缀；--new-slug 完整覆盖
 
   ae-wiki thesis:list [--status S] [--direction D]                   # 列论点
   ae-wiki thesis:show <page_id>                                      # 单论点诊断（含 facts/signals）
@@ -639,6 +642,44 @@ async function main(): Promise<void> {
         aliases: aliasesStr ? aliasesStr.split(",").map((item) => item.trim()) : undefined,
         confidence,
       });
+      break;
+    }
+
+    case "enrich:retype": {
+      const pageIdStr = args[0];
+      if (!pageIdStr) {
+        console.error("enrich:retype 需要 page_id");
+        process.exit(1);
+      }
+      const newType = getArg("--new-type");
+      if (!newType) {
+        console.error("enrich:retype 需要 --new-type company|industry|concept|thesis");
+        process.exit(1);
+      }
+      if (!["company", "industry", "concept", "thesis"].includes(newType)) {
+        console.error(
+          `--new-type='${newType}' 不合法。允许值：company / industry / concept / thesis`
+        );
+        process.exit(1);
+      }
+      const { enrichRetype } = await import("./skills/enrich/index.ts");
+      try {
+        const result = await enrichRetype(BigInt(pageIdStr), {
+          newType: newType as "company" | "industry" | "concept" | "thesis",
+          newSlug: getArg("--new-slug"),
+          reason: getArg("--reason"),
+        });
+        console.log(
+          jsonStringify({
+            pageId: result.pageId.toString(),
+            from: { type: result.oldType, slug: result.oldSlug },
+            to: { type: result.newType, slug: result.newSlug },
+          })
+        );
+      } catch (e) {
+        console.error(`[enrich:retype] ${(e as Error).message}`);
+        process.exit(1);
+      }
       break;
     }
 

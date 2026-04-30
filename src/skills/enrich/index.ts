@@ -241,6 +241,176 @@ export async function enrichSave(
   console.log(`[enrich:save] page #${pageId} narrative ${narrative.length} chars, confidence=${opts.confidence ?? "medium"}`);
 }
 
+/**
+ * Retype：把当前 page 的 type / slug 改成正确的 dir 前缀。
+ *
+ * 用例：Stage 4 红链按 wikilink dir 前缀建 page，agent 拼错 dir 时（如把
+ * 芯片名 Trainium 写成 `[[companies/Trainium]]`）就会出现"错 type 的低质量
+ * stub"。本函数让 enrich 流程的第一步可以把它纠正过来：
+ *
+ *   companies/Trainium  →  concepts/Trainium
+ *   companies/SaaS Unit Economics  →  concepts/SaaS Unit Economics
+ *   companies/北美零售业  →  industries/北美零售业
+ *
+ * 关键洞察：links / facts / signals / page_versions / raw_data 全部按
+ * page_id 引用，slug 改名只需一行 UPDATE pages，没有 FK 级联问题。
+ *
+ * 限制：
+ *   - 仅允许 retype 到 company / industry / concept / thesis 这 4 类
+ *     可控实体；source / brief / output 不能通过 retype 创建（必须走
+ *     ingest:commit / ingest:brief / daily-* 等显式入口）
+ *   - 当前 page.type='source' / 'brief' 也不能 retype（强制走 promote）
+ *   - 新 slug 不能与现有 active page 冲突
+ */
+const RETYPE_DIRS: Partial<Record<PageType, string>> = {
+  company: "companies",
+  industry: "industries",
+  concept: "concepts",
+  thesis: "theses",
+};
+
+const NON_RETYPABLE_TYPES: ReadonlySet<string> = new Set([
+  "source",
+  "brief",
+  "output",
+]);
+
+export interface EnrichRetypeOpts {
+  /** 目标 type（仅 company / industry / concept / thesis）*/
+  newType: PageType;
+  /** 完整新 slug 覆盖；不传则按规则只换 dir 前缀 */
+  newSlug?: string;
+  /** 写入 events.payload.reason，便于日后审计 */
+  reason?: string;
+}
+
+export interface EnrichRetypeResult {
+  pageId: bigint;
+  oldSlug: string;
+  oldType: string;
+  newSlug: string;
+  newType: PageType;
+}
+
+export async function enrichRetype(
+  pageId: bigint,
+  opts: EnrichRetypeOpts
+): Promise<EnrichRetypeResult> {
+  const actor = Actor.agentClaude;
+
+  // 1) 校验新 type
+  if (!(opts.newType in RETYPE_DIRS)) {
+    throw new Error(
+      `enrich:retype 不支持目标 type='${opts.newType}'。允许的 type: ` +
+        Object.keys(RETYPE_DIRS).join(" / ") +
+        "。source/brief/output 不能通过 retype 创建（必须走 ingest:commit / ingest:brief / daily-* 等显式入口）。"
+    );
+  }
+
+  // 2) 取当前 page
+  const [page] = await db
+    .select({
+      id: schema.pages.id,
+      slug: schema.pages.slug,
+      type: schema.pages.type,
+      title: schema.pages.title,
+      sourceId: schema.pages.sourceId,
+    })
+    .from(schema.pages)
+    .where(and(eq(schema.pages.id, pageId), eq(schema.pages.deleted, 0)))
+    .limit(1);
+
+  if (!page) {
+    throw new Error(`page #${pageId} not found or already deleted`);
+  }
+
+  // 3) 不允许从 source/brief/output retype 走（这些要走 promote 或 skip）
+  if (NON_RETYPABLE_TYPES.has(page.type)) {
+    throw new Error(
+      `page #${pageId} (type='${page.type}') 不能通过 retype 转换。` +
+        `source ↔ brief 走 ingest:promote；output 不应被 retype。`
+    );
+  }
+
+  // 4) 计算新 slug
+  const oldSlug = page.slug;
+  const oldType = page.type;
+  const namePart = oldSlug.split("/").slice(1).join("/");
+  if (!namePart) {
+    throw new Error(`page #${pageId} slug='${oldSlug}' 无法解析 name 部分`);
+  }
+  const targetDir = RETYPE_DIRS[opts.newType]!;
+  const computedNewSlug = opts.newSlug ?? `${targetDir}/${namePart}`;
+
+  // 5) Noop 检查
+  if (oldType === opts.newType && oldSlug === computedNewSlug) {
+    throw new Error(
+      `page #${pageId} 已经是 type='${opts.newType}' slug='${oldSlug}'，无需 retype`
+    );
+  }
+
+  // 6) 校验新 slug 不与现有 active page 冲突（同 sourceId 内）
+  const [conflict] = await db
+    .select({ id: schema.pages.id })
+    .from(schema.pages)
+    .where(
+      and(
+        eq(schema.pages.sourceId, page.sourceId),
+        eq(schema.pages.slug, computedNewSlug),
+        eq(schema.pages.deleted, 0)
+      )
+    )
+    .limit(1);
+  if (conflict && conflict.id !== pageId) {
+    throw new Error(
+      `slug 冲突：'${computedNewSlug}' 已存在 page #${conflict.id}（active）。` +
+        `如果两条目应当合并，先 enrich:save 把当前 page 的内容并到目标 page，再 ingest:skip 当前。` +
+        `或显式传 --new-slug 指定一个不冲突的名字。`
+    );
+  }
+
+  // 7) UPDATE pages SET type, slug
+  await db
+    .update(schema.pages)
+    .set(
+      withAudit(
+        { type: opts.newType, slug: computedNewSlug },
+        actor
+      )
+    )
+    .where(eq(schema.pages.id, pageId));
+
+  // 8) Audit event
+  await db.insert(schema.events).values(
+    withCreateAudit(
+      {
+        actor,
+        action: "retype",
+        entityType: "page",
+        entityId: pageId,
+        payload: {
+          from: { type: oldType, slug: oldSlug },
+          to: { type: opts.newType, slug: computedNewSlug },
+          reason: opts.reason ?? null,
+        },
+      },
+      actor
+    )
+  );
+
+  console.log(
+    `[enrich:retype] page #${pageId}: ${oldType}/${oldSlug} → ${opts.newType}/${computedNewSlug}`
+  );
+
+  return {
+    pageId,
+    oldSlug,
+    oldType,
+    newSlug: computedNewSlug,
+    newType: opts.newType,
+  };
+}
+
 /** 列举待 enrich 的 page（dashboard 用）*/
 export async function enrichList(opts: {
   type?: PageType;
