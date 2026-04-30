@@ -92,42 +92,78 @@ export async function hybridSearch(
   const innerLimit = Math.max(limit * 4, 30);
   const channelOpts: SearchOpts = { ...opts, poolSize: opts.poolSize ?? innerLimit };
 
-  // Keyword 通道（chunk-level，每页贡献 1 候选）
-  const keywordResults = await searchKeyword(query, channelOpts);
-
-  // 向量通道关闭：keyword-only fallback
+  // 向量通道开关
   const wantVector =
     !opts.keywordOnly && !env.EMBEDDING_DISABLED && Boolean(env.OPENAI_API_KEY);
+
+  // 多 query 扩展（如果开）
+  const expansionEnabled = opts.expansion ?? env.WIKI_QUERY_EXPANSION;
+
+  // Phase 1：keyword + （expand → embed → vector）并发启动
+  // keyword 通道不依赖 OpenAI，与 embedding 并行能压掉 RTT
+  const tStart = Date.now();
+  const keywordPromise = searchKeyword(query, channelOpts);
+
+  let queries = [query];
+  let vectorLists: ChunkCandidate[][] = [];
+  let queryEmbedding: number[] | null = null;
+
+  const vectorPromise: Promise<{ embeds: number[][]; lists: ChunkCandidate[][] }> =
+    wantVector
+      ? (async () => {
+          // 原 query 立刻开始 embed（不等 expand 出结果）
+          const baseEmbedPromise = embedCached(query);
+
+          // 同时启动 expand（如果开了），expand 完成后再 embed N-1 个 alternative
+          const altsPromise: Promise<string[]> = expansionEnabled
+            ? expandQuery(query).then(
+                (qs) => {
+                  const merged = qs.length > 0 ? qs : [query];
+                  // expandQuery 返回数组首项不一定 === query；
+                  // 我们要的是「除了原 query 之外的 alternative」
+                  return merged.filter((q) => q !== query).slice(0, 2);
+                },
+                () => [] // non-fatal
+              )
+            : Promise.resolve([]);
+
+          const [baseEmbed, alts] = await Promise.all([baseEmbedPromise, altsPromise]);
+          // 现在并发 embed 所有 alternative（原 query 已经 embed 好）
+          const altEmbeds = await Promise.all(alts.map((q) => embedCached(q)));
+          const allQueries = [query, ...alts];
+          queries = allQueries;
+          const embeds = [baseEmbed, ...altEmbeds];
+
+          // 并发跑所有 vector 通道
+          const lists = await Promise.all(
+            embeds.map((emb) => searchVector(emb, channelOpts))
+          );
+          return { embeds, lists };
+        })()
+      : Promise.resolve({ embeds: [], lists: [] });
+
+  const [keywordResults, vectorBundle] = await Promise.all([
+    keywordPromise,
+    vectorPromise.catch((e) => {
+      if (debug) console.error(`[search-debug] vector channel failed:`, e);
+      return { embeds: [], lists: [] };
+    }),
+  ]);
+  vectorLists = vectorBundle.lists;
+  queryEmbedding = vectorBundle.embeds[0] ?? null;
+
+  if (debug) {
+    console.error(
+      `[search-debug] phase1 done in ${Date.now() - tStart}ms ` +
+        `kw=${keywordResults.length} vec_lists=${vectorLists.length}`
+    );
+  }
+
   if (!wantVector) {
     const ranked = annotateRanks(keywordResults, []);
     const dedupOpts = buildDedupOpts(opts.dedupOpts, detail);
     const deduped = dedupChunks(ranked, dedupOpts);
     return bestChunkPerPage(deduped).slice(0, limit).map(toSearchHit);
-  }
-
-  // 多 query 扩展
-  let queries = [query];
-  const expansionEnabled = opts.expansion ?? env.WIKI_QUERY_EXPANSION;
-  if (expansionEnabled) {
-    try {
-      queries = await expandQuery(query);
-      if (queries.length === 0) queries = [query];
-    } catch {
-      /* non-fatal */
-    }
-  }
-
-  // 并行 embed 所有 query 变体 + 各跑一次 vector 通道
-  let vectorLists: ChunkCandidate[][] = [];
-  let queryEmbedding: number[] | null = null;
-  try {
-    const embeddings = await Promise.all(queries.map((q) => embedCached(q)));
-    queryEmbedding = embeddings[0] ?? null;
-    vectorLists = await Promise.all(
-      embeddings.map((emb) => searchVector(emb, channelOpts))
-    );
-  } catch (e) {
-    if (debug) console.error(`[search-debug] vector channel failed:`, e);
   }
 
   const collectDebug = opts.debug === true;

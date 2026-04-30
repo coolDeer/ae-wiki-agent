@@ -340,6 +340,7 @@ export async function viewSearch(
   // hybrid search 的 score 已经按 RRF 排过，分页就是对结果数组切片。
   // 取 top-200 作为 candidate pool（够大，避免后页空），之后客户端分页。
   const POOL = 200;
+  const t0 = Date.now();
   const allHits = (await mcpSearch(query, {
     limit: POOL,
     type,
@@ -366,17 +367,25 @@ export async function viewSearch(
     };
   }>;
 
+  const tHybrid = Date.now() - t0;
+
   const start = offsetOf(pageReq);
   const slice = allHits.slice(start, start + pageReq.pageSize);
   const result = buildPageResult(slice, allHits.length, pageReq);
 
   // 批量查 visible slice 的 page metadata（confidence + create_time）
-  // hybrid search 当前不返回这俩，但展示给用户能快速判断结果可信度 / 时效。
-  const meta = await fetchHitMeta(slice.map((h) => h.slug));
+  // 与 suggestions 并发跑，避免串行多一个 RTT
+  const t1 = Date.now();
+  const [meta, suggestions] = await Promise.all([
+    fetchHitMeta(slice.map((h) => h.slug)),
+    allHits.length === 0 ? fetchSuggestions(query) : Promise.resolve([]),
+  ]);
+  const tMeta = Date.now() - t1;
 
-  // 0 命中 → 用 pg_trgm 找 title/slug/aliases 上的近似项作为 "did-you-mean"
-  const suggestions =
-    allHits.length === 0 ? await fetchSuggestions(query) : [];
+  console.log(
+    `[search] q="${query}" hits=${allHits.length} hybrid=${tHybrid}ms meta+sugg=${tMeta}ms ` +
+      `mode=${keywordOnly ? "keyword" : "hybrid"}`
+  );
 
   const keptParams: Record<string, string | undefined> = {
     q: query,

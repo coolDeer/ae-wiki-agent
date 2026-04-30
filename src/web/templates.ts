@@ -81,6 +81,26 @@ header h1 { margin: 0; font-size: 18px; font-weight: 600; }
 header h1 a { color: inherit; text-decoration: none; }
 nav a { color: var(--muted); text-decoration: none; margin-right: 16px; }
 nav a:hover { color: var(--fg); }
+/* Top progress bar — 表单提交后立即显示，反馈 search 在跑 */
+.topbar {
+  position: fixed; top: 0; left: 0; right: 0;
+  height: 2px; background: transparent; pointer-events: none; z-index: 1000;
+}
+html.loading .topbar {
+  background: linear-gradient(90deg,
+    transparent 0%, var(--accent) 30%, var(--accent) 70%, transparent 100%);
+  background-size: 50% 100%;
+  background-repeat: no-repeat;
+  animation: topbar-slide 1.2s linear infinite;
+}
+@keyframes topbar-slide {
+  0%   { background-position: -50% 0; }
+  100% { background-position: 150% 0; }
+}
+html.loading body { cursor: progress; }
+form.search button:disabled {
+  opacity: 0.6; cursor: progress;
+}
 form.search { margin-left: auto; display: flex; gap: 8px; }
 form.search input[type=text] {
   padding: 6px 12px; border: 1px solid var(--border);
@@ -336,11 +356,13 @@ export function layout({ title, body, query = "", flash }: LayoutOpts): string {
       <a href="/queue">Queue</a>
       <a href="/usage">Usage</a>
     </nav>
-    <form class="search" action="/search" method="get">
+    <form class="search" action="/search" method="get"
+          onsubmit="document.documentElement.classList.add('loading');this.querySelector('button').disabled=true;this.querySelector('button').textContent='…';">
       <input type="text" name="q" placeholder="search…" value="${escape(query)}">
       <button type="submit">go</button>
     </form>
   </div>
+  <div class="topbar"></div>
 </header>
 <main class="shell">
 ${flash ? `<div class="flash">${flash}</div>` : ""}

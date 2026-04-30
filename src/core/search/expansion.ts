@@ -14,6 +14,18 @@ const MAX_QUERIES = 3;
 const MIN_WORDS = 3;
 const MAX_QUERY_CHARS = 500;
 
+// In-process expansion cache —— LLM 调用是 expansion 的最大开销，
+// TTL 30 分钟够长（同一 user session 内重复搜不会重新付费），
+// 又够短（query 语义不会跨小时变）。
+const EXPAND_CACHE = new Map<string, { alts: string[]; at: number }>();
+const EXPAND_TTL_MS = 30 * 60_000;
+const EXPAND_MAX = 200;
+
+/** 测试 / 维护用 —— 强制清缓存。 */
+export function clearExpansionCache(): void {
+  EXPAND_CACHE.clear();
+}
+
 export function sanitizeQueryForPrompt(query: string): string {
   const original = query;
   let q = query;
@@ -57,15 +69,34 @@ export async function expandQuery(query: string): Promise<string[]> {
     : (query.match(/\S+/g) || []).length;
   if (wordCount < MIN_WORDS) return [query];
 
+  // 缓存命中 → 跳过 LLM 调用。recency refresh：delete + re-insert 移到末尾。
+  const cacheKey = query.trim();
+  const now = Date.now();
+  const cached = EXPAND_CACHE.get(cacheKey);
+  if (cached && now - cached.at < EXPAND_TTL_MS) {
+    EXPAND_CACHE.delete(cacheKey);
+    EXPAND_CACHE.set(cacheKey, cached);
+    return [query, ...cached.alts].slice(0, MAX_QUERIES);
+  }
+
   try {
     const sanitized = sanitizeQueryForPrompt(query);
     if (sanitized.length === 0) return [query];
     const alternatives = await callOpenAIForExpansion(sanitized);
     const all = [query, ...alternatives];
     const lowered = [...new Set(all.map((q) => q.toLowerCase().trim()))];
-    return lowered
+    const result = lowered
       .slice(0, MAX_QUERIES)
       .map((q) => all.find((orig) => orig.toLowerCase().trim() === q) || q);
+
+    // 写缓存（只存 alternatives；result[0] 一定是 query）
+    EXPAND_CACHE.set(cacheKey, { alts: result.slice(1), at: now });
+    while (EXPAND_CACHE.size > EXPAND_MAX) {
+      const oldest = EXPAND_CACHE.keys().next().value;
+      if (oldest === undefined) break;
+      EXPAND_CACHE.delete(oldest);
+    }
+    return result;
   } catch {
     return [query];
   }
