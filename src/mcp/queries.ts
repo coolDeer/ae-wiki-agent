@@ -35,6 +35,7 @@ export async function search(
     semantic_rank: h.semanticRank,
     snippet: h.bestChunk?.slice(0, 200) ?? null,
     section_path: h.sectionPath,
+    ...(h.debug ? { debug: h.debug } : {}),
   }));
 }
 

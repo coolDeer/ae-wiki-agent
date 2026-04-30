@@ -25,15 +25,53 @@ import {
   type DedupOpts,
   type RankedChunk,
 } from "./dedup.ts";
-import type { ChunkCandidate, SearchHit, SearchOpts } from "./types.ts";
+import type { ChunkCandidate, SearchDebug, SearchHit, SearchOpts } from "./types.ts";
 
 const RRF_K = 60;
 const COMPILED_TRUTH_BOOST = 2.0;
+
+// =============================================================================
+// Query embedding cache —— chat agent 多步连续 search 同 query 时省 OpenAI 成本
+// 简单 FIFO + TTL，不做严格 LRU；chat 场景下 query 重复率高于多样性，FIFO 够用。
+// =============================================================================
+const QUERY_EMB_CACHE = new Map<string, { emb: number[]; at: number }>();
+const QUERY_EMB_TTL_MS = 60_000;
+const QUERY_EMB_MAX = 200;
+
+async function embedCached(query: string): Promise<number[]> {
+  const now = Date.now();
+  const hit = QUERY_EMB_CACHE.get(query);
+  if (hit && now - hit.at < QUERY_EMB_TTL_MS) {
+    // refresh recency: delete + re-insert moves to end
+    QUERY_EMB_CACHE.delete(query);
+    QUERY_EMB_CACHE.set(query, hit);
+    return hit.emb;
+  }
+  const emb = await embed(query);
+  QUERY_EMB_CACHE.set(query, { emb, at: now });
+  // evict oldest until under cap
+  while (QUERY_EMB_CACHE.size > QUERY_EMB_MAX) {
+    const oldest = QUERY_EMB_CACHE.keys().next().value;
+    if (oldest === undefined) break;
+    QUERY_EMB_CACHE.delete(oldest);
+  }
+  return emb;
+}
+
+/** 测试 / 维护用 —— 强制清缓存。 */
+export function clearQueryEmbeddingCache(): void {
+  QUERY_EMB_CACHE.clear();
+}
 /**
- * Backlink boost 系数：score *= (1 + COEF * log(1 + count))。
- * 1 反链 ≈ 1.035 / 10 ≈ 1.12 / 100 ≈ 1.23。在 cosine 重打分之后、dedup 之前应用。
+ * Backlink boost 系数：score *= clamp(1 + COEF * log(1 + count), 1, MAX)。
+ * 1 反链 ≈ 1.035 / 10 ≈ 1.12 / 100 ≈ 1.23 / 1000 ≈ 1.35（以下都被 cap 截断）。
+ * 在 cosine 重打分之后、dedup 之前应用。
+ *
+ * MAX cap 防 matthew effect：wiki 长大后高反链页（active thesis 标的、跨研报反复提的 NVDA 等）
+ * 不会无限堆 boost 把别的结果挤出榜首。
  */
 const BACKLINK_BOOST_COEF = 0.05;
+const BACKLINK_BOOST_MAX = 1.5;
 
 export type { SearchHit, SearchOpts } from "./types.ts";
 export { buildTsQueryExpr } from "./keyword.ts";
@@ -83,7 +121,7 @@ export async function hybridSearch(
   let vectorLists: ChunkCandidate[][] = [];
   let queryEmbedding: number[] | null = null;
   try {
-    const embeddings = await Promise.all(queries.map((q) => embed(q)));
+    const embeddings = await Promise.all(queries.map((q) => embedCached(q)));
     queryEmbedding = embeddings[0] ?? null;
     vectorLists = await Promise.all(
       embeddings.map((emb) => searchVector(emb, channelOpts))
@@ -91,6 +129,8 @@ export async function hybridSearch(
   } catch (e) {
     if (debug) console.error(`[search-debug] vector channel failed:`, e);
   }
+
+  const collectDebug = opts.debug === true;
 
   if (vectorLists.length === 0) {
     const ranked = annotateRanks(keywordResults, []);
@@ -102,14 +142,14 @@ export async function hybridSearch(
   // RRF：keyword 一路 + vector 多路。detail=high 时跳过 compiled_truth boost（temporal/event 走自然排序）
   const allLists = [keywordResults, ...vectorLists];
   const rrfK = opts.rrfK ?? RRF_K;
-  let fused = rrfFusion(allLists, rrfK, debug, detail !== "high");
+  let fused = rrfFusion(allLists, rrfK, debug, detail !== "high", collectDebug);
 
   // 把通道 rank 标注回去（取首个 keyword 命中位置 / 首个 vector 命中位置）
   fused = decorateChannelRanks(fused, keywordResults, vectorLists);
 
   // cosine re-score：query embedding × chunk embedding
   if (queryEmbedding) {
-    fused = await cosineReScore(fused, queryEmbedding, debug);
+    fused = await cosineReScore(fused, queryEmbedding, debug, collectDebug);
   }
 
   // backlink boost：cosine 之后、dedup 之前；1 query 拿全集 count，不是 N+1
@@ -117,7 +157,7 @@ export async function hybridSearch(
     try {
       const slugs = Array.from(new Set(fused.map((r) => r.slug)));
       const counts = await fetchBacklinkCounts(slugs);
-      applyBacklinkBoost(fused, counts);
+      applyBacklinkBoost(fused, counts, collectDebug);
       fused.sort((a, b) => b.score - a.score);
     } catch {
       /* boost 失败不致命，保留 cosine 排序 */
@@ -147,7 +187,8 @@ function rrfFusion(
   lists: ChunkCandidate[][],
   k: number,
   debug: boolean,
-  applyCompiledTruthBoost: boolean
+  applyCompiledTruthBoost: boolean,
+  collectDebug: boolean
 ): RankedChunk[] {
   const scores = new Map<string, { result: ChunkCandidate; score: number }>();
   for (const list of lists) {
@@ -166,32 +207,44 @@ function rrfFusion(
 
   // 归一化 + compiled_truth 加权（在归一之后、排序之前）
   const maxScore = Math.max(...entries.map((e) => e.score));
+  const debugByKey = new Map<string, Partial<SearchDebug>>();
   if (maxScore > 0) {
     for (const e of entries) {
       const raw = e.score;
-      let norm = raw / maxScore;
+      const norm = raw / maxScore;
       const boost =
         applyCompiledTruthBoost && e.result.chunkType === "compiled_truth"
           ? COMPILED_TRUTH_BOOST
           : 1.0;
-      norm *= boost;
+      const boosted = norm * boost;
       if (debug) {
         console.error(
-          `[search-debug] ${e.result.slug}:${e.result.chunkId} rrf_raw=${raw.toFixed(4)} rrf_norm=${(raw / maxScore).toFixed(4)} boost=${boost} boosted=${norm.toFixed(4)} type=${e.result.chunkType}`
+          `[search-debug] ${e.result.slug}:${e.result.chunkId} rrf_raw=${raw.toFixed(4)} rrf_norm=${norm.toFixed(4)} boost=${boost} boosted=${boosted.toFixed(4)} type=${e.result.chunkType}`
         );
       }
-      e.score = norm;
+      if (collectDebug) {
+        debugByKey.set(chunkKey(e.result), {
+          rrfRaw: raw,
+          rrfNorm: norm,
+          rrfBoost: boost,
+        });
+      }
+      e.score = boosted;
     }
   }
 
   return entries
     .sort((a, b) => b.score - a.score)
-    .map(({ result, score }) => ({
-      ...result,
-      score,
-      keywordRank: null,
-      semanticRank: null,
-    }));
+    .map(({ result, score }) => {
+      const r: RankedChunk = {
+        ...result,
+        score,
+        keywordRank: null,
+        semanticRank: null,
+      };
+      if (collectDebug) r.debug = debugByKey.get(chunkKey(result));
+      return r;
+    });
 }
 
 /**
@@ -217,15 +270,30 @@ async function fetchBacklinkCounts(slugs: string[]): Promise<Map<string, number>
 
 /**
  * 把 backlink count 折算成 multiplier 应用到分数上。in-place 修改。
- *   factor = 1 + COEF * log(1 + count)
+ *   raw_factor = 1 + COEF * log(1 + count)
+ *   final_factor = min(raw_factor, BACKLINK_BOOST_MAX)
  */
 export function applyBacklinkBoost(
   results: RankedChunk[],
-  counts: Map<string, number>
+  counts: Map<string, number>,
+  collectDebug = false
 ): void {
   for (const r of results) {
     const c = counts.get(r.slug) ?? 0;
-    if (c > 0) r.score *= 1 + BACKLINK_BOOST_COEF * Math.log(1 + c);
+    let factor = 1;
+    if (c > 0) {
+      const raw = 1 + BACKLINK_BOOST_COEF * Math.log(1 + c);
+      factor = Math.min(raw, BACKLINK_BOOST_MAX);
+      r.score *= factor;
+    }
+    if (collectDebug) {
+      r.debug = {
+        ...(r.debug ?? {}),
+        backlinkCount: c,
+        backlinkBoost: factor,
+        finalScore: r.score,
+      };
+    }
   }
 }
 
@@ -282,7 +350,8 @@ function chunkKey(r: ChunkCandidate): string {
 async function cosineReScore(
   results: RankedChunk[],
   queryEmbedding: number[],
-  debug: boolean
+  debug: boolean,
+  collectDebug = false
 ): Promise<RankedChunk[]> {
   const chunkIds = results.map((r) => r.chunkId).filter((id): id is bigint => id != null);
   if (chunkIds.length === 0) return results;
@@ -311,7 +380,15 @@ async function cosineReScore(
           `[search-debug] ${r.slug}:${r.chunkId} cosine=${cos.toFixed(4)} norm_rrf=${normRrf.toFixed(4)} blended=${blended.toFixed(4)}${tag}`
         );
       }
-      return { ...r, score: blended };
+      const next: RankedChunk = { ...r, score: blended };
+      if (collectDebug) {
+        next.debug = {
+          ...(r.debug ?? {}),
+          cosine: emb ? cos : null,
+          blendedScore: blended,
+        };
+      }
+      return next;
     })
     .sort((a, b) => b.score - a.score);
 }
@@ -373,7 +450,7 @@ function buildDedupOpts(
 }
 
 function toSearchHit(r: RankedChunk): SearchHit {
-  return {
+  const hit: SearchHit = {
     pageId: r.pageId,
     slug: r.slug,
     type: r.type,
@@ -387,6 +464,20 @@ function toSearchHit(r: RankedChunk): SearchHit {
     chunkType: r.chunkType,
     sectionPath: r.sectionPath ?? null,
   };
+  if (r.debug) {
+    // 把 finalScore 兜底成 r.score（如果 backlink boost 没运行）
+    hit.debug = {
+      rrfRaw: r.debug.rrfRaw ?? 0,
+      rrfNorm: r.debug.rrfNorm ?? 0,
+      rrfBoost: r.debug.rrfBoost ?? 1,
+      cosine: r.debug.cosine ?? null,
+      blendedScore: r.debug.blendedScore ?? r.score,
+      backlinkCount: r.debug.backlinkCount ?? 0,
+      backlinkBoost: r.debug.backlinkBoost ?? 1,
+      finalScore: r.debug.finalScore ?? r.score,
+    };
+  }
+  return hit;
 }
 
 // 暴露 RRF / cosine helper 给可能的 eval 模块

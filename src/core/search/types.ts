@@ -35,6 +35,30 @@ export interface SearchOpts {
     maxTypeRatio?: number;
     maxPerPage?: number;
   };
+  /**
+   * Debug 模式：每个 SearchHit 附带 `debug: SearchDebug` 字段，含 RRF / cosine /
+   * boost / final score 的中间值。生产路径默认关；UI 通过 `?debug=1` 触发。
+   */
+  debug?: boolean;
+}
+
+export interface SearchDebug {
+  /** RRF 原始 score（融合时累加 1/(K+rank)） */
+  rrfRaw: number;
+  /** RRF 归一化（除以本批 maxRrf） */
+  rrfNorm: number;
+  /** source-aware boost (compiled_truth = 2.0 / 默认 1.0) */
+  rrfBoost: number;
+  /** cosine 相似度（缺 embedding 时为 null） */
+  cosine: number | null;
+  /** 0.7·rrfNorm + 0.3·cosine（缺 embedding 时取中性 0.5） */
+  blendedScore: number;
+  /** 反向链接数（粗略） */
+  backlinkCount: number;
+  /** 反链 boost factor（已 cap 在 BACKLINK_BOOST_MAX）*/
+  backlinkBoost: number;
+  /** 最终 score（dedup / page-level 收敛之前） */
+  finalScore: number;
 }
 
 /** 单通道返回的 chunk 候选。 */
@@ -71,4 +95,6 @@ export interface SearchHit {
   chunkType: string | null;
   /** 命中 chunk 的 section_path（V2 chunker 写入，markdown chunker 老数据为 null） */
   sectionPath: string[] | null;
+  /** Debug 模式（SearchOpts.debug=true）下填；普通查询不存在此字段 */
+  debug?: SearchDebug;
 }

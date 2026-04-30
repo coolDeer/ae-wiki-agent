@@ -167,6 +167,38 @@ tr:last-child td { border-bottom: none; }
   margin-left: 6px; font-size: 11px; color: var(--muted);
 }
 .hit-meta time { font-family: ui-monospace, monospace; }
+.debug-block {
+  margin-top: 6px;
+  font-size: 11px;
+  border: 1px dashed var(--border);
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: var(--muted);
+}
+.debug-block summary { cursor: pointer; user-select: none; }
+.debug-block table.debug-kv {
+  margin-top: 6px; border-collapse: collapse; font-family: ui-monospace, monospace;
+}
+.debug-block table.debug-kv td {
+  padding: 1px 8px; border: none;
+}
+.debug-block table.debug-kv td:first-child { color: var(--muted); }
+.did-you-mean {
+  text-align: center;
+  padding: 16px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.did-you-mean > span:first-child {
+  color: var(--muted);
+  margin-right: 8px;
+}
+.did-you-mean a {
+  margin: 0 4px;
+}
+.did-you-mean .sep {
+  margin: 0 6px; opacity: 0.5;
+}
 ul.plain { list-style: none; padding: 0; margin: 0; }
 ul.plain li { padding: 6px 0; border-bottom: 1px solid var(--border); }
 ul.plain li:last-child { border-bottom: none; }

@@ -86,8 +86,10 @@ export async function startWebServer(opts: ServeOpts = {}): Promise<void> {
         if (path === "/search" && req.method === "GET") {
           const q = url.searchParams.get("q") ?? "";
           const type = url.searchParams.get("type") ?? undefined;
+          const mode = url.searchParams.get("mode") ?? undefined;
+          const debug = url.searchParams.get("debug") === "1";
           const pageReq = parsePageRequest(url.searchParams);
-          return html(await viewSearch(q, type, pageReq));
+          return html(await viewSearch(q, type, pageReq, { mode, debug }));
         }
 
         // Pages

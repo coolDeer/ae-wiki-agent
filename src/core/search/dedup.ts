@@ -8,7 +8,7 @@
  * 输入是 RRF + cosine re-score 后的 chunk 列表，输出是收敛后的 chunk 列表。
  */
 
-import type { ChunkCandidate } from "./types.ts";
+import type { ChunkCandidate, SearchDebug } from "./types.ts";
 
 const COSINE_DEDUP_THRESHOLD = 0.85;
 const MAX_TYPE_RATIO = 0.6;
@@ -20,6 +20,8 @@ export interface RankedChunk extends ChunkCandidate {
   score: number;
   keywordRank: number | null;
   semanticRank: number | null;
+  /** debug=true 时累积的中间值；其它路径 undefined */
+  debug?: Partial<SearchDebug>;
 }
 
 export interface DedupOpts {

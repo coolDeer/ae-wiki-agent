@@ -506,7 +506,8 @@ CREATE INDEX IF NOT EXISTS idx_pages_sector      ON pages (sector) WHERE sector 
 CREATE INDEX IF NOT EXISTS idx_pages_tsv         ON pages USING GIN (tsv);
 CREATE INDEX IF NOT EXISTS idx_pages_embedding   ON pages USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_pages_updated     ON pages (update_time DESC);
-CREATE INDEX IF NOT EXISTS idx_pages_title_trgm  ON pages USING GIN (title gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_pages_title_trgm  ON pages USING GIN (title gin_trgm_ops) WHERE deleted = 0;
+CREATE INDEX IF NOT EXISTS idx_pages_slug_trgm   ON pages USING GIN (slug  gin_trgm_ops) WHERE deleted = 0;
 CREATE INDEX IF NOT EXISTS idx_pages_active      ON pages (type, update_time DESC) WHERE deleted = 0 AND status = 'active';
 CREATE INDEX IF NOT EXISTS idx_pages_org         ON pages (org_code) WHERE org_code IS NOT NULL;
 
