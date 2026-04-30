@@ -82,7 +82,6 @@ export type NewPage = typeof pages.$inferInsert;
 
 export type PageType =
   | "company"
-  | "person"
   | "industry"
   | "concept"
   | "source"

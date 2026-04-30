@@ -22,6 +22,7 @@ import {
   getTableArtifact,
   listEntities,
   recentActivity,
+  resolveWikilink,
 } from "./queries.ts";
 
 const server = new Server(
@@ -53,7 +54,7 @@ const TOOLS = [
         type: {
           type: "string",
           description:
-            "Filter by page type: company / person / industry / source / thesis / concept / output",
+            "Filter by page type: company / industry / source / thesis / concept / output",
         },
         date_from: {
           type: "string",
@@ -171,13 +172,13 @@ const TOOLS = [
   {
     name: "list_entities",
     description:
-      "List entity pages (companies / persons / industries / etc.) with filters.",
+      "List entity pages (companies / industries / concepts / etc.) with filters.",
     inputSchema: {
       type: "object",
       properties: {
         type: {
           type: "string",
-          description: "Filter by type: company / person / industry / concept",
+          description: "Filter by type: company / industry / concept",
         },
         sector: { type: "string" },
         ticker: { type: "string" },
@@ -187,6 +188,34 @@ const TOOLS = [
         },
         limit: { type: "number" },
       },
+    },
+  },
+  {
+    name: "resolve_wikilink",
+    description:
+      "Fuzzy-resolve a free-text hint to the closest existing page slug via pg_trgm similarity. " +
+      "**Use this BEFORE writing `[[sources/X]]` or `[[theses/X]]` wikilinks** — those types are not auto-created by ingest, so a wrong slug would just be dropped (logged as wikilink_unresolved). " +
+      "Returns ranked candidates + an `advice` field telling you whether the best match is confident enough to link.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        hint: {
+          type: "string",
+          description:
+            "Free-text hint: title fragment, ticker, partial slug, or Chinese name. e.g. 'h200 csp channel check' or 'AWS Q1 preview'",
+        },
+        type: {
+          type: "string",
+          description:
+            "Restrict to a page type (recommended): source / thesis / company / concept / industry / output",
+        },
+        limit: { type: "number", description: "Default 5" },
+        min_similarity: {
+          type: "number",
+          description: "0-1 trigram similarity floor. Default 0.15.",
+        },
+      },
+      required: ["hint"],
     },
   },
   {
@@ -263,6 +292,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         break;
       case "list_entities":
         result = await listEntities(args as Parameters<typeof listEntities>[0]);
+        break;
+      case "resolve_wikilink":
+        result = await resolveWikilink({
+          hint: (args as { hint: string }).hint,
+          type: (args as { type?: string }).type,
+          limit: (args as { limit?: number }).limit,
+          minSimilarity: (args as { min_similarity?: number }).min_similarity,
+        });
         break;
       case "recent_activity":
         result = await recentActivity({

@@ -521,7 +521,85 @@ export async function listEntities(args: ListEntitiesArgs = {}): Promise<unknown
 }
 
 // ============================================================================
-// 5. recent_activity — 最近事件 / 信号 / 新页
+// 5. resolve_wikilink — pg_trgm 模糊找最接近的 slug（agent 写 narrative 前用）
+// ============================================================================
+
+export interface ResolveWikilinkArgs {
+  /** 自由文本 hint，可以是英文 / 中文 / ticker / 部分 slug */
+  hint: string;
+  /**
+   * 限定 type（推荐传，匹配更准）。Agent 写 `[[sources/X]]` 时传 'source'，
+   * 写 `[[theses/X]]` 时传 'thesis' —— 这两个 type 是 stage-4 不会自动建红链的，
+   * 必须先确认存在。
+   */
+  type?: string;
+  /** 默认 5 */
+  limit?: number;
+  /** 相似度阈值（0-1），低于此值不返回；默认 0.15 */
+  minSimilarity?: number;
+}
+
+export async function resolveWikilink(
+  args: ResolveWikilinkArgs
+): Promise<unknown> {
+  const limit = args.limit ?? 5;
+  const minSim = args.minSimilarity ?? 0.15;
+
+  // 用 GREATEST(similarity, word_similarity) 双轨：
+  //   - similarity() 适合 hint 与 slug/title 整体相似（拼写错误等）
+  //   - word_similarity() 适合 hint 是 title 子串（H200 channel check ⊂ 长 title）
+  // 不再依赖 % 操作符（默认阈值 0.3 会漏掉合理候选），手动按 minSim 过滤。
+  const rows = await db.execute(drizzleSql`
+    SELECT id, slug, type, title, ticker, confidence,
+           similarity(slug, ${args.hint}) AS slug_sim,
+           similarity(title, ${args.hint}) AS title_sim,
+           word_similarity(${args.hint}, title) AS word_sim,
+           GREATEST(
+             similarity(slug, ${args.hint}),
+             similarity(title, ${args.hint}),
+             word_similarity(${args.hint}, title)
+           ) AS sim
+    FROM pages
+    WHERE deleted = 0
+      ${args.type ? drizzleSql`AND type = ${args.type}` : drizzleSql``}
+      AND GREATEST(
+        similarity(slug, ${args.hint}),
+        similarity(title, ${args.hint}),
+        word_similarity(${args.hint}, title)
+      ) >= ${minSim}
+    ORDER BY sim DESC
+    LIMIT ${limit}
+  `);
+
+  const candidates = (rows as unknown as Array<Record<string, unknown>>)
+    .map((r) => ({
+      id: String(r.id),
+      slug: r.slug as string,
+      type: r.type as string,
+      title: r.title as string,
+      ticker: r.ticker as string | null,
+      confidence: r.confidence as string | null,
+      similarity:
+        typeof r.sim === "string" ? parseFloat(r.sim) : (r.sim as number),
+    }))
+    .filter((c) => c.similarity >= minSim);
+
+  return {
+    hint: args.hint,
+    filtered_type: args.type ?? null,
+    candidates,
+    best_match: candidates[0] ?? null,
+    advice:
+      candidates.length === 0
+        ? "no match found — for source/thesis pages, write plain text instead of [[wikilink]]"
+        : candidates[0]!.similarity >= 0.5
+        ? `confident match — use slug "${candidates[0]!.slug}"`
+        : "low-confidence matches — verify by calling get_page on the suggested slug before using as wikilink",
+  };
+}
+
+// ============================================================================
+// 6. recent_activity — 最近事件 / 信号 / 新页
 // ============================================================================
 
 export interface RecentActivityArgs {

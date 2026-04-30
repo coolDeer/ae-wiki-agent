@@ -273,6 +273,83 @@ platform: twitter
 
 ---
 
+## Wikilink 纪律（写 narrative 前必读）
+
+写 narrative 时所有 `[[dir/slug]]` 都会被 stage-4 抽取入 `links` 表。**slug 写错的代价不对称**——选错前缀会污染图。
+
+### 1. 红链分两类：能 auto-create 的 vs 不能的
+
+| Wikilink 类型 | 红链行为 | 你应该怎么做 |
+|---|---|---|
+| `[[companies/X]]` `[[concepts/X]]` `[[industries/X]]` | stage-4 **自动建 stub**（confidence='low'），enrich 队列后续补 | 直接写。新实体被发现是 enrich 流程的入口 |
+| `[[sources/X]]` `[[theses/X]]` `[[outputs/X]]` `[[briefs/X]]` | stage-4 **拒绝 auto-create**，只记 `events.action='wikilink_unresolved'`，链不入库 | **必须先验证存在**，否则改写成纯文本 |
+
+第二类的设计原因：source 页只能由 `ingest:commit/brief` 建，thesis 页只能由 `thesis:open` 建，outputs 由 daily-* 建——agent narrative 里手写这种 wikilink 通常是凭直觉猜 slug，slug 错了会落一堆孤儿空 source/thesis 页。
+
+### 2. 写 `[[sources/X]]` 或 `[[theses/X]]` 之前必查
+
+两种验证方式（任选）：
+
+**方式 A：`resolve_wikilink` MCP 工具（推荐）**
+
+```
+mcp__ae-wiki__resolve_wikilink({
+  hint: "h200 csp channel check",   // 自由文本 hint（英中皆可）
+  type: "source"                     // 限定 type，匹配更准
+})
+```
+
+返回最多 5 个候选 + `advice` 字段，告诉你要不要直接用 best_match：
+- `confident match` → 用候选 `slug` 写 wikilink
+- `low-confidence matches` → 调 `get_page` 进一步确认再用
+- `no match found` → **改写成纯文本**，不要写成 wikilink
+
+**方式 B：`search` 工具兜底**
+
+```
+mcp__ae-wiki__search({ query: "H200 channel check", type: "source", keyword_only: true })
+```
+
+### 3. Aspirational thesis 只能用纯文本
+
+写 `## Follow-ups` 段时构想"未来想 open 的论点"——**不要**写成 `[[theses/X]]` wikilink（即便 stage-4 现在会拒绝建，也不要让坏习惯进 narrative）。改写成：
+
+```markdown
+- Build thesis: AWS-AI-reacceleration — long AMZN with conviction triggers on (a) ...
+```
+
+真要 open thesis 时显式跑 `thesis:open --target ... --name ...`，建好后再回填 wikilink。
+
+### 4. 类型推断：companies/ vs concepts/
+
+**写 wikilink 前先想 type**。常见错误：
+- `[[companies/Trainium]]` ❌ Trainium 是 [[companies/Amazon]] 的产品 → 应当写 `[[concepts/Trainium]]` 或就用 `[[companies/Amazon|AWS Trainium]]`
+- `[[companies/HBM3E]]` ❌ HBM 是内存技术 → `[[concepts/HBM3E]]`
+- `[[companies/CoWoS]]` ❌ 封装技术 → `[[concepts/CoWoS]]`
+
+判断规则：**会出现在公司列表里的实体才是 company**（有股东、有营收、能上市）。芯片 / 协议 / 技术 / 工艺 / 产品线都是 concept。
+
+### 5. 没有 `persons/` 这个 type
+
+**不要写 `[[persons/X]]`**——这个 type 已被废弃。CEO / CFO / 高管 / 创始人的信息应当：
+- 写在所属公司的 `[[companies/X]]` narrative 或 frontmatter.management 字段里
+- 高管引言放在 source 页的 `## Notable Quotes / Views`，引用时用 `Andy Jassy（[[companies/Amazon]] CEO）`
+- 匿名专家（"北美广告专家A"）只出现在 source 正文，不需要建实体页
+
+### 5. 出错怎么办
+
+不小心写了不存在的 `[[sources/X]]`，stage-4 不会建空 page，但 `events` 表会留 `wikilink_unresolved` 记录（含 trgm 相似度建议）。Lint：
+
+```sql
+SELECT payload->>'slug' AS bad_slug, payload->'suggestions'->0->>'slug' AS suggested
+FROM events WHERE action = 'wikilink_unresolved' AND deleted = 0
+ORDER BY ts DESC LIMIT 20;
+```
+
+修复路径：根据 suggested 改 narrative 里的 wikilink → 重跑 `links:re-extract <pageId>`。
+
+---
+
 ## Step 4: Write（落库 narrative）
 
 source 和 brief 共用同一个 write 命令。三种入口任选：

@@ -11,7 +11,6 @@ import type { PageType } from "~/core/schema/pages.ts";
 
 const SLUG_TO_TYPE: Record<string, PageType> = {
   companies: "company",
-  persons: "person",
   industries: "industry",
   concepts: "concept",
   sources: "source",

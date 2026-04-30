@@ -43,7 +43,7 @@ const SYSTEM_PROMPT = [
   "Strict rules:",
   '1. Only extract facts EXPLICITLY stated in the narrative. No inference, no completion.',
   '2. Every fact MUST include a "source_quote" — an exact contiguous substring of the narrative that states the fact (will be validated).',
-  '3. Entity MUST be a slug starting with "companies/" / "industries/" / "persons/" / "concepts/". Pick from the allowed_entities list (taken from [[wikilink]] usage in the narrative). If none fits, SKIP the fact rather than invent a new slug.',
+  '3. Entity MUST be a slug starting with "companies/" / "industries/" / "concepts/". Pick from the allowed_entities list (taken from [[wikilink]] usage in the narrative). If none fits, SKIP the fact rather than invent a new slug.',
   '4. Use snake_case for "metric" (e.g., revenue, eps_non_gaap, gross_margin, target_price, comps_us, ma_deal_size).',
   '5. Use compact period codes ("FY2027E", "1Q26A", "current", "2026-04", "2026-04-27", or omit if context-free).',
   '6. Common units: usd, usd_m, usd_bn, cny, cny_bn, jpy_m, pct (for percentages), x, t (tons), bp (basis points).',
@@ -57,7 +57,7 @@ const SYSTEM_PROMPT = [
 
 function extractWikilinkSlugs(text: string): string[] {
   const matches = Array.from(
-    text.matchAll(/\[\[((?:companies|industries|persons|concepts)\/[^\]|]+)(?:\|[^\]]+)?\]\]/g)
+    text.matchAll(/\[\[((?:companies|industries|concepts)\/[^\]|]+)(?:\|[^\]]+)?\]\]/g)
   );
   const slugs = matches
     .map((m) => m[1]?.trim())
@@ -121,7 +121,7 @@ function validateSourceQuote(quote: string, content: string): boolean {
 
 function looksLikeSlug(entity: unknown): boolean {
   if (typeof entity !== "string") return false;
-  return /^(companies|industries|persons|concepts)\/[^/\s][^/]*$/.test(entity.trim());
+  return /^(companies|industries|concepts)\/[^/\s][^/]*$/.test(entity.trim());
 }
 
 async function callLLM(

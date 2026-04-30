@@ -381,7 +381,7 @@ CLI flag 同步写：`--ticker --exchange --sector --sub-sector --country --alia
 ### Slug 规则
 
 - `pages.slug` 是唯一稳定标识，格式 `<dir>/<name>`
-- `dir` ∈ `companies | persons | industries | concepts | sources | theses | outputs`
+- `dir` ∈ `companies | industries | concepts | sources | briefs | theses | outputs`
 - 公司 slug 用规范英文名（如 `companies/Tencent`、`companies/600519.SH`），别名走 `aliases` 列
 - 中文行业 / 概念可用中文（`industries/半导体`），但建议尽量英文
 - 禁止字符：`/ \ : * ? " < > |`（slug 内容里）

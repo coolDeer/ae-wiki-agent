@@ -426,7 +426,7 @@ function resolveEntitySlug(cell: string, fallback: string | null): string | null
   if (explicit.length === 1) return explicit[0] ?? null;
 
   const stripped = stripMarkdown(cell).trim();
-  if (/^(companies|industries|persons|concepts)\/.+/.test(stripped)) {
+  if (/^(companies|industries|concepts)\/.+/.test(stripped)) {
     return stripped;
   }
 
@@ -442,7 +442,7 @@ function inferSingleEntitySlug(content: string): string | null {
 
 function extractEntitySlugs(text: string): string[] {
   const matches = Array.from(
-    text.matchAll(/\[\[((?:companies|industries|persons|concepts)\/[^\]|]+)(?:\|[^\]]+)?\]\]/g)
+    text.matchAll(/\[\[((?:companies|industries|concepts)\/[^\]|]+)(?:\|[^\]]+)?\]\]/g)
   );
   return matches.map((match) => match[1] ?? "").filter((slug) => slug.length > 0);
 }

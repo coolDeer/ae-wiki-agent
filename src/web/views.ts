@@ -401,7 +401,7 @@ export async function viewSearch(
   <input type="hidden" name="pageSize" value="${pageReq.pageSize}">
   <select name="type" onchange="this.form.submit()">
     <option value="">all types</option>
-    ${["company", "industry", "person", "concept", "source", "brief", "thesis"]
+    ${["company", "industry", "concept", "source", "brief", "thesis"]
       .map((t) => `<option value="${t}"${type === t ? " selected" : ""}>${t}</option>`)
       .join("")}
   </select>
@@ -646,7 +646,7 @@ export async function viewPage(identifier: string): Promise<string> {
   `);
 
   const meta = page.frontmatter ?? {};
-  const isEntity = ["company", "industry", "person", "concept"].includes(page.type);
+  const isEntity = ["company", "industry", "concept"].includes(page.type);
 
   const body = `
 <h2>
@@ -939,12 +939,12 @@ function formatFactValue(f: {
 export async function viewThesisNew(
   prefill: { error?: string } = {}
 ): Promise<string> {
-  // 候选 target：active 的 entity 类页（company / industry / person / concept），confidence != 'low' 优先
+  // 候选 target：active 的 entity 类页（company / industry / concept），confidence != 'low' 优先
   const candidates = await db.execute(sql`
     SELECT slug, title, type, confidence
     FROM pages
     WHERE deleted = 0
-      AND type IN ('company', 'industry', 'person', 'concept')
+      AND type IN ('company', 'industry', 'concept')
       AND (status = 'active' OR status IS NULL)
     ORDER BY (confidence = 'high') DESC, (confidence = 'medium') DESC, title
     LIMIT 500
@@ -969,7 +969,7 @@ ${prefill.error ? `<div class="flash" style="color: var(--negative); border-left
     <input type="text" name="target" list="target-options" required
            placeholder="companies/NVIDIA" autocomplete="off">
     <datalist id="target-options">${datalist}</datalist>
-    <span class="form-hint">slug of an existing company / industry / person / concept page</span>
+    <span class="form-hint">slug of an existing company / industry / concept page</span>
   </div>
 
   <div class="form-row">
@@ -1147,7 +1147,7 @@ export async function viewEntities(
     "update_time"
   );
 
-  const conds = [sql`p.deleted = 0`, sql`p.status != 'archived'`, sql`p.type IN ('company','industry','person','concept')`];
+  const conds = [sql`p.deleted = 0`, sql`p.status != 'archived'`, sql`p.type IN ('company','industry','concept')`];
   if (opts.type) conds.push(sql`p.type = ${opts.type}`);
   if (opts.sector) conds.push(sql`p.sector = ${opts.sector}`);
   if (opts.ticker) conds.push(sql`p.ticker = ${opts.ticker}`);
@@ -1215,7 +1215,7 @@ export async function viewEntities(
   <input type="hidden" name="pageSize" value="${pageReq.pageSize}">
   <select name="type">
     <option value="">all types</option>
-    ${["company", "industry", "person", "concept"]
+    ${["company", "industry", "concept"]
       .map((t) => `<option value="${t}"${opts.type === t ? " selected" : ""}>${t}</option>`)
       .join("")}
   </select>

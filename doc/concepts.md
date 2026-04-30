@@ -55,8 +55,7 @@
 | `brief` | 轻量前沿动态（tweet / 单段 newsletter / chat 散点） | `briefs/` |
 | `company` | 公司实体页 | `companies/` |
 | `industry` | 行业页 | `industries/` |
-| `person` | 人物页 | `persons/` |
-| `concept` | 投研概念页（如 CXL、HBM） | `concepts/` |
+| `concept` | 投研概念页（如 CXL、HBM、CEO/高管视为概念页或回归到所属公司） | `concepts/` |
 | `thesis` | 投资论点页（带状态机） | `theses/` |
 | `output` | 派生产物（daily-review / daily-summarize） | `outputs/` |
 
@@ -222,7 +221,7 @@ agent 写 narrative 时**首次提到的实体必须加 wikilink**：
 ingest Stage 4 从 `pages.content` 抽出所有 wikilink slug：
 
 ```ts
-[[(companies|persons|industries|concepts|sources|theses|outputs)/<slug>]]
+[[(companies|industries|concepts|sources|briefs|theses|outputs)/<slug>]]
 ```
 
 对每个 slug 调 `resolveOrCreatePage`：
@@ -535,7 +534,7 @@ query
 ## 15. 命名约定速查
 
 ### slug
-- 格式 `<dir>/<name>`，dir ∈ `companies | persons | industries | concepts | sources | theses | outputs | briefs`
+- 格式 `<dir>/<name>`，dir ∈ `companies | industries | concepts | sources | briefs | theses | outputs`
 - 公司用规范英文名（`companies/Tencent`），别名走 `aliases TEXT[]` 列
 - 中文行业 / 概念可用中文（`industries/半导体`）
 

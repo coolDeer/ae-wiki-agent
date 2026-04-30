@@ -340,7 +340,7 @@ bun build --compile --target=bun-darwin-arm64 --outfile bin/gbrain-darwin-arm64 
 |---|---|
 | **Skill RESOLVER 框架** | 对单一 wiki 用例过重，我们直接 CLI 子命令足够 |
 | **PageType enum** | 我们的 type 列表（含 thesis / output）和 gbrain 不同 |
-| **整套 entity dirs** (`people/companies/meetings/concepts/deal/civic/project/source/media/yc`) | 我们只用 `companies/persons/industries/concepts/sources/theses/outputs` |
+| **整套 entity dirs** (`people/companies/meetings/concepts/deal/civic/project/source/media/yc`) | 我们只用 `companies/industries/concepts/sources/briefs/theses/outputs` |
 | **`compiled_truth` 字段名** | 我们用 `content`，更通用 |
 | **PGLite 引擎双轨** | 我们只跑 Postgres，简化引擎层 |
 | **整个 `src/core/operations.ts` 的 41 个 contract op** | 过度抽象，我们的 5 个 MCP tool 够用 |

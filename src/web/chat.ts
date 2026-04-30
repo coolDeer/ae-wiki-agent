@@ -43,7 +43,7 @@ const TOOLS = [
           type: {
             type: "string",
             description:
-              "Filter: company / person / industry / source / brief / thesis / concept / output",
+              "Filter: company / industry / source / brief / thesis / concept / output",
           },
           date_from: { type: "string", description: "ISO date" },
         },
@@ -126,7 +126,7 @@ const TOOLS = [
     type: "function" as const,
     function: {
       name: "list_entities",
-      description: "List entities (company / person / industry / concept) with filters.",
+      description: "List entities (company / industry / concept) with filters.",
       parameters: {
         type: "object",
         properties: {

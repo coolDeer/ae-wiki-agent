@@ -14,21 +14,35 @@
  *   - 链接周围 context 提取（前后 N 字符）— 现在留空
  */
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { withCreateAudit } from "~/core/audit.ts";
 import { resolveOrCreatePage, slugToType } from "./_helpers.ts";
 import type { IngestContext } from "~/core/types.ts";
+import type { PageType } from "~/core/schema/pages.ts";
 
 const ENTITY_DIRS = [
   "companies",
-  "persons",
   "industries",
   "concepts",
   "sources",
   "theses",
   "outputs",
+  "briefs",
 ];
+
+/**
+ * 这些 type 的红链允许 stage-4 auto-create 空 stub（confidence='low'，等 enrich）。
+ *
+ * 反过来 sources/theses/outputs/briefs 必须由 ingest:commit/brief / thesis:open /
+ * daily-* 这些显式入口创建——agent narrative 里写 `[[sources/foo]]` 通常是
+ * 凭直觉猜 slug，slug 错了会污染图。这种红链改成只记 events，不建 page。
+ */
+const AUTO_CREATE_TYPES: ReadonlySet<PageType> = new Set([
+  "company",
+  "industry",
+  "concept",
+]);
 const DIR_PATTERN = ENTITY_DIRS.join("|");
 
 // [[dir/slug]] / [[dir/slug|display]]
@@ -56,27 +70,47 @@ export async function stage4Links(ctx: IngestContext): Promise<void> {
 
   let createdEntities = 0;
   let linksWritten = 0;
+  let unresolved = 0;
 
   for (const slug of refs) {
     if (slug === page.slug) continue; // 不给自己建链
-    if (!slugToType(slug)) continue;
+    const inferredType = slugToType(slug);
+    if (!inferredType) continue;
 
-    // resolveOrCreatePage 内部负责入队 enrich_entity（仅在真正新建时）。
-    // 这里仅记录 createdEntities 用于 stage 日志输出。
-    const beforeCheck = await db
+    // 1. 先查是否已存在（不论是否允许 auto-create，命中就连）
+    const existing = await db
       .select({ id: schema.pages.id })
       .from(schema.pages)
       .where(and(eq(schema.pages.slug, slug), eq(schema.pages.deleted, 0)))
       .limit(1);
-    const wasExisting = beforeCheck.length > 0;
 
-    const targetId = await resolveOrCreatePage(slug, {
-      actor: ctx.actor,
-      autoCreate: true,
-      sourcePageId: ctx.pageId,
-    });
+    let targetId: bigint | null = existing[0]?.id ?? null;
+    const wasExisting = targetId !== null;
+
+    if (!targetId) {
+      // 2. 红链。按 type 分流：
+      //    - company/concept/industry → auto-create stub，进 enrich 队列
+      //    - source/thesis/output/brief → 不建，记 events 让人后续清理
+      if (AUTO_CREATE_TYPES.has(inferredType)) {
+        targetId = await resolveOrCreatePage(slug, {
+          actor: ctx.actor,
+          autoCreate: true,
+          sourcePageId: ctx.pageId,
+        });
+        if (targetId) createdEntities++;
+      } else {
+        await logUnresolvedWikilink({
+          slug,
+          inferredType,
+          fromPageId: ctx.pageId,
+          actor: ctx.actor,
+        });
+        unresolved++;
+        continue;
+      }
+    }
+
     if (!targetId) continue;
-    if (!wasExisting) createdEntities++;
 
     const inserted = await db
       .insert(schema.links)
@@ -97,11 +131,70 @@ export async function stage4Links(ctx: IngestContext): Promise<void> {
       .onConflictDoNothing()
       .returning({ id: schema.links.id });
     if (inserted.length > 0) linksWritten++;
+    void wasExisting;
   }
 
   console.log(
-    `  [stage4] entities created=${createdEntities}, links written=${linksWritten}`
+    `  [stage4] entities created=${createdEntities}, links written=${linksWritten}` +
+      (unresolved > 0 ? `, unresolved=${unresolved} (logged to events)` : "")
   );
+}
+
+/**
+ * 记一条 wikilink_unresolved event，附 trgm 相似度建议（agent / lint 可拿来纠错）。
+ */
+async function logUnresolvedWikilink(opts: {
+  slug: string;
+  inferredType: PageType;
+  fromPageId: bigint;
+  actor: string;
+}): Promise<void> {
+  // pg_trgm fuzzy 找最像的 5 个候选（同 type 优先）。慢路径 OK，红链本来就少见。
+  const suggestionRows = await db.execute(drizzleSql`
+    SELECT slug, type, title,
+           GREATEST(similarity(slug, ${opts.slug}),
+                    similarity(title, ${opts.slug})) AS sim
+    FROM pages
+    WHERE deleted = 0
+      AND type = ${opts.inferredType}
+      AND (slug % ${opts.slug} OR title % ${opts.slug})
+    ORDER BY sim DESC
+    LIMIT 5
+  `);
+  const suggestions = (suggestionRows as unknown as Array<{
+    slug: string;
+    type: string;
+    title: string;
+    sim: string | number;
+  }>).map((r) => ({
+    slug: r.slug,
+    type: r.type,
+    title: r.title,
+    similarity: typeof r.sim === "string" ? parseFloat(r.sim) : r.sim,
+  }));
+
+  await db.insert(schema.events).values(
+    withCreateAudit(
+      {
+        actor: opts.actor,
+        action: "wikilink_unresolved",
+        entityType: "page",
+        entityId: opts.fromPageId,
+        payload: {
+          slug: opts.slug,
+          inferredType: opts.inferredType,
+          fromPageId: opts.fromPageId.toString(),
+          suggestions,
+        },
+      },
+      opts.actor
+    )
+  );
+
+  const hint = suggestions.length > 0
+    ? ` (closest: ${suggestions[0]!.slug} sim=${suggestions[0]!.similarity.toFixed(2)})`
+    : "";
+  console.log(`  [stage4] 跳过红链 ${opts.slug} —— ${opts.inferredType} 必须显式创建${hint}`);
 }
 
 function extractRefs(content: string): Set<string> {

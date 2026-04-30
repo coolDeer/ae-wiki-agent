@@ -126,7 +126,7 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
 }
 .tag.type-source { color: var(--accent); border-color: var(--accent); }
 .tag.type-brief { color: var(--warning); border-color: var(--warning); }
-.tag.type-company, .tag.type-industry, .tag.type-person, .tag.type-concept { color: var(--positive); border-color: var(--positive); }
+.tag.type-company, .tag.type-industry, .tag.type-concept { color: var(--positive); border-color: var(--positive); }
 .tag.type-thesis { color: var(--negative); border-color: var(--negative); }
 .tag.confidence-low { color: var(--negative); border-color: var(--negative); }
 .tag.confidence-medium { color: var(--warning); border-color: var(--warning); }

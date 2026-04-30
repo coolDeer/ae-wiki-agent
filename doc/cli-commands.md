@@ -303,7 +303,7 @@ ae-wiki jobs:retry <job_id>
 ae-wiki enrich:list [--type T] [--limit N]
 ```
 
-`--type` 可选：`company | person | industry | concept | thesis | output`
+`--type` 可选：`company | industry | concept | thesis | output`
 
 ### `enrich:next`
 

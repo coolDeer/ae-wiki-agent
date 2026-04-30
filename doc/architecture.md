@@ -405,10 +405,10 @@ CREATE INDEX idx_pages_title_trgm ON pages USING GIN(title gin_trgm_ops);
 
 **`type` 枚举**：
 - `company` — 公司（slug 例：`companies/NVIDIA`）
-- `person` — 人物（slug 例：`persons/jensen-huang`）
 - `industry` — 行业（slug 例：`industries/光模块`）
 - `concept` — 概念（slug 例：`concepts/memory-supercycle`）
-- `source` — 研究来源（slug 例：`sources/arete-NOW-260316`）
+- `source` — 研究来源深度版（slug 例：`sources/arete-NOW-260316`）
+- `brief` — 研究来源轻量版（slug 例：`briefs/twitter-xxx`）
 - `thesis` — 投资论点（slug 例：`theses/long-NVDA-AI-infra`）
 - `output` — 分析输出（slug 例：`outputs/daily-review-2026-04-26`）
 
@@ -979,8 +979,8 @@ ON CONFLICT (id) DO NOTHING;
                            ▼
          ┌──────────────────────────────────────┐
          │           pages (核心表)              │
-         │ type ∈ {company, person, industry,   │
-         │  source, thesis, concept, output}     │
+         │ type ∈ {company, industry, concept,  │
+         │  source, brief, thesis, output}       │
          │ ticker / sector / aliases / tsv /     │
          │ embedding / content / frontmatter     │
          └─┬──┬──┬──┬──┬──┬──┬──┬──┬──┬──┬──────┘

@@ -33,7 +33,7 @@ interface LintOptions {
   sampleSize?: number;
 }
 
-const ENTITY_TYPES = ["company", "person", "industry", "concept", "thesis"];
+const ENTITY_TYPES = ["company", "industry", "concept", "thesis"];
 
 export async function runLint(opts: LintOptions = {}): Promise<LintReport> {
   const staleDays = opts.staleDays ?? 30;
@@ -71,7 +71,7 @@ export async function runLint(opts: LintOptions = {}): Promise<LintReport> {
     name: "orphan_pages",
     count: orphanCountRow[0]?.n ?? 0,
     sampleIds: orphanRows.slice(0, sampleSize).map((r) => r.id),
-    description: "实体页（company/person/industry/concept/thesis）没有任何入站 link",
+    description: "实体页（company/industry/concept/thesis）没有任何入站 link",
   });
 
   const staleThesisRows = (await db.execute(sql`

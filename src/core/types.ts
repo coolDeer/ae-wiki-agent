@@ -10,7 +10,7 @@ export interface EntityRef {
   name: string;
   /** Resolved page slug，如 "companies/ServiceNow"。 */
   slug: string;
-  /** 顶级目录 ("companies" | "persons" | ...)。 */
+  /** 顶级目录 ("companies" | "industries" | "concepts" | ...)。 */
   dir: string;
 }
 

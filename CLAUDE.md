@@ -337,17 +337,7 @@ CLI flag 同步写：`--ticker --exchange --sector --sub-sector --country --alia
 
 `catalysts` 和 `validation_conditions` 用 `thesis:update --add-catalyst / --mark-condition` 命令结构化进 JSONB。详见 `./skills/ae-thesis-track/SKILL.md`。
 
-### 5. Person
-
-```markdown
-## Basic Information
-## Investment Style / Management Style
-## Key Views And Quotes
-## Track Record
-## Sources
-```
-
-### 6. Concept
+### 5. Concept
 
 ```markdown
 ## Definition
@@ -356,7 +346,7 @@ CLI flag 同步写：`--ticker --exchange --sector --sub-sector --country --alia
 ## Sources
 ```
 
-### 7. Comparison
+### 6. Comparison
 
 ```markdown
 ## Comparison Overview
@@ -366,7 +356,7 @@ CLI flag 同步写：`--ticker --exchange --sector --sub-sector --country --alia
 ## Sources
 ```
 
-### 8. Metric
+### 7. Metric
 
 ```markdown
 ## Metric Definition
@@ -384,7 +374,7 @@ CLI flag 同步写：`--ticker --exchange --sector --sub-sector --country --alia
 ### Slug 规则
 
 - `pages.slug` 是唯一稳定标识，格式 `<dir>/<name>`
-- `dir` ∈ `companies | persons | industries | concepts | sources | theses | outputs`
+- `dir` ∈ `companies | industries | concepts | sources | briefs | theses | outputs`
 - 公司 slug 用规范英文名（如 `companies/Tencent`、`companies/600519.SH`），别名走 `aliases` 列
 - 中文行业 / 概念可用中文（`industries/半导体`），但建议尽量英文
 - 禁止字符：`/ \ : * ? " < > |`（slug 内容里）

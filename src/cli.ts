@@ -372,7 +372,6 @@ async function main(): Promise<void> {
       const { enrichList } = await import("./skills/enrich/index.ts");
       const type = getArg("--type") as
         | "company"
-        | "person"
         | "industry"
         | "concept"
         | "thesis"
@@ -391,7 +390,6 @@ async function main(): Promise<void> {
       const { enrichPrepareNext } = await import("./skills/enrich/index.ts");
       const type = getArg("--type") as
         | "company"
-        | "person"
         | "industry"
         | "concept"
         | "thesis"
