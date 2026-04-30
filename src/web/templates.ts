@@ -219,6 +219,46 @@ tr:last-child td { border-bottom: none; }
 .did-you-mean .sep {
   margin: 0 6px; opacity: 0.5;
 }
+
+/* === Form styling for thesis admin & similar PM-edit views === */
+.thesis-form {
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 16px 20px; margin: 16px 0;
+  background: var(--bg);
+  max-width: 640px;
+}
+.thesis-form.inline-form { max-width: 100%; }
+.thesis-form.danger { border-color: var(--negative); }
+.thesis-form h4 { margin: 0 0 12px; font-size: 14px; }
+.thesis-form .form-row { display: grid; grid-template-columns: 140px 1fr; gap: 6px 14px; align-items: center; margin-bottom: 12px; }
+.thesis-form .form-row > label { font-size: 13px; color: var(--muted); }
+.thesis-form .form-row > input,
+.thesis-form .form-row > select,
+.thesis-form .form-row > textarea {
+  padding: 6px 10px; border: 1px solid var(--border);
+  border-radius: 4px; background: var(--bg); color: var(--fg);
+  font-size: 13px; font-family: inherit;
+}
+.thesis-form .form-row > textarea { resize: vertical; }
+.thesis-form .form-row > .form-hint {
+  grid-column: 2; font-size: 11px; color: var(--muted); margin-top: -4px;
+}
+.thesis-form .form-row.form-actions { grid-template-columns: 140px 1fr; align-items: center; }
+.thesis-form button {
+  padding: 6px 16px; border: 1px solid var(--accent);
+  background: var(--accent); color: #fff;
+  border-radius: 4px; font-size: 13px; cursor: pointer;
+}
+.thesis-form button:hover { background: var(--accent-hover); }
+.thesis-form button.btn-danger { border-color: var(--negative); background: var(--negative); }
+a.btn-primary {
+  display: inline-block; padding: 6px 14px; border: 1px solid var(--accent);
+  background: var(--accent); color: #fff !important; border-radius: 4px;
+  font-size: 13px; text-decoration: none;
+}
+a.btn-primary:hover { background: var(--accent-hover); }
+details.narrative-edit { margin: 16px 0; }
+details.narrative-edit summary { cursor: pointer; user-select: none; padding: 6px 0; color: var(--accent); }
 ul.plain { list-style: none; padding: 0; margin: 0; }
 ul.plain li { padding: 6px 0; border-bottom: 1px solid var(--border); }
 ul.plain li:last-child { border-bottom: none; }

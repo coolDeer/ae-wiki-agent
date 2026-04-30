@@ -25,8 +25,15 @@ import {
   viewQueue,
   viewSearch,
   viewTheses,
+  viewThesisNew,
   viewUsage,
 } from "./views.ts";
+import {
+  thesisOpen,
+  thesisWrite,
+  thesisUpdate,
+  thesisClose,
+} from "../skills/thesis/index.ts";
 import { parsePageRequest } from "./pagination.ts";
 import { chatSend, clearSession } from "./chat.ts";
 
@@ -99,11 +106,112 @@ export async function startWebServer(opts: ServeOpts = {}): Promise<void> {
           return html(await viewPage(identifier));
         }
 
-        // Theses
+        // Theses — list
         if (path === "/theses" && req.method === "GET") {
           const status = url.searchParams.get("status") ?? undefined;
           const pageReq = parsePageRequest(url.searchParams);
           return html(await viewTheses(status, pageReq));
+        }
+
+        // Theses — open form
+        if (path === "/theses/new" && req.method === "GET") {
+          return html(await viewThesisNew());
+        }
+
+        // Theses — open POST
+        if (path === "/theses" && req.method === "POST") {
+          const form = await req.formData();
+          const target = String(form.get("target") ?? "").trim();
+          const direction = String(form.get("direction") ?? "long");
+          const conviction = String(form.get("conviction") ?? "medium");
+          const name = String(form.get("name") ?? "").trim();
+          const owner = String(form.get("owner") ?? "").trim();
+          const dateOpened = String(form.get("date_opened") ?? "").trim();
+          const priceAtOpen = String(form.get("price_at_open") ?? "").trim();
+          if (!target || !name) {
+            return html(await viewThesisNew({ error: "target 和 name 必填" }));
+          }
+          try {
+            const result = await thesisOpen({
+              targetSlug: target,
+              direction: direction as "long" | "short" | "pair" | "neutral",
+              conviction: conviction as "high" | "medium" | "low",
+              name,
+              ...(owner ? { pmOwner: owner } : {}),
+              ...(dateOpened ? { dateOpened } : {}),
+              ...(priceAtOpen ? { priceAtOpen } : {}),
+            });
+            return Response.redirect(`/pages/${result.pageId.toString()}`, 303);
+          } catch (e) {
+            return html(await viewThesisNew({ error: (e as Error).message }));
+          }
+        }
+
+        // Theses — narrative POST
+        const narrativeMatch = path.match(/^\/theses\/(\d+)\/narrative$/);
+        if (narrativeMatch && req.method === "POST") {
+          const pageId = BigInt(narrativeMatch[1]!);
+          const form = await req.formData();
+          const narrative = String(form.get("narrative") ?? "").trim();
+          if (!narrative) return jsonErr(400, "empty narrative");
+          await thesisWrite(pageId, narrative);
+          return Response.redirect(`/pages/${pageId.toString()}`, 303);
+        }
+
+        // Theses — add catalyst POST
+        const catalystMatch = path.match(/^\/theses\/(\d+)\/catalyst$/);
+        if (catalystMatch && req.method === "POST") {
+          const pageId = BigInt(catalystMatch[1]!);
+          const form = await req.formData();
+          const date = String(form.get("date") ?? "").trim();
+          const event = String(form.get("event") ?? "").trim();
+          const expectedImpact = String(form.get("expected_impact") ?? "").trim();
+          if (!date || !event) return jsonErr(400, "date 和 event 必填");
+          await thesisUpdate(pageId, {
+            addCatalyst: { date, event, expected_impact: expectedImpact },
+            reason: "web:add_catalyst",
+          });
+          return Response.redirect(`/pages/${pageId.toString()}`, 303);
+        }
+
+        // Theses — mark condition POST
+        const conditionMatch = path.match(/^\/theses\/(\d+)\/condition$/);
+        if (conditionMatch && req.method === "POST") {
+          const pageId = BigInt(conditionMatch[1]!);
+          const form = await req.formData();
+          const condition = String(form.get("condition") ?? "").trim();
+          const status = String(form.get("status") ?? "pending");
+          const evidenceSignalId = String(form.get("evidence_signal_id") ?? "").trim();
+          if (!condition) return jsonErr(400, "condition 必填");
+          await thesisUpdate(pageId, {
+            markCondition: {
+              condition,
+              status: status as "pending" | "met" | "unmet" | "invalidated",
+              ...(evidenceSignalId ? { evidence_signal_id: evidenceSignalId } : {}),
+            },
+            reason: "web:mark_condition",
+          });
+          return Response.redirect(`/pages/${pageId.toString()}`, 303);
+        }
+
+        // Theses — close POST
+        const closeMatch = path.match(/^\/theses\/(\d+)\/close$/);
+        if (closeMatch && req.method === "POST") {
+          const pageId = BigInt(closeMatch[1]!);
+          const form = await req.formData();
+          const reason = String(form.get("reason") ?? "manual") as
+            | "validated"
+            | "invalidated"
+            | "stop_loss"
+            | "manual";
+          const priceAtClose = String(form.get("price_at_close") ?? "").trim();
+          const note = String(form.get("note") ?? "").trim();
+          await thesisClose(pageId, {
+            reason,
+            ...(priceAtClose ? { priceAtClose } : {}),
+            ...(note ? { note } : {}),
+          });
+          return Response.redirect(`/pages/${pageId.toString()}`, 303);
         }
 
         // Entities

@@ -758,8 +758,168 @@ ${inLinks.length > 0
       .join("")}</ul>`
   : ""
 }
+
+${page.type === "thesis" ? await renderThesisAdmin(BigInt(page.id), page.content ?? "") : ""}
 `;
   return layout({ title: page.title, body });
+}
+
+/**
+ * 当 page.type === 'thesis' 时渲染管理 UI：
+ * - 状态机字段（direction / conviction / status / 价格 / 日期）
+ * - catalysts 列表 + 加催化剂表单
+ * - validation conditions 列表 + 标 condition 状态表单
+ * - 关仓表单
+ * - narrative 编辑（textarea）
+ */
+async function renderThesisAdmin(pageId: bigint, currentContent: string): Promise<string> {
+  const [t] = await db.execute(sql`
+    SELECT direction, conviction, status, date_opened, date_closed,
+           price_at_open, price_at_close, pm_owner,
+           catalysts, validation_conditions
+    FROM theses WHERE page_id = ${pageId} AND deleted = 0
+  `) as unknown as Array<Record<string, unknown>>;
+  if (!t) return "";
+
+  const catalysts = (t.catalysts as Array<{ date: string; event: string; expected_impact: string }> | null) ?? [];
+  const conditions = (t.validation_conditions as Array<{ condition: string; status: string; last_checked: string; evidence_signal_id?: string }> | null) ?? [];
+  const status = String(t.status ?? "active");
+  const isClosed = status === "closed" || status === "invalidated";
+
+  return `
+<h2>Thesis state</h2>
+<div class="kv card">
+  <div class="k">Direction</div><div>${escape(String(t.direction ?? ""))}</div>
+  <div class="k">Conviction</div><div>${escape(String(t.conviction ?? ""))}</div>
+  <div class="k">Status</div><div><span class="tag">${escape(status)}</span></div>
+  <div class="k">PM owner</div><div>${escape(String(t.pm_owner ?? "-"))}</div>
+  <div class="k">Date opened</div><div class="muted">${escape(String(t.date_opened ?? ""))}</div>
+  <div class="k">Date closed</div><div class="muted">${escape(String(t.date_closed ?? "-"))}</div>
+  <div class="k">Price at open</div><div>${escape(String(t.price_at_open ?? "-"))}</div>
+  <div class="k">Price at close</div><div>${escape(String(t.price_at_close ?? "-"))}</div>
+</div>
+
+<h2>Catalysts (${catalysts.length})</h2>
+${catalysts.length === 0
+  ? `<div class="empty">no catalysts yet</div>`
+  : `<table><thead><tr><th>Date</th><th>Event</th><th>Expected impact</th></tr></thead><tbody>
+      ${catalysts
+        .map(
+          (c) =>
+            `<tr>
+              <td class="muted">${escape(c.date ?? "")}</td>
+              <td>${escape(c.event ?? "")}</td>
+              <td>${escape(c.expected_impact ?? "")}</td>
+            </tr>`
+        )
+        .join("")}
+    </tbody></table>`
+}
+${!isClosed ? `
+<form method="post" action="/theses/${pageId}/catalyst" class="thesis-form inline-form">
+  <h4>Add catalyst</h4>
+  <div class="form-row">
+    <label>Date</label>
+    <input type="date" name="date" required>
+  </div>
+  <div class="form-row">
+    <label>Event</label>
+    <input type="text" name="event" required maxlength="200" placeholder="e.g. 2026 H1 results">
+  </div>
+  <div class="form-row">
+    <label>Expected impact</label>
+    <input type="text" name="expected_impact" maxlength="500" placeholder="why this matters for the thesis">
+  </div>
+  <div class="form-row form-actions">
+    <button type="submit">Add catalyst</button>
+  </div>
+</form>` : ""}
+
+<h2>Validation conditions (${conditions.length})</h2>
+${conditions.length === 0
+  ? `<div class="empty">no conditions yet</div>`
+  : `<table><thead><tr><th>Condition</th><th>Status</th><th>Last checked</th><th>Signal</th></tr></thead><tbody>
+      ${conditions
+        .map(
+          (c) =>
+            `<tr>
+              <td>${escape(c.condition ?? "")}</td>
+              <td><span class="tag confidence-${c.status === "met" ? "high" : c.status === "unmet" || c.status === "invalidated" ? "low" : "medium"}">${escape(c.status ?? "")}</span></td>
+              <td class="muted">${escape(c.last_checked ?? "")}</td>
+              <td class="muted">${escape(c.evidence_signal_id ?? "")}</td>
+            </tr>`
+        )
+        .join("")}
+    </tbody></table>`
+}
+${!isClosed ? `
+<form method="post" action="/theses/${pageId}/condition" class="thesis-form inline-form">
+  <h4>Mark / add condition</h4>
+  <div class="form-row">
+    <label>Condition</label>
+    <input type="text" name="condition" required maxlength="300" list="condition-options"
+           placeholder="e.g. 2026 H1 corp insurance revenue ≥CNY 60m">
+    <datalist id="condition-options">
+      ${conditions.map((c) => `<option value="${escape(c.condition)}"></option>`).join("")}
+    </datalist>
+    <span class="form-hint">existing condition → updates its status; new text → appends</span>
+  </div>
+  <div class="form-row">
+    <label>Status</label>
+    <select name="status" required>
+      <option value="pending">pending</option>
+      <option value="met">met</option>
+      <option value="unmet">unmet</option>
+      <option value="invalidated">invalidated</option>
+    </select>
+  </div>
+  <div class="form-row">
+    <label>Evidence signal id (optional)</label>
+    <input type="text" name="evidence_signal_id" placeholder="signals.id">
+  </div>
+  <div class="form-row form-actions">
+    <button type="submit">Update condition</button>
+  </div>
+</form>` : ""}
+
+<h2>Narrative</h2>
+<details class="narrative-edit">
+  <summary>Edit narrative</summary>
+  <form method="post" action="/theses/${pageId}/narrative" class="thesis-form" style="margin-top: 12px;">
+    <textarea name="narrative" rows="20" style="width: 100%; font-family: ui-monospace, monospace; font-size: 13px; padding: 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg);">${escape(currentContent)}</textarea>
+    <div class="form-row form-actions">
+      <button type="submit">Save narrative</button>
+      <span class="muted form-hint" style="margin-left: 12px;">overwrites pages.content; writes a page_versions snapshot</span>
+    </div>
+  </form>
+</details>
+
+${!isClosed ? `
+<h2>Close thesis</h2>
+<form method="post" action="/theses/${pageId}/close" class="thesis-form inline-form danger">
+  <div class="form-row">
+    <label>Reason</label>
+    <select name="reason" required>
+      <option value="validated">validated</option>
+      <option value="invalidated">invalidated</option>
+      <option value="stop_loss">stop_loss</option>
+      <option value="manual">manual</option>
+    </select>
+  </div>
+  <div class="form-row">
+    <label>Price at close (optional)</label>
+    <input type="text" name="price_at_close" placeholder="e.g. 850">
+  </div>
+  <div class="form-row">
+    <label>Note (optional)</label>
+    <textarea name="note" rows="4" placeholder="retrospective lesson; gets appended to narrative"></textarea>
+  </div>
+  <div class="form-row form-actions">
+    <button type="submit" class="btn-danger" onclick="return confirm('Close this thesis?')">Close</button>
+  </div>
+</form>
+` : ""}
+`;
 }
 
 function formatFactValue(f: {
@@ -774,6 +934,94 @@ function formatFactValue(f: {
 // ============================================================================
 // /theses
 // ============================================================================
+
+/** /theses/new — open form for PMs */
+export async function viewThesisNew(
+  prefill: { error?: string } = {}
+): Promise<string> {
+  // 候选 target：active 的 entity 类页（company / industry / person / concept），confidence != 'low' 优先
+  const candidates = await db.execute(sql`
+    SELECT slug, title, type, confidence
+    FROM pages
+    WHERE deleted = 0
+      AND type IN ('company', 'industry', 'person', 'concept')
+      AND (status = 'active' OR status IS NULL)
+    ORDER BY (confidence = 'high') DESC, (confidence = 'medium') DESC, title
+    LIMIT 500
+  `);
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  const datalist = (candidates as unknown as Array<Record<string, unknown>>)
+    .map(
+      (c) =>
+        `<option value="${escape(String(c.slug))}">${escape(String(c.title ?? ""))} · ${escape(String(c.type ?? ""))} · ${escape(String(c.confidence ?? "low"))}</option>`
+    )
+    .join("");
+
+  const body = `
+<h2>Open new thesis</h2>
+${prefill.error ? `<div class="flash" style="color: var(--negative); border-left: 3px solid var(--negative); padding-left: 12px;">${escape(prefill.error)}</div>` : ""}
+
+<form class="thesis-form" method="post" action="/theses">
+  <div class="form-row">
+    <label>Target</label>
+    <input type="text" name="target" list="target-options" required
+           placeholder="companies/NVIDIA" autocomplete="off">
+    <datalist id="target-options">${datalist}</datalist>
+    <span class="form-hint">slug of an existing company / industry / person / concept page</span>
+  </div>
+
+  <div class="form-row">
+    <label>Direction</label>
+    <select name="direction" required>
+      <option value="long" selected>long</option>
+      <option value="short">short</option>
+      <option value="pair">pair</option>
+      <option value="neutral">neutral</option>
+    </select>
+  </div>
+
+  <div class="form-row">
+    <label>Conviction</label>
+    <select name="conviction">
+      <option value="medium" selected>medium</option>
+      <option value="high">high</option>
+      <option value="low">low</option>
+    </select>
+  </div>
+
+  <div class="form-row">
+    <label>Name</label>
+    <input type="text" name="name" required
+           placeholder="e.g. Sipai brokerage replacement + 2026 profitability"
+           maxlength="200">
+    <span class="form-hint">used as title + slug; English preferred</span>
+  </div>
+
+  <div class="form-row">
+    <label>Owner (optional)</label>
+    <input type="text" name="owner" placeholder="PM:levin">
+  </div>
+
+  <div class="form-row">
+    <label>Date opened</label>
+    <input type="date" name="date_opened" value="${today}" required>
+  </div>
+
+  <div class="form-row">
+    <label>Open price (optional)</label>
+    <input type="text" name="price_at_open" placeholder="e.g. 1100">
+  </div>
+
+  <div class="form-row form-actions">
+    <button type="submit">Open thesis</button>
+    <a href="/theses" class="muted" style="margin-left: 12px;">cancel</a>
+  </div>
+</form>
+`;
+  return layout({ title: "Open thesis", body });
+}
 
 export async function viewTheses(
   status: string | undefined,
@@ -835,7 +1083,10 @@ export async function viewTheses(
     });
 
   const body = `
-<h2>Theses (${totalCount})</h2>
+<div class="row">
+  <h2 class="grow">Theses (${totalCount})</h2>
+  <a href="/theses/new" class="btn-primary">+ New thesis</a>
+</div>
 <form class="filter" method="get" action="/theses">
   <input type="hidden" name="pageSize" value="${pageReq.pageSize}">
   <select name="status" onchange="this.form.submit()">
