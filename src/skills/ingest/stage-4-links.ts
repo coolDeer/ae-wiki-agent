@@ -57,60 +57,111 @@ const MD_LINK_RE = new RegExp(
   "g"
 );
 
-export async function stage4Links(ctx: IngestContext): Promise<void> {
+export interface UnresolvedWikilink {
+  slug: string;
+  inferredType: PageType;
+  /** pg_trgm 相似度建议；agent / lint 可用来纠错 */
+  suggestions: Array<{
+    slug: string;
+    type: string;
+    title: string;
+    similarity: number;
+  }>;
+}
+
+export interface Stage4Result {
+  refsExtracted: number;
+  entitiesCreated: number;
+  linksWritten: number;
+  /** 因为 type 不在 AUTO_CREATE_TYPES（即 source/thesis/output/brief）被拒绝建页的红链。
+   *  这些条目同时已写入 events.action='wikilink_unresolved'，不再次落库。 */
+  unresolved: UnresolvedWikilink[];
+}
+
+export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
   const [page] = await db
     .select({ content: schema.pages.content, slug: schema.pages.slug })
     .from(schema.pages)
     .where(eq(schema.pages.id, ctx.pageId))
     .limit(1);
-  if (!page) return;
+  if (!page) {
+    return { refsExtracted: 0, entitiesCreated: 0, linksWritten: 0, unresolved: [] };
+  }
 
-  const refs = extractRefs(page.content);
-  console.log(`  [stage4] 抽到 ${refs.size} 个唯一引用`);
+  const refsMap = extractRefs(page.content);
+  console.log(`  [stage4] 抽到 ${refsMap.size} 个唯一引用`);
 
   let createdEntities = 0;
   let linksWritten = 0;
-  let unresolved = 0;
+  const unresolved: UnresolvedWikilink[] = [];
 
-  for (const slug of refs) {
+  for (const [slug, occurrences] of refsMap) {
     if (slug === page.slug) continue; // 不给自己建链
     const inferredType = slugToType(slug);
     if (!inferredType) continue;
 
-    // 1. 先查是否已存在（不论是否允许 auto-create，命中就连）
-    const existing = await db
-      .select({ id: schema.pages.id })
-      .from(schema.pages)
-      .where(and(eq(schema.pages.slug, slug), eq(schema.pages.deleted, 0)))
-      .limit(1);
+    const namePart = slug.split("/").slice(1).join("/").trim();
 
-    let targetId: bigint | null = existing[0]?.id ?? null;
-    const wasExisting = targetId !== null;
+    // 1. 查是否已存在 —— alias-aware + case-insensitive
+    //    匹配优先级：精确 slug > slug ILIKE > aliases ILIKE
+    //    防止 [[companies/Coherent]] 在已有 [[companies/II-VI Coherent]]
+    //    （aliases 含 "Coherent"）的情况下重建 stub。
+    const existingRows = (await db.execute(drizzleSql`
+      SELECT id, slug FROM pages
+      WHERE deleted = 0
+        AND type = ${inferredType}
+        AND (
+          slug = ${slug}
+          OR LOWER(slug) = LOWER(${slug})
+          OR EXISTS (
+            SELECT 1 FROM unnest(COALESCE(aliases, ARRAY[]::text[])) AS a
+            WHERE LOWER(a) = LOWER(${namePart})
+          )
+        )
+      ORDER BY
+        (slug = ${slug}) DESC,
+        (LOWER(slug) = LOWER(${slug})) DESC,
+        id ASC
+      LIMIT 1
+    `)) as Array<{ id: string; slug: string }>;
+
+    let targetId: bigint | null = existingRows[0] ? BigInt(existingRows[0].id) : null;
+    const matchedSlug = existingRows[0]?.slug;
 
     if (!targetId) {
       // 2. 红链。按 type 分流：
-      //    - company/concept/industry → auto-create stub，进 enrich 队列
+      //    - company/concept/industry → auto-create stub（aliases 预填 namePart），进 enrich 队列
       //    - source/thesis/output/brief → 不建，记 events 让人后续清理
       if (AUTO_CREATE_TYPES.has(inferredType)) {
         targetId = await resolveOrCreatePage(slug, {
           actor: ctx.actor,
           autoCreate: true,
           sourcePageId: ctx.pageId,
+          initialAliases: namePart ? [namePart] : undefined,
         });
         if (targetId) createdEntities++;
       } else {
+        const suggestions = await fetchSuggestions(slug, inferredType);
         await logUnresolvedWikilink({
           slug,
           inferredType,
+          suggestions,
           fromPageId: ctx.pageId,
           actor: ctx.actor,
         });
-        unresolved++;
+        unresolved.push({ slug, inferredType, suggestions });
         continue;
       }
+    } else if (matchedSlug && matchedSlug !== slug) {
+      console.log(
+        `  [stage4] 别名命中：${slug} → 已有 ${matchedSlug} (#${targetId})，连过去而非重建`
+      );
     }
 
     if (!targetId) continue;
+
+    // 3. 取第一个出现位置前后 ±50 字符做 context（链接表的查询上下文）
+    const ctxText = buildContext(page.content, occurrences[0]);
 
     const inserted = await db
       .insert(schema.links)
@@ -120,7 +171,7 @@ export async function stage4Links(ctx: IngestContext): Promise<void> {
             fromPageId: ctx.pageId,
             toPageId: targetId,
             linkType: "mention",
-            context: "",
+            context: ctxText,
             linkSource: "extracted",
             originPageId: ctx.pageId,
             weight: "1.0",
@@ -131,37 +182,56 @@ export async function stage4Links(ctx: IngestContext): Promise<void> {
       .onConflictDoNothing()
       .returning({ id: schema.links.id });
     if (inserted.length > 0) linksWritten++;
-    void wasExisting;
   }
 
   console.log(
     `  [stage4] entities created=${createdEntities}, links written=${linksWritten}` +
-      (unresolved > 0 ? `, unresolved=${unresolved} (logged to events)` : "")
+      (unresolved.length > 0
+        ? `, unresolved=${unresolved.length} (logged to events)`
+        : "")
   );
+
+  return {
+    refsExtracted: refsMap.size,
+    entitiesCreated: createdEntities,
+    linksWritten,
+    unresolved,
+  };
 }
 
-/**
- * 记一条 wikilink_unresolved event，附 trgm 相似度建议（agent / lint 可拿来纠错）。
- */
-async function logUnresolvedWikilink(opts: {
-  slug: string;
-  inferredType: PageType;
-  fromPageId: bigint;
-  actor: string;
-}): Promise<void> {
-  // pg_trgm fuzzy 找最像的 5 个候选（同 type 优先）。慢路径 OK，红链本来就少见。
-  const suggestionRows = await db.execute(drizzleSql`
+/** 取一段以匹配位置为中心的上下文，前后各 50 字符（去 newline）。 */
+function buildContext(
+  content: string,
+  occurrence: { start: number; end: number } | undefined
+): string {
+  if (!occurrence) return "";
+  const radius = 50;
+  const start = Math.max(0, occurrence.start - radius);
+  const end = Math.min(content.length, occurrence.end + radius);
+  return content
+    .slice(start, end)
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200); // 安全上限
+}
+
+/** pg_trgm fuzzy 找最像的 5 个候选（同 type 优先）。 */
+async function fetchSuggestions(
+  slug: string,
+  inferredType: PageType
+): Promise<UnresolvedWikilink["suggestions"]> {
+  const rows = await db.execute(drizzleSql`
     SELECT slug, type, title,
-           GREATEST(similarity(slug, ${opts.slug}),
-                    similarity(title, ${opts.slug})) AS sim
+           GREATEST(similarity(slug, ${slug}),
+                    similarity(title, ${slug})) AS sim
     FROM pages
     WHERE deleted = 0
-      AND type = ${opts.inferredType}
-      AND (slug % ${opts.slug} OR title % ${opts.slug})
+      AND type = ${inferredType}
+      AND (slug % ${slug} OR title % ${slug})
     ORDER BY sim DESC
     LIMIT 5
   `);
-  const suggestions = (suggestionRows as unknown as Array<{
+  return (rows as unknown as Array<{
     slug: string;
     type: string;
     title: string;
@@ -172,7 +242,16 @@ async function logUnresolvedWikilink(opts: {
     title: r.title,
     similarity: typeof r.sim === "string" ? parseFloat(r.sim) : r.sim,
   }));
+}
 
+/** 记一条 wikilink_unresolved event。建议列表已由调用方 fetch 好。 */
+async function logUnresolvedWikilink(opts: {
+  slug: string;
+  inferredType: PageType;
+  suggestions: UnresolvedWikilink["suggestions"];
+  fromPageId: bigint;
+  actor: string;
+}): Promise<void> {
   await db.insert(schema.events).values(
     withCreateAudit(
       {
@@ -184,34 +263,60 @@ async function logUnresolvedWikilink(opts: {
           slug: opts.slug,
           inferredType: opts.inferredType,
           fromPageId: opts.fromPageId.toString(),
-          suggestions,
+          suggestions: opts.suggestions,
         },
       },
       opts.actor
     )
   );
 
-  const hint = suggestions.length > 0
-    ? ` (closest: ${suggestions[0]!.slug} sim=${suggestions[0]!.similarity.toFixed(2)})`
+  const hint = opts.suggestions.length > 0
+    ? ` (closest: ${opts.suggestions[0]!.slug} sim=${opts.suggestions[0]!.similarity.toFixed(2)})`
     : "";
   console.log(`  [stage4] 跳过红链 ${opts.slug} —— ${opts.inferredType} 必须显式创建${hint}`);
 }
 
-function extractRefs(content: string): Set<string> {
-  const refs = new Set<string>();
+/**
+ * 抽出所有 wikilink + markdown-style link，按 slug 分组返回每个 slug 的所有
+ * 出现位置（用于后续切 context）。slug 做 whitespace 标准化（多空格→单空格、
+ * 首尾去白）以避免 `Tencent  Holdings` 和 `Tencent Holdings` 被当成两个不同 slug。
+ */
+function extractRefs(
+  content: string
+): Map<string, Array<{ start: number; end: number }>> {
+  const refs = new Map<string, Array<{ start: number; end: number }>>();
+
+  const addRef = (slug: string, start: number, end: number): void => {
+    const arr = refs.get(slug) ?? [];
+    arr.push({ start, end });
+    refs.set(slug, arr);
+  };
+
+  const normalize = (s: string): string => s.replace(/\s+/g, " ").trim();
 
   for (const m of content.matchAll(WIKILINK_RE)) {
     const dir = m[1];
     const tail = m[2];
     if (!dir || !tail) continue;
-    refs.add(`${dir}/${tail.trim()}`);
+    const slug = `${dir}/${normalize(tail)}`;
+    if (!slug.split("/")[1]) continue; // 空 name part 跳过
+    const start = m.index ?? 0;
+    const end = start + m[0].length;
+    addRef(slug, start, end);
   }
 
   for (const m of content.matchAll(MD_LINK_RE)) {
     const full = m[2];
     if (!full) continue;
     const cleaned = full.replace(/^(?:\.\.\/)+/, "").replace(/\.md$/, "");
-    refs.add(cleaned);
+    const parts = cleaned.split("/");
+    const dir = parts[0];
+    const tail = parts.slice(1).join("/");
+    if (!dir || !tail) continue;
+    const slug = `${dir}/${normalize(tail)}`;
+    const start = m.index ?? 0;
+    const end = start + m[0].length;
+    addRef(slug, start, end);
   }
 
   return refs;

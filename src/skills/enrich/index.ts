@@ -152,12 +152,40 @@ export interface EnrichSaveOpts {
   country?: string;
   /** 可选：exchange */
   exchange?: string;
-  /** 可选：aliases 列表（覆盖式更新）*/
+  /**
+   * 别名 merge（默认模式）。新值跟现有 aliases 合并、case-insensitive 去重。
+   * 想"完全覆盖"时用 `aliasesReplace`，想"删指定项"时用 `aliasesRemove`。
+   *
+   * 同时传 `aliases` 和 `aliasesRemove` 等同于"删某些 + 加某些"，会按
+   * `remove → add` 顺序应用。
+   */
   aliases?: string[];
+  /**
+   * 显式完全覆盖现有 aliases。仅当确定要丢弃所有已有别名时用（少见，corrective）。
+   * 与 `aliases` / `aliasesRemove` 互斥。
+   */
+  aliasesReplace?: string[];
+  /** 从现有 aliases 移除（case-insensitive 匹配）。可与 `aliases` 组合。*/
+  aliasesRemove?: string[];
   /** 可选：confidence（默认 'medium'，agent 充分调研可设 'high'）*/
   confidence?: "high" | "medium" | "low";
   /** 可选：frontmatter 合并（不动现有字段，仅补充）*/
   frontmatterMerge?: Record<string, unknown>;
+}
+
+/** Case-insensitive trim dedupe，保留首次出现顺序。*/
+function dedupeCaseInsensitive(items: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of items) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out;
 }
 
 /**
@@ -174,13 +202,27 @@ export async function enrichSave(
 ): Promise<void> {
   const actor = Actor.agentClaude;
 
+  // Aliases 互斥校验：aliasesReplace 与 aliases / aliasesRemove 不能同时传
+  if (
+    opts.aliasesReplace !== undefined &&
+    (opts.aliases !== undefined || opts.aliasesRemove !== undefined)
+  ) {
+    throw new Error(
+      "enrich:save 参数冲突：--aliases-replace 与 --aliases / --aliases-remove 互斥。" +
+        "Replace 是覆盖语义；merge / remove 是增量语义，不能混用。"
+    );
+  }
+
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(narrative);
   const contentHash = hasher.digest("hex");
 
-  // 拿现有 frontmatter 做 merge
+  // 拿现有 frontmatter + aliases 做 merge
   const [existing] = await db
-    .select({ frontmatter: schema.pages.frontmatter })
+    .select({
+      frontmatter: schema.pages.frontmatter,
+      aliases: schema.pages.aliases,
+    })
     .from(schema.pages)
     .where(eq(schema.pages.id, pageId))
     .limit(1);
@@ -189,6 +231,30 @@ export async function enrichSave(
     ...(existing?.frontmatter as Record<string, unknown> ?? {}),
     ...(opts.frontmatterMerge ?? {}),
   };
+
+  // 计算最终 aliases（仅在 agent 显式传了任何 aliases-* 选项时才更新；否则不动）
+  let nextAliases: string[] | undefined;
+  let aliasesAction: string | null = null;
+  if (opts.aliasesReplace !== undefined) {
+    nextAliases = dedupeCaseInsensitive(opts.aliasesReplace);
+    aliasesAction = "replace";
+  } else if (opts.aliases !== undefined || opts.aliasesRemove !== undefined) {
+    const existingArr = (existing?.aliases ?? []) as string[];
+    const removeKeys = new Set(
+      (opts.aliasesRemove ?? []).map((s) => s.trim().toLowerCase())
+    );
+    const filtered = existingArr.filter(
+      (a) => !removeKeys.has(a.trim().toLowerCase())
+    );
+    const merged = [...filtered, ...(opts.aliases ?? [])];
+    nextAliases = dedupeCaseInsensitive(merged);
+    aliasesAction =
+      opts.aliasesRemove && opts.aliases
+        ? "remove+merge"
+        : opts.aliasesRemove
+          ? "remove"
+          : "merge";
+  }
 
   await db.insert(schema.pageVersions).values(
     withCreateAudit(
@@ -216,7 +282,7 @@ export async function enrichSave(
   if (opts.subSector !== undefined) updateSet.subSector = opts.subSector;
   if (opts.country !== undefined) updateSet.country = opts.country;
   if (opts.exchange !== undefined) updateSet.exchange = opts.exchange;
-  if (opts.aliases !== undefined) updateSet.aliases = opts.aliases;
+  if (nextAliases !== undefined) updateSet.aliases = nextAliases;
 
   await db
     .update(schema.pages)
@@ -233,12 +299,20 @@ export async function enrichSave(
       narrativeLen: narrative.length,
       confidence: opts.confidence ?? "medium",
       fieldsSet: Object.keys(opts).filter((k) => opts[k as keyof EnrichSaveOpts] !== undefined),
+      aliasesAction,
+      aliasesAfter: nextAliases ?? null,
     },
     createBy: actor,
     updateBy: actor,
   });
 
-  console.log(`[enrich:save] page #${pageId} narrative ${narrative.length} chars, confidence=${opts.confidence ?? "medium"}`);
+  const aliasLog =
+    aliasesAction !== null && nextAliases !== undefined
+      ? `, aliases ${aliasesAction} → [${nextAliases.slice(0, 5).join(", ")}${nextAliases.length > 5 ? `, +${nextAliases.length - 5}` : ""}]`
+      : "";
+  console.log(
+    `[enrich:save] page #${pageId} narrative ${narrative.length} chars, confidence=${opts.confidence ?? "medium"}${aliasLog}`
+  );
 }
 
 /**

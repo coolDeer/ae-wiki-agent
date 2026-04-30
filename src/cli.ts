@@ -78,7 +78,10 @@ function printHelp(): void {
 
   ae-wiki enrich:list [--type T] [--limit N]    # 列出待 enrich 的红链 entity
   ae-wiki enrich:next [--type T] [--skip N]     # 取下一个红链 + backlink 上下文
-  ae-wiki enrich:save <page_id> [--ticker X] [--sector Y] [--aliases A,B] [--confidence high|medium]
+  ae-wiki enrich:save <page_id> [--ticker X] [--sector Y] [--confidence high|medium]
+                       [--aliases A,B,C]               # 默认：merge 进现有 aliases（case-insensitive 去重）
+                       [--aliases-replace A,B,C]       # 显式完全覆盖（与 --aliases / --aliases-remove 互斥）
+                       [--aliases-remove X,Y]          # 从现有 aliases 删除指定项（可与 --aliases 组合）
                                                 # 从 stdin 读 narrative 落库 + 更新元数据
   ae-wiki enrich:retype <page_id> --new-type company|industry|concept|thesis [--new-slug X] [--reason "..."]
                                                 # 红链 type 错了（companies/Trainium → concepts/Trainium）
@@ -107,6 +110,12 @@ function printHelp(): void {
   # —— 维护任务（也可作为 minion job 跑：lint_run / facts_expire） ——
   ae-wiki lint:run [--stale-days N] [--raw-age-days N] [--fact-age-days N] [--sample N]
                                           # 跑 5 项健康检查 + 写 events(action='lint_run')
+  ae-wiki orphans [--type T] [--confidence low|medium|high] [--min-age-days N] [--limit N] [--json]
+                                          # 列出无入站 link 的实体页（red-link explosion 诊断）
+                                          # 默认 type ∈ {company,industry,concept,thesis}，--json 输出结构化数据
+  ae-wiki duplicates [--type T] [--min-sim 0.7] [--limit N] [--json]
+                                          # 找潜在重复实体（trgm > 阈值 + 同 type）
+                                          # 离线 lint，不写 events；agent / 人工 review 后用 enrich:retype 合并
   ae-wiki facts:expire [--age N]          # 把 period_end 已过 N 天 (默认 90) 的 latest fact 标 valid_to
 
   ae-wiki --help
@@ -627,21 +636,32 @@ async function main(): Promise<void> {
         console.error("stdin 为空");
         process.exit(1);
       }
-      const aliasesStr = getArg("--aliases");
+      const parseList = (s: string | undefined): string[] | undefined =>
+        s !== undefined
+          ? s.split(",").map((item) => item.trim()).filter((item) => item.length > 0)
+          : undefined;
+
       const confArg = getArg("--confidence");
       const confidence =
         confArg === "high" || confArg === "medium" || confArg === "low"
           ? confArg
           : undefined;
-      await enrichSave(BigInt(pageIdStr), narrative, {
-        ticker: getArg("--ticker"),
-        sector: getArg("--sector"),
-        subSector: getArg("--sub-sector"),
-        country: getArg("--country"),
-        exchange: getArg("--exchange"),
-        aliases: aliasesStr ? aliasesStr.split(",").map((item) => item.trim()) : undefined,
-        confidence,
-      });
+      try {
+        await enrichSave(BigInt(pageIdStr), narrative, {
+          ticker: getArg("--ticker"),
+          sector: getArg("--sector"),
+          subSector: getArg("--sub-sector"),
+          country: getArg("--country"),
+          exchange: getArg("--exchange"),
+          aliases: parseList(getArg("--aliases")),
+          aliasesReplace: parseList(getArg("--aliases-replace")),
+          aliasesRemove: parseList(getArg("--aliases-remove")),
+          confidence,
+        });
+      } catch (e) {
+        console.error(`[enrich:save] ${(e as Error).message}`);
+        process.exit(1);
+      }
       break;
     }
 
@@ -728,6 +748,62 @@ async function main(): Promise<void> {
       break;
     }
 
+    case "orphans": {
+      const { findOrphans, formatOrphanTable } = await import(
+        "./skills/orphans/index.ts"
+      );
+      const confArg = getArg("--confidence");
+      const confidence =
+        confArg === "low" || confArg === "medium" || confArg === "high"
+          ? confArg
+          : undefined;
+      const minAgeStr = getArg("--min-age-days");
+      const limitStr = getArg("--limit");
+      const asJson = args.includes("--json");
+      try {
+        const report = await findOrphans({
+          type: getArg("--type"),
+          confidence,
+          minAgeDays: minAgeStr ? parseInt(minAgeStr, 10) : undefined,
+          limit: limitStr ? parseInt(limitStr, 10) : undefined,
+        });
+        if (asJson) {
+          console.log(jsonStringify(report));
+        } else {
+          console.log(formatOrphanTable(report));
+        }
+      } catch (e) {
+        console.error(`[orphans] ${(e as Error).message}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case "duplicates": {
+      const { findDuplicates, formatDuplicateTable } = await import(
+        "./skills/duplicates/index.ts"
+      );
+      const minSimStr = getArg("--min-sim");
+      const limitStr = getArg("--limit");
+      const asJson = args.includes("--json");
+      try {
+        const report = await findDuplicates({
+          type: getArg("--type"),
+          minSim: minSimStr ? parseFloat(minSimStr) : undefined,
+          limit: limitStr ? parseInt(limitStr, 10) : undefined,
+        });
+        if (asJson) {
+          console.log(jsonStringify(report));
+        } else {
+          console.log(formatDuplicateTable(report));
+        }
+      } catch (e) {
+        console.error(`[duplicates] ${(e as Error).message}`);
+        process.exit(1);
+      }
+      break;
+    }
+
     case "facts:expire": {
       const { expireFacts } = await import("./skills/facts/expire.ts");
       const age = getArg("--age");
@@ -746,13 +822,26 @@ async function main(): Promise<void> {
       }
       const { stage4Links } = await import("./skills/ingest/stage-4-links.ts");
       const { Actor } = await import("./core/audit.ts");
-      await stage4Links({
+      const stage4Result = await stage4Links({
         pageId: BigInt(pageIdStr),
         rawFileId: 0n,
         rawMarkdown: "",
         contentListJson: undefined,
         actor: Actor.systemIngest,
       });
+      if (stage4Result.unresolved.length > 0) {
+        console.log("");
+        console.log(
+          `⚠️  ${stage4Result.unresolved.length} wikilinks unresolved (events.action='wikilink_unresolved'):`
+        );
+        for (const u of stage4Result.unresolved) {
+          const hint =
+            u.suggestions[0]
+              ? ` → 建议 ${u.suggestions[0].slug} (sim=${u.suggestions[0].similarity.toFixed(2)})`
+              : " → 无相似建议，建议改纯文本";
+          console.log(`     [[${u.slug}]] (${u.inferredType})${hint}`);
+        }
+      }
       break;
     }
 

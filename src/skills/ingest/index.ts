@@ -433,7 +433,7 @@ export async function ingestPromote(
 const FINALIZE_STAGES: Array<{
   num: number;
   name: string;
-  run: (ctx: IngestContext) => Promise<void>;
+  run: (ctx: IngestContext) => Promise<unknown>;
 }> = [
   { num: 4, name: "links", run: stage4Links },
   { num: 5, name: "facts", run: stage5Facts },
@@ -489,6 +489,8 @@ export async function ingestFinalize(
     actor: Actor.systemIngest,
   };
 
+  let stage4Out: import("./stage-4-links.ts").Stage4Result | null = null;
+
   for (const stage of FINALIZE_STAGES) {
     const isDone = doneStages.has(stage.num);
     const forceRerun = fromStage > 0 && stage.num >= fromStage;
@@ -497,7 +499,10 @@ export async function ingestFinalize(
       continue;
     }
     try {
-      await stage.run(ctx);
+      const result = await stage.run(ctx);
+      if (stage.num === 4 && result) {
+        stage4Out = result as import("./stage-4-links.ts").Stage4Result;
+      }
       await markStageDone(pageId, stage.num, stage.name, ctx.actor, forceRerun);
     } catch (e) {
       await markStageFailed(pageId, stage.num, stage.name, (e as Error).message, ctx.actor);
@@ -507,6 +512,27 @@ export async function ingestFinalize(
 
   await markIngested(rf.id, ctx.pageId, ctx.actor);
   console.log(`✓ page #${pageId} finalized`);
+
+  // ── 收尾：若 Stage 4 抛出 unresolved wikilink，单独打条醒目警告 ──
+  // 这是给 agent / 用户看的"立刻能改 narrative"的 callout，非阻塞。
+  if (stage4Out && stage4Out.unresolved.length > 0) {
+    console.log("");
+    console.log(
+      `⚠️  ${stage4Out.unresolved.length} wikilinks unresolved (events.action='wikilink_unresolved'):`
+    );
+    for (const u of stage4Out.unresolved) {
+      const hint =
+        u.suggestions.length > 0
+          ? ` → 建议 ${u.suggestions[0]!.slug} (sim=${u.suggestions[0]!.similarity.toFixed(2)})`
+          : " → 无相似建议，建议改纯文本";
+      console.log(`     [[${u.slug}]] (${u.inferredType})${hint}`);
+    }
+    console.log(
+      "     修法：编辑 narrative 后重跑 \`ae-wiki links:re-extract " +
+        pageId +
+        "\`"
+    );
+  }
 }
 
 async function loadDoneStages(pageId: bigint): Promise<Set<number>> {

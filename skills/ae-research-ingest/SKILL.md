@@ -336,7 +336,7 @@ mcp__ae-wiki__search({ query: "H200 channel check", type: "source", keyword_only
 - 高管引言放在 source 页的 `## Notable Quotes / Views`，引用时用 `Andy Jassy（[[companies/Amazon]] CEO）`
 - 匿名专家（"北美广告专家A"）只出现在 source 正文，不需要建实体页
 
-### 5. 出错怎么办
+### 6. 出错怎么办
 
 不小心写了不存在的 `[[sources/X]]`，stage-4 不会建空 page，但 `events` 表会留 `wikilink_unresolved` 记录（含 trgm 相似度建议）。Lint：
 
@@ -347,6 +347,90 @@ ORDER BY ts DESC LIMIT 20;
 ```
 
 修复路径：根据 suggested 改 narrative 里的 wikilink → 重跑 `links:re-extract <pageId>`。
+
+---
+
+## Frontmatter 字段白名单（写 frontmatter 前必读）
+
+`pages.frontmatter` 是 JSONB —— **stage-3 不做 schema 校验**，agent 写什么 key 都会落库。这意味着 agent 自创字段是真实风险（事故案例：narrative-146 / -152 自创 `authors: ['久谦 / AceCamp']`，但原文 0 处提及"久谦"，纯属凭模式记忆瞎编）。
+
+**规则：narrative frontmatter 只能用以下白名单 key，禁止自创。**
+
+### Source 页（`type='source'`）允许的 frontmatter key
+
+| Key | 谁写入 | 用途 | 备注 |
+|---|---|---|---|
+| `tags` | agent | 主题标签数组（小写英文，短横线分隔）| 同时被 web UI 和 search 消费 |
+| `title` | agent（可选）| 清洗过的标题，覆盖上游原始 title | **stage-3 同步写入 `pages.title` 列**；不写就保留 stage-1 从 raw_files 拷过来的原值（常带日期前缀 / 中英混杂）|
+| `research_id` | **stage-1 自动写** | 上游 mongo `_id` | agent 不要重写 |
+| `research_type` | **stage-1 自动写** | 上游 type（`acecamp_article` / `merit` / `meeting_minutes` / `semi_analysis` / ...）| agent 不要重写；web UI 读这个字段渲染 |
+| `markdown_url` | **stage-1 自动写** | 解析后 markdown S3 直链 | agent 不要重写；fetch raw 用 |
+| `publish_date` | **stage-1 自动写** | 上游 `mongo_doc.createTime` 的 `YYYY-MM-DD` | agent 不要重写。原文里若有更精确的发布日，写在 `## Source Overview` 叙事里 |
+| `original_url` | **stage-1 自动写** | 上游 `mongo_doc.reportUrl`（原始 PDF / docx）| agent 不要重写。区别于 markdown_url 是解析后的 |
+| `file_type` | **stage-1 自动写** | `pdf` / `docx` / `pptx` ...（来自 `mongo_doc.detectedFileType` / `finalType`）| agent 不要重写 |
+
+**Stage-1 已自动写入 5 个字段**（`research_id` / `research_type` / `markdown_url` / `publish_date` / `original_url` / `file_type`）。agent 只需要专注 `tags`，可选清洗 `title`。**不要在 narrative frontmatter 里重写这些自动字段**——重写会盖掉准确值。
+
+### Brief 页（`type='brief'`）允许的 frontmatter key
+
+| Key | 谁写入 | 用途 | 备注 |
+|---|---|---|---|
+| `tags` | agent | 同上 | 必须 |
+| `title` | agent（可选）| 清洗后的标题 | 同 source；stage-3 同步到 `pages.title` |
+| `url` | agent | 原始 URL（同正文 `## Links` 段一致）| 必须；web UI 渲染为可点链接 |
+| `platform` | agent | `twitter` / `substack` / `chat` 等 | 必须 |
+| stage-1 自动字段 | stage-1 | 同 source（`research_id` / `research_type` / `markdown_url` / `publish_date` / `original_url` / `file_type`）| agent 不要重写 |
+
+### Entity 页（`company` / `concept` / `industry` / `thesis`）允许的 frontmatter key
+
+| Key | 谁写入 | 用途 | 备注 |
+|---|---|---|---|
+| `title` | agent（可选）| 通常等于 slug 末段；要改名时写这个 | stage-3 同步到 `pages.title` |
+| `management` | agent（仅 company）| CEO / CFO 映射，例 `management: { ceo: 'Andy Jassy', cfo: 'Brian Olsavsky' }` | 替代独立 person 页 |
+
+其他字段（`ticker` / `sector` / `aliases` / `confidence` 等）通过 `enrich:save` 的 CLI flag 写入 pages 表的对应列，不进 frontmatter。
+
+### `title` 的清洗准则（agent 写时参考）
+
+上游 `pages.title` 经常长这样："260429 - 烧钱换来的是什么？OpenAI 扩张边界的三次溃败"。可以清洗成更适合搜索 / 显示的形式：
+
+| 上游原值 | 建议清洗后 |
+|---|---|
+| `260429 - 烧钱换来的是什么？OpenAI 扩张边界的三次溃败` | `OpenAI's three failed consumer expansions: Sora, Agentic Commerce, Microsoft exclusivity (2026-04-29)` |
+| `Hyperscaler FCF Will Be Negative in CY27 - Core Research` | `Hyperscaler FCF will be negative in CY27 (SemiAnalysis, 2026-04-29)` |
+| `[已脱敏] AI 产业链调研 vol.7` | (保留原值；脱敏标识有意义) |
+
+清洗原则：去掉日期前缀；保留作者出处；去掉 "Core Research" / "vol.7" 这种系列内部编号；中英混杂的可保留中文核心词或全译，看哪个更有助于将来检索。**只在原值真的不合理时清洗，否则别动**。
+
+### 禁止的字段（曾被 agent 自创过）
+
+- ❌ `authors` —— 原文里**有**作者署名时，写在 `## Source Overview` 第一段叙事里。原文里**没有**就不要写。raw_files / mongo_doc 上游也不带 author 字段，没有 ground truth。
+- ❌ `source_type` —— `pages.type` 列已经标了；不要在 frontmatter 重复
+- ❌ `category` / `topic` / `subject` —— 用 `tags` 表达
+- ❌ `publish_date`（agent 手写）—— stage-1 自动从 `mongo_doc.createTime` 写了；agent **重写就覆盖了准确值**
+- ❌ `research_type` / `markdown_url` / `research_id` / `original_url` / `file_type`（agent 手写）—— 同上，stage-1 已自动填
+- ❌ 任何中文 key —— frontmatter key 必须是英文 snake_case
+
+### 添加新字段的流程
+
+如果发现 raw_files / mongo_doc 里有新的有用字段（例如未来上游加了 `analyst_team` 或 `target_company`），**不要在 narrative frontmatter 里手写**。改 `src/skills/ingest/stage-1-skeleton.ts` 让 stage-1 自动拉取，再来更新这份白名单。原则：**结构化字段必须有 ground truth 来源**，要么是上游 raw_files，要么是 CLI flag（`enrich:save --ticker`），不能由 agent 凭空填。
+
+### 出错怎么办
+
+老 page 已经有 frontmatter 自创字段（如 `authors`），用 SQL 显式删除：
+
+```sql
+UPDATE pages
+SET frontmatter = frontmatter - 'authors' - 'source_type' - 'publish_date'
+WHERE id = <pageId>;
+```
+
+### 为什么这条纪律重要
+
+1. **没有任何系统层护栏** —— stage-3 的 `gray-matter` parser 接受任何 YAML key，JSONB merge 接受任何 key
+2. **search / facts / signals 都不读未文档化字段** —— 自创的 `authors: 久谦` 写下去是死字段，没人读，但污染了 page versions 历史
+3. **schema 漂移是单向不可逆的** —— 一旦不同 page 自创了不同 key，未来任何想标准化字段（"我想读所有页的 publisher"）都要先扫一遍清理
+4. **Agent hallucination 在没有 ground truth 验证时会持续** —— 这是 agent 行为问题，工具拦不住，只能靠纪律
 
 ---
 

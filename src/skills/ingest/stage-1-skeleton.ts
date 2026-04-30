@@ -37,6 +37,34 @@ export async function stage1CreateSkeleton(
   const idPart = rawFile.researchId?.slice(-6) ?? rawFile.id.toString();
   const slug = `${slugDir}/${rawFile.researchType ?? "unknown"}-${idPart}-${datePart}`;
 
+  // 从 mongo_doc 多拉几个 frontmatter 字段（白名单字段，agent 不要重写）：
+  //   - publish_date ← createTime（上游入库时间，approximate publish date）
+  //   - original_url ← reportUrl（原始 PDF/docx，区别于 parsed markdown_url）
+  //   - file_type    ← detectedFileType / finalType（pdf / docx / etc.）
+  const mongoDoc = (rawFile.mongoDoc ?? {}) as Record<string, unknown>;
+  const publishDate =
+    typeof mongoDoc.createTime === "string"
+      ? mongoDoc.createTime.slice(0, 10)
+      : null;
+  const originalUrl =
+    typeof mongoDoc.reportUrl === "string" ? mongoDoc.reportUrl : null;
+  const fileType =
+    typeof mongoDoc.detectedFileType === "string"
+      ? mongoDoc.detectedFileType
+      : typeof mongoDoc.finalType === "string"
+        ? mongoDoc.finalType
+        : null;
+
+  const frontmatter: Record<string, unknown> = {
+    research_id: rawFile.researchId,
+    research_type: rawFile.researchType,
+    markdown_url: rawFile.markdownUrl,
+    tags: rawFile.tags ?? [],
+  };
+  if (publishDate) frontmatter.publish_date = publishDate;
+  if (originalUrl) frontmatter.original_url = originalUrl;
+  if (fileType) frontmatter.file_type = fileType;
+
   const [page] = await db
     .insert(schema.pages)
     .values(
@@ -49,12 +77,7 @@ export async function stage1CreateSkeleton(
           orgCode: rawFile.orgCode,
           status: "active",
           confidence: "medium",
-          frontmatter: {
-            research_id: rawFile.researchId,
-            research_type: rawFile.researchType,
-            markdown_url: rawFile.markdownUrl,
-            tags: rawFile.tags ?? [],
-          },
+          frontmatter,
         },
         ctx.actor
       )

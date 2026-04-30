@@ -35,6 +35,12 @@ interface LintOptions {
 
 const ENTITY_TYPES = ["company", "industry", "concept", "thesis"];
 
+/** drizzle sql template 直接绑 array 给 `= ANY(...)` 在 postgres-js 路径上不稳定，
+ *  改用 IN (a,b,c) 列表绑定。同时 orphans skill 也用相同 helper。*/
+function inList(values: ReadonlyArray<string>): ReturnType<typeof sql> {
+  return sql.join(values.map((v) => sql`${v}`), sql`, `);
+}
+
 export async function runLint(opts: LintOptions = {}): Promise<LintReport> {
   const staleDays = opts.staleDays ?? 30;
   const rawAgeDays = opts.rawAgeDays ?? 7;
@@ -47,7 +53,7 @@ export async function runLint(opts: LintOptions = {}): Promise<LintReport> {
     SELECT p.id::text AS id
     FROM pages p
     WHERE p.deleted = 0
-      AND p.type = ANY(${ENTITY_TYPES})
+      AND p.type IN (${inList(ENTITY_TYPES)})
       AND NOT EXISTS (
         SELECT 1 FROM links l
         WHERE l.deleted = 0 AND l.to_page_id = p.id
@@ -60,7 +66,7 @@ export async function runLint(opts: LintOptions = {}): Promise<LintReport> {
     SELECT COUNT(*)::int AS n
     FROM pages p
     WHERE p.deleted = 0
-      AND p.type = ANY(${ENTITY_TYPES})
+      AND p.type IN (${inList(ENTITY_TYPES)})
       AND NOT EXISTS (
         SELECT 1 FROM links l
         WHERE l.deleted = 0 AND l.to_page_id = p.id

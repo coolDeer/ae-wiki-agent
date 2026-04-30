@@ -56,24 +56,34 @@ export async function stage3WriteNarrative(
     ...narrativeFrontmatter,
   };
 
+  // 特殊处理：narrative frontmatter 里的 title 同步到 pages.title 列（白名单字段）。
+  // 见 skills/ae-research-ingest/SKILL.md 的 "Frontmatter 字段白名单" 段。
+  // 只在 agent 显式写了非空字符串时覆盖，否则保留 stage-1 从 raw_files 拷的原值。
+  const fmTitle = narrativeFrontmatter.title;
+  const titleOverride =
+    typeof fmTitle === "string" && fmTitle.trim().length > 0
+      ? fmTitle.trim()
+      : undefined;
+
+  const updateSet: Record<string, unknown> = {
+    content: compiledTruth,
+    timeline,
+    contentHash,
+    frontmatter: mergedFrontmatter,
+  };
+  if (titleOverride !== undefined) updateSet.title = titleOverride;
+
   await db
     .update(schema.pages)
-    .set(
-      withAudit(
-        {
-          content: compiledTruth,
-          timeline,
-          contentHash,
-          frontmatter: mergedFrontmatter,
-        },
-        actor
-      )
-    )
+    .set(withAudit(updateSet, actor))
     .where(eq(schema.pages.id, pageId));
 
   console.log(
     `  [stage3] narrative ${narrative.length} chars saved` +
       (timeline.trim().length > 0 ? `, timeline ${timeline.length} chars` : "") +
+      (titleOverride !== undefined
+        ? `, title overridden to "${titleOverride.slice(0, 60)}${titleOverride.length > 60 ? "..." : ""}"`
+        : "") +
       (Object.keys(narrativeFrontmatter).length > 0
         ? `, frontmatter keys: ${Object.keys(narrativeFrontmatter).join(",")}`
         : "") +

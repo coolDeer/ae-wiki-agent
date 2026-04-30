@@ -43,6 +43,12 @@ export interface ResolveOptions {
   enqueueEnrich?: boolean;
   /** 关联 source page id（写进 enrich_entity job.data.sourcePageId） */
   sourcePageId?: bigint;
+  /**
+   * 自动建 page 时给 aliases 列预填的字符串数组。stage-4 用它把 slug 的 name 部分
+   * 写进去（如 `[[companies/Tencent]]` → aliases=['Tencent']），让后续 narrative
+   * 写 `[[companies/Tencent Holdings]]` 时 stage-4 的 alias 反查能命中现有 page。
+   */
+  initialAliases?: string[];
 }
 
 /**
@@ -85,6 +91,10 @@ export async function resolveOrCreatePage(
   }
 
   // 3. 自动建
+  const aliases = (options.initialAliases ?? [])
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
   const [created] = await db
     .insert(schema.pages)
     .values(
@@ -96,6 +106,7 @@ export async function resolveOrCreatePage(
           title: slugToTitle(slug),
           status: "active",
           confidence: "low", // 自动建的实体标 low，待 enrich
+          aliases: aliases.length > 0 ? aliases : undefined,
         },
         options.actor
       )

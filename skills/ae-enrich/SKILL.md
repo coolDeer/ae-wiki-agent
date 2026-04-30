@@ -162,6 +162,74 @@ cd ae-wiki-agent && bun src/cli.ts enrich:save <pageId> [选项] < /tmp/narrativ
 - 只有在信息来源足够、核心字段比较完整时才接受默认 `medium`
 - 如果仍然只有零散信息，显式传 `--confidence low`
 
+### Aliases 必填规则（重要）
+
+`pages.aliases TEXT[]` 是 stage-4 红链 dedupe 的核心。**enrich 必须填全所有等价名**，否则下次 ingest 写 narrative 用了不同形式（中文名 / 缩写 / 子公司带名 / 多重上市 ticker）就会建出 dup stub（典型事故：`companies/Coherent` 跟 `companies/II-VI Coherent` 因为 aliases 没填全成了两个 page）。
+
+**对 company 类，必须传**：
+
+| 类别 | 必须包含 | 示例（companies/Tencent）|
+|---|---|---|
+| 英文规范全名 | ✅ | `Tencent Holdings`, `Tencent Holdings Ltd` |
+| 中文名 | ✅（如适用）| `腾讯`, `腾讯控股` |
+| 所有上市 ticker | ✅ | `0700.HK`, `TCEHY`（ADR）, `TCTZF`（OTC）|
+| 常见缩写 / 商业名 | ✅ | `Tencent`（短名），`HK700` |
+| 历史名 / 合并前名 | ✅（如适用）| `II-VI Coherent` 类合并产生的别名 |
+
+**对 concept 类，必须传**：
+
+| 类别 | 必须包含 | 示例（concepts/HBM3E）|
+|---|---|---|
+| 全称 | ✅ | `High-Bandwidth Memory 3E` |
+| 缩写 | ✅ | `HBM3E`, `HBM3e` |
+| 中文等价 | ✅（如适用）| `高带宽内存 3E` |
+| 同义术语 | ✅（如适用）| `HBM3 Extended` |
+
+**对 industry 类**：英文 + 中文 + 常见行业代码（如 `GICS-451030 Tech Hardware`）。
+
+**3 种操作模式**：
+
+| 模式 | flag | 语义 | 何时用 |
+|---|---|---|---|
+| **merge（默认）** | `--aliases A,B,C` | 跟现有 aliases 合并、case-insensitive 去重 | 大多数情况 —— 加新发现的 alias，不动现有 |
+| **replace** | `--aliases-replace A,B,C` | 完全覆盖现有 aliases | 仅当确定要清空旧的，从头重建 |
+| **remove** | `--aliases-remove X,Y` | 删指定项（case-insensitive 匹配）| 修错的 alias（"Tencent Music" 错填进 Tencent 页）|
+
+`--aliases` 与 `--aliases-remove` 可组合（先删后加，net update）。`--aliases-replace` 与前两者**互斥**。
+
+```bash
+# 典型：merge 模式（默认）—— 加 4 个新 alias，原有的保留
+bun src/cli.ts enrich:save 100 \
+  --aliases "腾讯,腾讯控股,0700.HK,TCEHY" \
+  < /tmp/narrative.md
+
+# 修错：删一个错填的
+bun src/cli.ts enrich:save 100 \
+  --aliases-remove "Tencent Music" \
+  < /tmp/narrative.md
+
+# 组合：删一个错的同时加 2 个新的
+bun src/cli.ts enrich:save 100 \
+  --aliases-remove "Tencent Music" \
+  --aliases "腾讯,0700.HK" \
+  < /tmp/narrative.md
+
+# 完全覆盖（少用）
+bun src/cli.ts enrich:save 100 \
+  --aliases-replace "Tencent,腾讯,Tencent Holdings,0700.HK" \
+  < /tmp/narrative.md
+```
+
+**注意事项**：
+- aliases 元素之间用 `,` 分隔，单个元素可含空格（如 `Tencent Holdings Ltd`）
+- 不要塞 wiki 内部 slug（写 `Tencent` 不写 `companies/Tencent`）
+- merge 模式不会丢 stage-4 自动预填的 namePart（`[[companies/Tencent]]` 建 stub 时已存了 `Tencent`）
+
+**aliases 没填全的代价**：
+- 下次 ingest 同 entity 的另一种写法会建 dup stub
+- 修法贵：得 `enrich:retype` + 手工合并 facts/links/page_versions
+- 大规模 ingest 后能堆出几十个 dup（参考 scaling 分析 N≈50 文档）
+
 ### Step 5：循环或停止
 
 - 如果还有待 enrich：循环回 Step 1（可以加 `--skip 1` 跳过当前再取下一个）
