@@ -106,6 +106,21 @@ export async function startWebServer(opts: ServeOpts = {}): Promise<void> {
           return html(await viewPage(identifier));
         }
 
+        // Source raw markdown — proxy fetch + return text/markdown
+        // 给 page detail 弹窗里"查看原文"用，避开 S3 直链 CORS 问题。
+        const sourceRawMatch = path.match(/^\/source-raw\/(\d+)$/);
+        if (sourceRawMatch && req.method === "GET") {
+          const { fetchSourceRaw } = await import("./views.ts");
+          const result = await fetchSourceRaw(BigInt(sourceRawMatch[1] ?? "0"));
+          if (!result) return new Response("not found", { status: 404 });
+          return new Response(result.markdown, {
+            headers: {
+              "content-type": "text/plain; charset=utf-8",
+              "cache-control": "private, max-age=60",
+            },
+          });
+        }
+
         // Theses — list
         if (path === "/theses" && req.method === "GET") {
           const status = url.searchParams.get("status") ?? undefined;

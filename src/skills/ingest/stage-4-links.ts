@@ -91,7 +91,9 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
   const refsMap = extractRefs(page.content);
   console.log(`  [stage4] 抽到 ${refsMap.size} 个唯一引用`);
 
-  let createdEntities = 0;
+  // 用前后 page 总数差算 entitiesCreated（helper 不再返回 wasCreated 标志，这是
+  // 最简的统计方式，且不会因 helper 内部并发 / onConflict 行为有偏差）。
+  const beforeCount = await countActivePages();
   let linksWritten = 0;
   const unresolved: UnresolvedWikilink[] = [];
 
@@ -100,47 +102,25 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
     const inferredType = slugToType(slug);
     if (!inferredType) continue;
 
-    const namePart = slug.split("/").slice(1).join("/").trim();
-
-    // 1. 查是否已存在 —— alias-aware + case-insensitive
-    //    匹配优先级：精确 slug > slug ILIKE > aliases ILIKE
-    //    防止 [[companies/Coherent]] 在已有 [[companies/II-VI Coherent]]
-    //    （aliases 含 "Coherent"）的情况下重建 stub。
-    const existingRows = (await db.execute(drizzleSql`
-      SELECT id, slug FROM pages
-      WHERE deleted = 0
-        AND type = ${inferredType}
-        AND (
-          slug = ${slug}
-          OR LOWER(slug) = LOWER(${slug})
-          OR EXISTS (
-            SELECT 1 FROM unnest(COALESCE(aliases, ARRAY[]::text[])) AS a
-            WHERE LOWER(a) = LOWER(${namePart})
-          )
-        )
-      ORDER BY
-        (slug = ${slug}) DESC,
-        (LOWER(slug) = LOWER(${slug})) DESC,
-        id ASC
-      LIMIT 1
-    `)) as Array<{ id: string; slug: string }>;
-
-    let targetId: bigint | null = existingRows[0] ? BigInt(existingRows[0].id) : null;
-    const matchedSlug = existingRows[0]?.slug;
-
-    if (!targetId) {
-      // 2. 红链。按 type 分流：
-      //    - company/concept/industry → auto-create stub（aliases 预填 namePart），进 enrich 队列
-      //    - source/thesis/output/brief → 不建，记 events 让人后续清理
-      if (AUTO_CREATE_TYPES.has(inferredType)) {
-        targetId = await resolveOrCreatePage(slug, {
-          actor: ctx.actor,
-          autoCreate: true,
-          sourcePageId: ctx.pageId,
-          initialAliases: namePart ? [namePart] : undefined,
-        });
-        if (targetId) createdEntities++;
-      } else {
+    // 红链按 type 分流：
+    //   - company/concept/industry → 调 helper 找或建（带 alias dedupe + case-insensitive）
+    //   - source/thesis/output/brief → 拒绝建，记 events 让人后续清理
+    let targetId: bigint | null = null;
+    if (AUTO_CREATE_TYPES.has(inferredType)) {
+      // helper 内部做智能查找：精确 slug → 大小写不敏感 → aliases 命中
+      // 没找到才建新（建时 alias 默认带 namePart）。建/命中由 helper 自己 log。
+      targetId = await resolveOrCreatePage(slug, {
+        actor: ctx.actor,
+        autoCreate: true,
+        sourcePageId: ctx.pageId,
+      });
+    } else {
+      // 不允许 auto-create —— 但存在就连
+      targetId = await resolveOrCreatePage(slug, {
+        actor: ctx.actor,
+        autoCreate: false,
+      });
+      if (!targetId) {
         const suggestions = await fetchSuggestions(slug, inferredType);
         await logUnresolvedWikilink({
           slug,
@@ -152,10 +132,6 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
         unresolved.push({ slug, inferredType, suggestions });
         continue;
       }
-    } else if (matchedSlug && matchedSlug !== slug) {
-      console.log(
-        `  [stage4] 别名命中：${slug} → 已有 ${matchedSlug} (#${targetId})，连过去而非重建`
-      );
     }
 
     if (!targetId) continue;
@@ -184,6 +160,9 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
     if (inserted.length > 0) linksWritten++;
   }
 
+  const afterCount = await countActivePages();
+  const createdEntities = Math.max(0, afterCount - beforeCount);
+
   console.log(
     `  [stage4] entities created=${createdEntities}, links written=${linksWritten}` +
       (unresolved.length > 0
@@ -197,6 +176,13 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
     linksWritten,
     unresolved,
   };
+}
+
+async function countActivePages(): Promise<number> {
+  const [r] = (await db.execute(
+    drizzleSql`SELECT COUNT(*)::int AS n FROM pages WHERE deleted = 0`
+  )) as Array<{ n: number }>;
+  return r?.n ?? 0;
 }
 
 /** 取一段以匹配位置为中心的上下文，前后各 50 字符（去 newline）。 */
@@ -280,13 +266,27 @@ async function logUnresolvedWikilink(opts: {
  * 抽出所有 wikilink + markdown-style link，按 slug 分组返回每个 slug 的所有
  * 出现位置（用于后续切 context）。slug 做 whitespace 标准化（多空格→单空格、
  * 首尾去白）以避免 `Tencent  Holdings` 和 `Tencent Holdings` 被当成两个不同 slug。
+ *
+ * 拒绝包含 CLAUDE.md 声明的禁止字符（`* ? < > | : \\ "`）的 slug ——
+ * 这些通常是 agent 写的占位符 / 通配符（如 `[[companies/*]]` 表示"这一类公司"），
+ * 不是真实 entity 引用。事故案例：narrative 写 `create/confirm [[companies/*]]
+ * stubs before relying on company-level signals`，stage-4 把 `companies/*` 当真
+ * slug 建了空 stub。
  */
+const FORBIDDEN_SLUG_CHARS_RE = /[*?<>|:\\"]/;
+
 function extractRefs(
   content: string
 ): Map<string, Array<{ start: number; end: number }>> {
   const refs = new Map<string, Array<{ start: number; end: number }>>();
 
   const addRef = (slug: string, start: number, end: number): void => {
+    // 静默丢弃含禁止字符的 slug（占位符 / 通配符），不入 refs map
+    const namePart = slug.split("/").slice(1).join("/");
+    if (FORBIDDEN_SLUG_CHARS_RE.test(namePart)) {
+      console.log(`  [stage4] 丢弃非法 slug: ${slug}（含 * ? < > | : \\ " 等占位字符）`);
+      return;
+    }
     const arr = refs.get(slug) ?? [];
     arr.push({ start, end });
     refs.set(slug, arr);

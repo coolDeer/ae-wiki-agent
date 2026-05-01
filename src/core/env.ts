@@ -49,6 +49,11 @@ const EnvSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
 
+  // 展示层时区（IANA name，如 "Asia/Shanghai" / "America/New_York" / "UTC"）。
+  // 影响 web UI 时间格式化、daily-review/summarize 的 today 边界、orphans / lint 报表。
+  // DB 层始终存 UTC，本字段只控制展示。默认 "Asia/Shanghai"。
+  WIKI_DISPLAY_TZ: z.string().optional(),
+
   // worker RSS watchdog：进程 RSS 超过此 MB 阈值时优雅退出（让 supervisor 重启）。
   // 0 = 不启用（默认）。生产长跑建议 2048。
   WIKI_WORKER_RSS_LIMIT_MB: z

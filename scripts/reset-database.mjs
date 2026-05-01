@@ -40,7 +40,7 @@ const CONFIG_SEEDS = [
   ["embedding_model", "text-embedding-3-large"],
   ["embedding_dimensions", "1536"],
   ["chunk_strategy", "v2-block-aware"],
-  ["default_locale", "zh-CN"],
+  ["default_locale", "en-US"],
   ["fact_extract_tier_a_enabled", "true"],
   ["fact_extract_tier_b_enabled", "true"],
   ["fact_extract_tier_c_enabled", "true"],

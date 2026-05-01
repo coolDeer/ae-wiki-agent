@@ -21,6 +21,25 @@ export function escape(s: unknown): string {
     .replace(/'/g, "&#39;");
 }
 
+/**
+ * Web 视图里的简写：按 mode 分发到 `core/datetime.ts` 的实现。
+ * 其它代码（lint / outputs / CLI）应直接 import core 的具名函数。
+ */
+import {
+  formatDate,
+  formatDateTime,
+  formatTime,
+} from "~/core/datetime.ts";
+
+export function fmtSh(
+  value: Date | string | null | undefined,
+  mode: "datetime" | "date" | "time" = "datetime"
+): string {
+  if (mode === "date") return formatDate(value);
+  if (mode === "time") return formatTime(value);
+  return formatDateTime(value);
+}
+
 /** 渲染 page.content（含 [[wikilink]] / <!-- facts/timeline -->） */
 export function renderMarkdown(content: string): string {
   // 删 <!-- facts --> / <!-- timeline --> block，给视图单独显示
@@ -278,6 +297,44 @@ form.filter select, form.filter input {
 .btn:hover { border-color: var(--accent); color: var(--accent); }
 .btn-primary { border-color: var(--accent); background: var(--accent); color: #fff; }
 .btn-primary:hover { background: var(--accent-hover); color: #fff; }
+.btn-secondary { border-color: var(--border); background: var(--bg-soft); color: var(--fg); }
+.btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
+a.btn, a.btn:hover { text-decoration: none; }
+
+/* Inline 小按钮（嵌入文字行内，比 .btn 更小） */
+.btn-inline {
+  display: inline-block; padding: 1px 8px;
+  border: 1px solid var(--border); background: var(--bg-soft); color: var(--fg);
+  border-radius: 4px; cursor: pointer; font-size: 11px;
+  font-family: inherit; line-height: 1.4;
+}
+.btn-inline:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Source 原文弹窗 */
+.source-modal {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(0,0,0,0.55);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+.source-modal-content {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  width: min(960px, 100%); max-height: 85vh;
+  display: flex; flex-direction: column;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.3);
+}
+.source-modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+}
+.source-modal-title { font-weight: 600; }
+.source-modal-body {
+  flex: 1; overflow: auto; margin: 0; padding: 16px;
+  background: var(--bg);
+  font-family: ui-monospace, SF Mono, Menlo, monospace;
+  font-size: 12px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word;
+}
 .flash {
   padding: 10px 14px; margin: 12px 0;
   border-radius: 6px; border: 1px solid var(--accent);

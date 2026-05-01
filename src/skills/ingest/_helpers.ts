@@ -58,6 +58,16 @@ export interface ResolveOptions {
  * 让 worker 调度 `ae-enrich` skill 把空壳补全。这一行为之前只在 stage 4 显式做，
  * 导致 stage 5 / 7 等通过 fact / timeline entity slug 触发自动建的红链永远不会
  * 被 enrich —— 现在统一在 helper 里处理。
+ *
+ * **查找策略（case-insensitive + alias-aware）**：
+ *   1. 精确 slug 匹配（最优先）
+ *   2. 大小写不敏感 slug 匹配（处理 `industries/Hog-Farming` vs `industries/hog-farming`）
+ *   3. aliases 数组内容匹配（处理 `[[companies/Coherent]]` 命中已有 II-VI Coherent 的 aliases）
+ *
+ * 这套查找住在 helper 里以确保 stage-4 / stage-5 (facts) / stage-7 (timeline) 三个
+ * 调用点行为一致——之前只有 stage-4 自己实现了，stage-5/7 走老的精确匹配，
+ * 导致 narrative 里 wikilink 用大写 `[[X/Foo]]` 而 fact YAML 用小写 `entity: X/foo`
+ * 时，stage-4 建一个 page，stage-5 又建一个不同 case 的 page，最终图谱里两个 dup。
  */
 export async function resolveOrCreatePage(
   slug: string,
@@ -66,32 +76,60 @@ export async function resolveOrCreatePage(
   const sourceId = options.sourceId ?? "default";
   const autoCreate = options.autoCreate ?? true;
   const enqueueEnrich = options.enqueueEnrich ?? true;
+  const inferredType = options.type ?? slugToType(slug);
+  const namePart = slug.split("/").slice(1).join("/").trim();
 
-  // 1. 找已存在的（不查 deleted=1 的）
-  const existing = await db
-    .select({ id: schema.pages.id })
-    .from(schema.pages)
-    .where(
-      and(
-        eq(schema.pages.sourceId, sourceId),
-        eq(schema.pages.slug, slug),
-        eq(schema.pages.deleted, 0)
+  // 1. 智能查找（精确 slug → 大小写不敏感 → aliases 命中）
+  //    type 已知就限定 type，避免跨 type 误命中
+  const typeClause = inferredType
+    ? drizzleSql`AND type = ${inferredType}`
+    : drizzleSql``;
+
+  const found = await db.execute(drizzleSql`
+    SELECT id, slug
+    FROM pages
+    WHERE deleted = 0
+      AND source_id = ${sourceId}
+      ${typeClause}
+      AND (
+        slug = ${slug}
+        OR LOWER(slug) = LOWER(${slug})
+        OR (
+          ${namePart === "" ? drizzleSql`FALSE` : drizzleSql`EXISTS (
+            SELECT 1 FROM unnest(COALESCE(aliases, ARRAY[]::text[])) AS a
+            WHERE LOWER(a) = LOWER(${namePart})
+          )`}
+        )
       )
-    )
-    .limit(1);
-  if (existing[0]) return existing[0].id;
+    ORDER BY
+      (slug = ${slug}) DESC,
+      (LOWER(slug) = LOWER(${slug})) DESC,
+      id ASC
+    LIMIT 1
+  `);
+
+  const existing = (found as unknown as Array<{ id: string; slug: string }>)[0];
+  if (existing) {
+    if (existing.slug !== slug) {
+      console.log(
+        `  [resolve] 别名/大小写命中：${slug} → 已有 ${existing.slug} (#${existing.id})`
+      );
+    }
+    return BigInt(existing.id);
+  }
 
   if (!autoCreate) return null;
 
   // 2. 推断 type
-  const type = options.type ?? slugToType(slug);
-  if (!type) {
+  if (!inferredType) {
     console.warn(`  [resolve] 无法推断 type，跳过建 page: ${slug}`);
     return null;
   }
 
   // 3. 自动建
-  const aliases = (options.initialAliases ?? [])
+  //    aliases 默认带上 namePart（保证下次同名不同 case 的 wikilink 能 alias 命中）
+  const initialAliases = options.initialAliases ?? (namePart ? [namePart] : []);
+  const aliases = initialAliases
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 
@@ -102,7 +140,7 @@ export async function resolveOrCreatePage(
         {
           sourceId,
           slug,
-          type,
+          type: inferredType,
           title: slugToTitle(slug),
           status: "active",
           confidence: "low", // 自动建的实体标 low，待 enrich
@@ -119,7 +157,7 @@ export async function resolveOrCreatePage(
     .returning({ id: schema.pages.id });
 
   if (created) {
-    console.log(`  [resolve] 自动建 page: ${slug} (#${created.id}, type=${type})`);
+    console.log(`  [resolve] 自动建 page: ${slug} (#${created.id}, type=${inferredType})`);
     if (enqueueEnrich) {
       await enqueueEnrichEntity(created.id, slug, options.sourcePageId, options.actor);
     }

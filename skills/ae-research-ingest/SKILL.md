@@ -286,6 +286,10 @@ platform: twitter
 
 第二类的设计原因：source 页只能由 `ingest:commit/brief` 建，thesis 页只能由 `thesis:open` 建，outputs 由 daily-* 建——agent narrative 里手写这种 wikilink 通常是凭直觉猜 slug，slug 错了会落一堆孤儿空 source/thesis 页。
 
+**禁用通配符 / 占位符语法**：`[[companies/*]]`、`[[companies/<name>]]`、`[[companies/?]]` 这种**不是合法 wikilink**——slug 里的 `* ? < > | : \ "` 都是 CLAUDE.md slug 规则禁止的字符（stage-4 会静默丢弃这种 ref）。要表达"还需建若干 company stub"用纯文本：
+- ✅ `Recommend follow-up: extract company-specific mentions (Tianbang, TRS, Jinxinnong) and create stubs.`
+- ❌ `create/confirm [[companies/*]] stubs ...`（事故案例：narrative-1 真这么写过，建了个 `companies/*` 空 stub）
+
 ### 2. 写 `[[sources/X]]` 或 `[[theses/X]]` 之前必查
 
 两种验证方式（任选）：
@@ -329,14 +333,37 @@ mcp__ae-wiki__search({ query: "H200 channel check", type: "source", keyword_only
 
 判断规则：**会出现在公司列表里的实体才是 company**（有股东、有营收、能上市）。芯片 / 协议 / 技术 / 工艺 / 产品线都是 concept。
 
-### 5. 没有 `persons/` 这个 type
+### 5. wikilink slug 跟 fact entity slug **必须 case 一致**
+
+narrative 内不能这样：
+```markdown
+正文：[[industries/Hog-Farming]] 行业...
+
+<!-- facts
+- entity: industries/hog-farming    ❌ 跟正文 wikilink case 不一致
+  metric: ...
+-->
+```
+
+**事故案例**：page #1 的 narrative 正文写 `[[industries/Hog-Farming]]`（大写），fact YAML 写 `entity: industries/hog-farming`（小写）。Stage 4 建了 #6 `industries/Hog-Farming`，Stage 5 没找到精确匹配又建了 #7 `industries/hog-farming` —— 两个 page 同实体，互不知情。
+
+**规则（必守）**：
+- 同一份 narrative 内，wikilink 的 slug 和 fact YAML / timeline YAML 的 entity slug 必须**逐字符一致**
+- 推荐用 **kebab-case 小写**作为 slug 标准格式（`companies/jingdong-mall`、`industries/hog-farming`、`concepts/hbm3e`）
+- 公司名带数字 / 标准缩写时（如 `companies/600519.SH` / `companies/AAOI`）保持原写法
+- 中文 entity 直接用中文（`industries/半导体`），不用拼音
+- **不要**为了"看起来好看" capitalize 词首字母（`Hog-Farming` 反而不利于匹配）
+
+**为什么这条比 wikilink 纪律更严格**：stage-4 / stage-5 / stage-7 用同一个 helper 做实体查找，case 不一致会绕过 alias dedupe 机制（虽然 helper 现在做了大小写不敏感处理，但跨 page 间的 case 不一致还是会被你自己 narrative 看到时困扰）。
+
+### 7. 没有 `persons/` 这个 type
 
 **不要写 `[[persons/X]]`**——这个 type 已被废弃。CEO / CFO / 高管 / 创始人的信息应当：
 - 写在所属公司的 `[[companies/X]]` narrative 或 frontmatter.management 字段里
 - 高管引言放在 source 页的 `## Notable Quotes / Views`，引用时用 `Andy Jassy（[[companies/Amazon]] CEO）`
 - 匿名专家（"北美广告专家A"）只出现在 source 正文，不需要建实体页
 
-### 6. 出错怎么办
+### 8. 出错怎么办
 
 不小心写了不存在的 `[[sources/X]]`，stage-4 不会建空 page，但 `events` 表会留 `wikilink_unresolved` 记录（含 trgm 相似度建议）。Lint：
 

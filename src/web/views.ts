@@ -6,7 +6,7 @@
  * 不重新写查询逻辑。
  */
 
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -25,6 +25,7 @@ import { getSessionTurns, type ChatTurn } from "./chat.ts";
 import {
   confidenceTag,
   escape,
+  fmtSh,
   highlightSnippet,
   layout,
   pageTag,
@@ -152,7 +153,7 @@ form.addEventListener('submit', async (e) => {
     }
     const meta = document.createElement('div');
     meta.className = 'meta';
-    meta.textContent = new Date().toLocaleTimeString();
+    meta.textContent = new Date().toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
     placeholder.appendChild(meta);
   } catch (err) {
     placeholder.innerHTML = '<div style="color:var(--negative);">出错了: ' + escapeHtml(err.message) + '</div>';
@@ -181,7 +182,7 @@ function renderTurn(t: ChatTurn): string {
           .join("")}
       </div>`
     : "";
-  return `<div class="chat-bubble assistant">${renderMarkdown(t.content)}${tools}<div class="meta">${escape(t.ts.slice(11, 19))}</div></div>`;
+  return `<div class="chat-bubble assistant">${renderMarkdown(t.content)}${tools}<div class="meta">${escape(fmtSh(t.ts, "time"))}</div></div>`;
 }
 
 // ============================================================================
@@ -272,7 +273,7 @@ ${todaysSourceBriefs.length === 0
         (p) => `<li>
           <div class="row">
             <div class="grow">${pageTag(p.type)} <a href="/pages/${encodeURIComponent(p.slug)}">${escape(p.title ?? p.slug)}</a></div>
-            <span class="muted score">${escape(String(p.ts).slice(0, 10))}</span>
+            <span class="muted score">${escape(fmtSh(p.ts as string, "date"))}</span>
           </div>
           <span class="muted score">${escape(p.slug)}</span>
         </li>`
@@ -300,7 +301,7 @@ function renderActivityRow(r: {
   severity?: string;
   detail?: string;
 }): string {
-  const ts = `<span class="muted score">${escape(String(r.ts).slice(0, 19).replace("T", " "))}</span>`;
+  const ts = `<span class="muted score">${escape(fmtSh(r.ts as string))}</span>`;
   if (r.kind === "page") {
     return `<li>${ts} <span class="tag">page</span> <a href="/pages/${encodeURIComponent(r.slug ?? "")}">${escape(r.title ?? r.slug)}</a></li>`;
   }
@@ -437,9 +438,7 @@ ${slice.length === 0
           const m = meta.get(h.slug);
           const confidenceBadge = m?.confidence ? confidenceTag(m.confidence) : "";
           const timeBadge = m?.createTime
-            ? `<time datetime="${m.createTime.toISOString()}">${m.createTime
-                .toISOString()
-                .slice(0, 10)}</time>`
+            ? `<time datetime="${m.createTime.toISOString()}">${fmtSh(m.createTime, "date")}</time>`
             : "";
           const crumb =
             h.section_path && h.section_path.length > 0
@@ -648,13 +647,22 @@ export async function viewPage(identifier: string): Promise<string> {
   const meta = page.frontmatter ?? {};
   const isEntity = ["company", "industry", "concept"].includes(page.type);
 
+  // Source/brief 类型：在 slug · #id 行尾追加一个小"查看原文"按钮。
+  // 点了之后弹窗显示，不开新标签。markdown 由服务端 /source-raw/:id 代理拉取。
+  const isSourceLike = page.type === "source" || page.type === "brief";
+  const markdownUrl = typeof meta.markdown_url === "string" ? meta.markdown_url : null;
+  const inlineSourceBtn =
+    isSourceLike && markdownUrl
+      ? ` · <button type="button" class="btn-inline" onclick="openSourceModal('${escape(page.id)}')">📄 查看原文</button>`
+      : "";
+
   const body = `
 <h2>
   ${pageTag(page.type)}
   ${escape(page.title)}
   ${confidenceTag(page.confidence)}
 </h2>
-<div class="muted score">${escape(page.slug)} · #${escape(page.id)}</div>
+<div class="muted score">${escape(page.slug)} · #${escape(page.id)}${inlineSourceBtn}</div>
 
 <div class="grid" style="margin-top: 16px;">
   <div class="card">
@@ -664,9 +672,11 @@ export async function viewPage(identifier: string): Promise<string> {
       ${page.sector ? `<div class="k">Sector</div><div>${escape(page.sector)}</div>` : ""}
       ${page.aliases?.length ? `<div class="k">Aliases</div><div>${escape(page.aliases.join(", "))}</div>` : ""}
       ${meta.research_type ? `<div class="k">Research type</div><div>${escape(String(meta.research_type))}</div>` : ""}
+      ${meta.publish_date ? `<div class="k">Publish date</div><div>${escape(String(meta.publish_date))}</div>` : ""}
+      ${meta.file_type ? `<div class="k">File type</div><div>${escape(String(meta.file_type))}</div>` : ""}
       ${meta.url ? `<div class="k">URL</div><div><a href="${escape(String(meta.url))}" target="_blank" rel="noopener">${escape(String(meta.url).slice(0, 80))}</a></div>` : ""}
-      <div class="k">Created</div><div>${escape(String(page.create_time ?? "").slice(0, 19).replace("T", " "))}</div>
-      <div class="k">Updated</div><div>${escape(String(page.update_time ?? "").slice(0, 19).replace("T", " "))}</div>
+      <div class="k">Created</div><div>${escape(fmtSh(page.create_time as string))}</div>
+      <div class="k">Updated</div><div>${escape(fmtSh(page.update_time as string))}</div>
       <div class="k">Inbound links</div><div>${page.inbound_links_count}</div>
       <div class="k">Outbound links</div><div>${page.outbound_links_count}</div>
     </div>
@@ -760,8 +770,77 @@ ${inLinks.length > 0
 }
 
 ${page.type === "thesis" ? await renderThesisAdmin(BigInt(page.id), page.content ?? "") : ""}
+
+${isSourceLike && markdownUrl ? sourceModalHtml() : ""}
 `;
   return layout({ title: page.title, body });
+}
+
+/** 弹窗 HTML + JS 注入（只在 source/brief 页才输出）。 */
+function sourceModalHtml(): string {
+  return `
+<div id="source-modal" class="source-modal" style="display:none;" onclick="if(event.target===this)closeSourceModal()">
+  <div class="source-modal-content">
+    <div class="source-modal-header">
+      <span class="source-modal-title">原文</span>
+      <button type="button" class="btn-inline" onclick="closeSourceModal()">✕ 关闭</button>
+    </div>
+    <pre id="source-modal-body" class="source-modal-body">加载中…</pre>
+  </div>
+</div>
+<script>
+async function openSourceModal(pageId) {
+  const modal = document.getElementById('source-modal');
+  const body = document.getElementById('source-modal-body');
+  modal.style.display = 'flex';
+  body.textContent = '加载中…';
+  try {
+    const resp = await fetch('/source-raw/' + encodeURIComponent(pageId));
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    body.textContent = await resp.text();
+    body.scrollTop = 0;
+  } catch (err) {
+    body.textContent = '加载失败：' + (err && err.message ? err.message : err);
+  }
+}
+function closeSourceModal() {
+  document.getElementById('source-modal').style.display = 'none';
+}
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeSourceModal();
+});
+</script>
+`;
+}
+
+/** 给 server.ts 的 /source-raw/:id 路由用：拉 markdown_url 的原始内容。 */
+export async function fetchSourceRaw(
+  pageId: bigint
+): Promise<{ markdown: string } | null> {
+  const [p] = await db
+    .select({
+      type: schema.pages.type,
+      frontmatter: schema.pages.frontmatter,
+    })
+    .from(schema.pages)
+    .where(eq(schema.pages.id, pageId))
+    .limit(1);
+  if (!p) return null;
+  if (p.type !== "source" && p.type !== "brief") return null;
+
+  const fm = (p.frontmatter ?? {}) as Record<string, unknown>;
+  const url = typeof fm.markdown_url === "string" ? fm.markdown_url : null;
+  if (!url) return null;
+
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      return { markdown: `(failed to fetch markdown_url: HTTP ${resp.status})` };
+    }
+    return { markdown: await resp.text() };
+  } catch (e) {
+    return { markdown: `(fetch error: ${(e as Error).message})` };
+  }
 }
 
 /**
@@ -950,7 +1029,7 @@ export async function viewThesisNew(
     LIMIT 500
   `);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = fmtSh(new Date(), "date");
 
   const datalist = (candidates as unknown as Array<Record<string, unknown>>)
     .map(
@@ -1275,7 +1354,7 @@ async function listOutputFiles(): Promise<OutputFile[]> {
         const s = await fs.stat(path.join(dir, name));
         return {
           name,
-          mtime: s.mtime.toISOString().slice(0, 19).replace("T", " "),
+          mtime: fmtSh(s.mtime),
           size: s.size,
         };
       })
@@ -1458,7 +1537,7 @@ ${recentJobs.length === 0
           <td>${escape(String(j.name))}</td>
           <td><span class="tag severity-${j.status === "failed" ? "warning" : "info"}">${escape(String(j.status))}</span></td>
           <td>${j.attempts}/${j.max_attempts}</td>
-          <td class="muted score">${escape(String(j.create_time).slice(0, 19).replace("T", " "))}</td>
+          <td class="muted score">${escape(fmtSh(j.create_time as string))}</td>
           <td class="muted">${j.error ? escape(String(j.error).slice(0, 80)) : ""}</td>
         </tr>`
       )
@@ -1505,9 +1584,9 @@ export async function viewUsage(): Promise<string> {
 
   const totalsRows = (await db.execute(sql`
     WITH t AS (
-      SELECT 'today' AS bucket, NOW()::date AS since UNION ALL
-      SELECT 'last_7d', (NOW() - INTERVAL '7 days')::date UNION ALL
-      SELECT 'last_30d', (NOW() - INTERVAL '30 days')::date
+      SELECT 'today' AS bucket, (NOW() AT TIME ZONE 'Asia/Shanghai')::date AS since UNION ALL
+      SELECT 'last_7d', ((NOW() - INTERVAL '7 days') AT TIME ZONE 'Asia/Shanghai')::date UNION ALL
+      SELECT 'last_30d', ((NOW() - INTERVAL '30 days') AT TIME ZONE 'Asia/Shanghai')::date
     )
     SELECT
       t.bucket,
@@ -1606,7 +1685,7 @@ export async function viewUsage(): Promise<string> {
 
   const dailyRows = (await db.execute(sql`
     SELECT
-      DATE_TRUNC('day', create_time)::date AS day,
+      DATE_TRUNC('day', create_time AT TIME ZONE 'Asia/Shanghai')::date AS day,
       source,
       SUM(COALESCE(tokens_in, 0))::bigint   AS tokens_in,
       SUM(COALESCE(tokens_out, 0))::bigint  AS tokens_out,
@@ -1781,7 +1860,7 @@ ${recentRows.length === 0
           ? `#${r.job_id}${r.job_name ? ` <span class="tag">${escape(r.job_name)}</span>` : ""}`
           : "";
         return `<tr>
-          <td class="muted score">${escape(String(r.create_time).slice(0, 19).replace("T", " "))}</td>
+          <td class="muted score">${escape(fmtSh(r.create_time as string))}</td>
           <td><span class="tag">${escape(r.source)}</span></td>
           <td class="muted score">${escape(r.model ?? "")}</td>
           <td>${skillOrJob}</td>
