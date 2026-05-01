@@ -285,8 +285,24 @@ async function logUnresolvedWikilink(opts: {
  * 不是真实 entity 引用。事故案例：narrative 写 `create/confirm [[companies/*]]
  * stubs before relying on company-level signals`，stage-4 把 `companies/*` 当真
  * slug 建了空 stub。
+ *
+ * 同时拒绝 ticker / stock code 形态的 slug（如 `companies/300750.SZ` /
+ * `companies/AAPL` / `companies/3931.HK`）—— ticker 应该写到 `pages.ticker` 列
+ * 或 frontmatter 里，不能当 slug。事故案例：钠离子电池调研 narrative 写
+ * `[[companies/300750.SZ]]` 而不是 `[[companies/CATL]]`，建出 6 个 ticker-slug
+ * 的空 stub。详见 ae-research-ingest SKILL.md "Wikilink 纪律 §6"。
  */
 const FORBIDDEN_SLUG_CHARS_RE = /[*?<>|:\\"]/;
+
+/**
+ * A 股 / 港股 / 日股 / 韩股 ticker pattern：纯数字 + 市场后缀。
+ *
+ * **不拦截美股 4-5 字母全大写代码**（如 `AAPL` / `MSFT`）—— 因为很多公司
+ * 的"正式名缩写"就是这种形式（CATL / BYD / TSMC / NVIDIA），无法靠正则
+ * 跟 ticker 区分。美股 ticker 当 slug 用的事故场景较少（agent 通常会写
+ * 公司名而非 ticker）；如果将来撞了再加 case-by-case 名单。
+ */
+const TICKER_SLUG_RE = /^[0-9]{3,6}\.(?:SZ|SH|HK|TW|TO|JP|KS)$/;
 
 function extractRefs(
   content: string
@@ -298,6 +314,13 @@ function extractRefs(
     const namePart = slug.split("/").slice(1).join("/");
     if (FORBIDDEN_SLUG_CHARS_RE.test(namePart)) {
       console.log(`  [stage4] 丢弃非法 slug: ${slug}（含 * ? < > | : \\ " 等占位字符）`);
+      return;
+    }
+    // ticker / stock code 不能当 slug —— 用真实公司名 + ticker 列才对
+    if (slug.startsWith("companies/") && TICKER_SLUG_RE.test(namePart)) {
+      console.log(
+        `  [stage4] 丢弃 ticker-as-slug: ${slug} —— ticker 写 frontmatter 或 enrich:save --ticker，slug 必须用公司名（如 companies/CATL，不是 companies/300750.SZ）`
+      );
       return;
     }
     const arr = refs.get(slug) ?? [];

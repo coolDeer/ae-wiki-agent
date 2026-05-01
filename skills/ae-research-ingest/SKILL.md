@@ -393,11 +393,32 @@ narrative 内不能这样：
 
 - 同一份 narrative 内，wikilink 的 slug 和 fact YAML / timeline YAML 的 entity slug 必须**逐字符一致**
 - 推荐用 **kebab-case 小写**作为 slug 标准格式（`companies/jingdong-mall`、`industries/hog-farming`、`concepts/hbm3e`）
-- 公司名带数字 / 标准缩写时（如 `companies/600519.SH` / `companies/AAOI`）保持原写法
+- 公司名用**可读名**（中文或英文），**不要**用 ticker / stock code（详见 §6）
 - 中文 entity 直接用中文（`industries/半导体`），不用拼音
 - **不要**为了"看起来好看" capitalize 词首字母（`Hog-Farming` 反而不利于匹配）
 
 **为什么这条比 wikilink 纪律更严格**：stage-4 / stage-5 / stage-7 用同一个 helper 做实体查找，case 不一致会绕过 alias dedupe 机制（虽然 helper 现在做了大小写不敏感处理，但跨 page 间的 case 不一致还是会被你自己 narrative 看到时困扰）。
+
+### 6. ticker / stock code **不能**当 slug
+
+**不要写 `[[companies/300750.SZ]]` / `[[companies/AAPL]]` / `[[companies/3931.HK]]`**——ticker 不是公司名，是该公司的某个市场代码。多重上市的公司一票多 ticker，把 ticker 当 slug 会建出 N 个相同实体的 page。
+
+正确写法：
+
+| ❌ 错（agent 实际撞过事故）| ✅ 对 |
+|---|---|
+| `[[companies/300750.SZ]]` | `[[companies/CATL]]` 或 `[[companies/宁德时代]]` |
+| `[[companies/002594.SZ]]` | `[[companies/BYD]]` |
+| `[[companies/AAPL]]` | `[[companies/Apple]]` |
+| `[[companies/3931.HK]]` | `[[companies/CALB]]` |
+
+**ticker 的归宿**：
+- enrich:save 时通过 `--ticker 300750.SZ` 写到 `pages.ticker` 列
+- 多重上市的多 ticker 都填到 `pages.aliases`（`["300750.SZ", "Contemporary Amperex Technology", "宁德时代"]`）
+
+**Stage 4 已加 guard**：narrative 里写 ticker-like wikilink（`\d{3,6}\.(SZ|SH|HK|TW|TO|JP|KS)` 或 `^[A-Z]{1,5}$`）会被静默丢弃 + 控制台 warning。所以即使 agent 一时手快写了 ticker wikilink，stage-4 也不会建出错的 stub。
+
+**事故案例**：钠离子电池调研 narrative 一行写了 6 个 ticker wikilink（CATL/BYD/EVE/CALB/Gotion/Sunwoda 全是 `[[companies/<ticker>]]` 形式），建出 6 个 ticker-slug 的空 stub。修复 = 重 retype + 移 ticker 到 ticker 列。
 
 ### 7. 没有 `persons/` 这个 type
 
