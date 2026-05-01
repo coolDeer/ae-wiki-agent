@@ -76,6 +76,18 @@ const EnvSchema = z.object({
       return Number.isFinite(n) && n > 0 ? n : 20000;
     }),
 
+  // Notability gate：stage-4 建红链 stub 时，只在累积 backlink ≥ 此阈值才入队
+  // enrich_entity job。<=1 = 每次都入队（关闭门控）；2-3 = 平衡；4+ = 严格。
+  // 默认 3：单提一次的 tail entity 不消耗 enrich 成本，等被反复提及再补全。
+  // 借鉴 gbrain notability gate 思路（他们用 mention_count 做 tier escalation）。
+  WIKI_ENRICH_NOTABILITY_THRESHOLD: z
+    .string()
+    .default("3")
+    .transform((v) => {
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) && n >= 1 ? n : 3;
+    }),
+
   // 可选
   AWS_ACCESS_KEY_ID: z.string().optional(),
   AWS_SECRET_ACCESS_KEY: z.string().optional(),

@@ -14,4 +14,6 @@ export interface AgentRunData {
   prompt: string;
   model: string;
   maxTurns: number;
+  targetPageId?: string;
+  sourceJobId?: string;
 }

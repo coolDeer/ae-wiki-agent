@@ -86,6 +86,10 @@ function printHelp(): void {
   ae-wiki enrich:retype <page_id> --new-type company|industry|concept|thesis [--new-slug X] [--reason "..."]
                                                 # 红链 type 错了（companies/Trainium → concepts/Trainium）
                                                 # 默认仅换 dir 前缀；--new-slug 完整覆盖
+  ae-wiki enrich:retrigger [--min-score N=0.5] [--min-backlinks N=3] [--min-new-backlinks N=2]
+                       [--type T] [--limit N=30] [--dry-run] [--json]
+                                                # 找完整度低 + backlink 多 + 新增 backlink 多的 page 重 enqueue
+                                                # 解决"NVIDIA 永久 conf=low"问题
 
   ae-wiki thesis:list [--status S] [--direction D]                   # 列论点
   ae-wiki thesis:show <page_id>                                      # 单论点诊断（含 facts/signals）
@@ -698,6 +702,34 @@ async function main(): Promise<void> {
         );
       } catch (e) {
         console.error(`[enrich:retype] ${(e as Error).message}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case "enrich:retrigger": {
+      const { runRetrigger, formatRetriggerTable } = await import(
+        "./skills/enrich/retrigger.ts"
+      );
+      const minScoreStr = getArg("--min-score");
+      const minBacklinksStr = getArg("--min-backlinks");
+      const minNewStr = getArg("--min-new-backlinks");
+      const limitStr = getArg("--limit");
+      const asJson = args.includes("--json");
+      const dryRun = args.includes("--dry-run");
+      try {
+        const r = await runRetrigger({
+          type: getArg("--type"),
+          minScore: minScoreStr ? parseFloat(minScoreStr) : undefined,
+          minBacklinks: minBacklinksStr ? parseInt(minBacklinksStr, 10) : undefined,
+          minNewBacklinks: minNewStr ? parseInt(minNewStr, 10) : undefined,
+          limit: limitStr ? parseInt(limitStr, 10) : undefined,
+          dryRun,
+        });
+        if (asJson) console.log(jsonStringify(r));
+        else console.log(formatRetriggerTable(r));
+      } catch (e) {
+        console.error(`[enrich:retrigger] ${(e as Error).message}`);
         process.exit(1);
       }
       break;

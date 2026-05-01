@@ -268,9 +268,12 @@ async function runEnrichEntity(
       prompt,
       model: getEnv().OPENAI_AGENT_MODEL,
       maxTurns: 20,
+      targetPageId: ctx.pageId.toString(),
+      sourceJobId: job.id.toString(),
     },
     Actor.agentRuntime,
     {
+      priority: 30,
       progress: {
         stage: "queued",
         skill: "ae-enrich",

@@ -4,7 +4,9 @@ import {
   customType,
   index,
   jsonb,
+  numeric,
   pgTable,
+  smallint,
   text,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -62,6 +64,17 @@ export const pages = pgTable(
     // 状态
     status: text("status").notNull().default("active"),
     confidence: text("confidence"),
+    /**
+     * 成本档（1=最重要 / 用大模型 enrich，3=tail / 用 mini 模型）。默认 3。
+     * 跟 confidence 解耦：confidence 是"现在写得好不好"，tier 是"花多少成本"。
+     */
+    tier: smallint("tier").notNull().default(3),
+    /**
+     * 完整度分 0.000-1.000。每次 enrich:save 后由 scorePage() 写入。
+     * 给 enrich:retrigger / 搜索 boost / 红链优先级排序用。
+     * 跟 confidence enum 解耦：score 是确定性 metric，confidence 是 agent 主观判断。
+     */
+    completenessScore: numeric("completeness_score", { precision: 4, scale: 3 }).notNull().default("0"),
 
     ...auditFields,
   },

@@ -12,6 +12,7 @@ export async function addJob(
   opts: {
     status?: MinionJobStatus;
     maxAttempts?: number;
+    priority?: number;
     progress?: Record<string, unknown> | null;
   } = {}
 ): Promise<typeof schema.minionJobs.$inferSelect> {
@@ -24,6 +25,7 @@ export async function addJob(
           status: opts.status ?? "waiting",
           data,
           maxAttempts: opts.maxAttempts ?? 3,
+          priority: opts.priority,
           progress: opts.progress ?? null,
         },
         actor

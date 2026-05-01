@@ -158,8 +158,16 @@ export async function resolveOrCreatePage(
 
   if (created) {
     console.log(`  [resolve] 自动建 page: ${slug} (#${created.id}, type=${inferredType})`);
+    // 注意：不在这里入队 enrich！现在改为 notability-gated，由 stage-4 等
+    // 显式 backlink 写入后调 maybeEnqueueEnrichForBacklinkGrowth 决定。
+    // enqueueEnrich=true 的旧 contract 现在等价于"如果 backlink 数已达阈值才入队"。
     if (enqueueEnrich) {
-      await enqueueEnrichEntity(created.id, slug, options.sourcePageId, options.actor);
+      await maybeEnqueueEnrichForBacklinkGrowth({
+        pageId: created.id,
+        slug,
+        sourcePageId: options.sourcePageId,
+        actor: options.actor,
+      });
     }
     return created.id;
   }
@@ -195,4 +203,116 @@ async function enqueueEnrichEntity(
       actor
     )
   );
+}
+
+async function hasInFlightEnrichForPage(pageId: bigint): Promise<boolean> {
+  const pageIdStr = pageId.toString();
+  const rows = await db
+    .select({ id: schema.minionJobs.id })
+    .from(schema.minionJobs)
+    .where(
+      and(
+        eq(schema.minionJobs.deleted, 0),
+        drizzleSql`${schema.minionJobs.status} IN ('waiting', 'active')`,
+        drizzleSql`(
+          (
+            ${schema.minionJobs.name} = 'enrich_entity'
+            AND ${schema.minionJobs.data}->>'pageId' = ${pageIdStr}
+          )
+          OR
+          (
+            ${schema.minionJobs.name} = 'agent_run'
+            AND ${schema.minionJobs.data}->>'skill' = 'ae-enrich'
+            AND ${schema.minionJobs.data}->>'targetPageId' = ${pageIdStr}
+          )
+        )`
+      )
+    )
+    .limit(1);
+  return Boolean(rows[0]);
+}
+
+/**
+ * Notability gate：只在累积 backlink ≥ `WIKI_ENRICH_NOTABILITY_THRESHOLD` 时入队
+ * enrich_entity job。借鉴 gbrain 的 mention-count-based tier escalation 思路。
+ *
+ * 调用方：stage-4 写完一条 link 之后；resolveOrCreatePage 建出新 stub 后；
+ *        stage-5 / stage-7 通过 fact / timeline 创建实体后。
+ *
+ * 防双重入队：检查 minion_jobs 里同 page_id 是否已有 enrich_entity 在
+ * `waiting` / `active` 状态。已有就跳过；`completed` 状态的不算（重 enqueue 等价
+ * 于 retrigger 行为）。
+ *
+ * 同时也防 stale stub：如果 page 自己 confidence 已经是 medium/high，说明 enrich
+ * 跑过了，不再自动入队（让 enrich:retrigger 处理这种"长期 medium 但需更新"的）。
+ */
+export async function maybeEnqueueEnrichForBacklinkGrowth(opts: {
+  pageId: bigint;
+  slug: string;
+  sourcePageId?: bigint;
+  actor: string;
+}): Promise<{ enqueued: boolean; reason: string; backlinkCount: number }> {
+  // 1. 拿当前 page 的 confidence + backlink count
+  const { getEnv } = await import("~/core/env.ts");
+  const threshold = getEnv().WIKI_ENRICH_NOTABILITY_THRESHOLD;
+
+  const [pageRow] = await db
+    .select({
+      confidence: schema.pages.confidence,
+      type: schema.pages.type,
+    })
+    .from(schema.pages)
+    .where(eq(schema.pages.id, opts.pageId))
+    .limit(1);
+
+  if (!pageRow) {
+    return { enqueued: false, reason: "page-not-found", backlinkCount: 0 };
+  }
+
+  // 2. 算 backlink 数
+  const [bl] = (await db.execute(drizzleSql`
+    SELECT COUNT(*)::int AS n
+    FROM links
+    WHERE deleted = 0 AND to_page_id = ${opts.pageId}
+  `)) as Array<{ n: number }>;
+  const backlinkCount = bl?.n ?? 0;
+
+  // 3. 已有 in-flight enrich job → 跳。
+  //    同时覆盖 wrapper job (`enrich_entity`) 和真正执行中的 `agent_run(ae-enrich)`。
+  if (await hasInFlightEnrichForPage(opts.pageId)) {
+    return {
+      enqueued: false,
+      reason: "already-in-flight",
+      backlinkCount,
+    };
+  }
+
+  // 4. 已经 enrich 过（confidence != 'low'）→ 跳。retrigger 走另一个路径。
+  if (pageRow.confidence && pageRow.confidence !== "low") {
+    return {
+      enqueued: false,
+      reason: `already-enriched-confidence=${pageRow.confidence}`,
+      backlinkCount,
+    };
+  }
+
+  // 5. 没到阈值 → 跳
+  if (backlinkCount < threshold) {
+    return {
+      enqueued: false,
+      reason: `below-threshold ${backlinkCount} < ${threshold}`,
+      backlinkCount,
+    };
+  }
+
+  // 6. 入队
+  await enqueueEnrichEntity(opts.pageId, opts.slug, opts.sourcePageId, opts.actor);
+  console.log(
+    `  [enrich-gate] enqueued enrich_entity for ${opts.slug} (#${opts.pageId}, backlinks=${backlinkCount} ≥ ${threshold})`
+  );
+  return {
+    enqueued: true,
+    reason: `threshold-met ${backlinkCount} ≥ ${threshold}`,
+    backlinkCount,
+  };
 }

@@ -11,7 +11,7 @@
  * core 不调 LLM——所有 narrative 由 agent 在 skills/ae-enrich/SKILL.md 引导下生成。
  */
 
-import { eq, and, count, desc, ne } from "drizzle-orm";
+import { eq, and, count, desc, ne, sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { withAudit, withCreateAudit, Actor } from "~/core/audit.ts";
 import type { PageType } from "~/core/schema/pages.ts";
@@ -85,6 +85,33 @@ async function loadRedlinkContextByPageId(pageId: bigint): Promise<RedlinkContex
   };
 }
 
+async function hasInFlightEnrichJob(pageId: bigint): Promise<boolean> {
+  const pageIdStr = pageId.toString();
+  const rows = await db
+    .select({ id: schema.minionJobs.id })
+    .from(schema.minionJobs)
+    .where(
+      and(
+        eq(schema.minionJobs.deleted, 0),
+        drizzleSql`${schema.minionJobs.status} IN ('waiting', 'active')`,
+        drizzleSql`(
+          (
+            ${schema.minionJobs.name} = 'enrich_entity'
+            AND ${schema.minionJobs.data}->>'pageId' = ${pageIdStr}
+          )
+          OR
+          (
+            ${schema.minionJobs.name} = 'agent_run'
+            AND ${schema.minionJobs.data}->>'skill' = 'ae-enrich'
+            AND ${schema.minionJobs.data}->>'targetPageId' = ${pageIdStr}
+          )
+        )`
+      )
+    )
+    .limit(1);
+  return Boolean(rows[0]);
+}
+
 /**
  * 选下一个待 enrich 的红链 page，附带 backlink 上下文。
  *
@@ -100,7 +127,7 @@ export async function enrichPrepareNext(opts: {
 } = {}): Promise<RedlinkContext | null> {
   const skip = opts.skip ?? 0;
 
-  // 找候选：confidence='low' 且非 source
+  // 找候选：confidence='low' 且非 source。这里只做一次粗排，随后再排除已经 in-flight 的 enrich。
   const candidates = await db
     .select({
       id: schema.pages.id,
@@ -128,13 +155,20 @@ export async function enrichPrepareNext(opts: {
     )
     .groupBy(schema.pages.id)
     .orderBy(desc(count(schema.links.id)), schema.pages.id)
-    .limit(skip + 1)
-    .offset(skip);
+    .limit(Math.max(skip + 20, 20));
 
-  const target = candidates[candidates.length - 1];
-  if (!target || target.type === "source") return null;
+  let visibleIndex = 0;
+  for (const candidate of candidates) {
+    if (candidate.type === "source") continue;
+    if (await hasInFlightEnrichJob(candidate.id)) continue;
+    if (visibleIndex < skip) {
+      visibleIndex++;
+      continue;
+    }
+    return loadRedlinkContextByPageId(candidate.id);
+  }
 
-  return loadRedlinkContextByPageId(target.id);
+  return null;
 }
 
 export async function enrichLoadContext(pageId: bigint): Promise<RedlinkContext | null> {
@@ -289,6 +323,24 @@ export async function enrichSave(
     .set(withAudit(updateSet, actor))
     .where(eq(schema.pages.id, pageId));
 
+  // 写完之后跑 completeness scoring（gbrain-style 客观分），cache 到 pages 列。
+  // 给 enrich:retrigger / search rank / lint 报表用。
+  const { scorePage } = await import("./completeness.ts");
+  const [updated] = await db
+    .select()
+    .from(schema.pages)
+    .where(eq(schema.pages.id, pageId))
+    .limit(1);
+  let completenessScore: number | null = null;
+  if (updated) {
+    const result = scorePage(updated);
+    completenessScore = result.total;
+    await db
+      .update(schema.pages)
+      .set({ completenessScore: completenessScore.toString() })
+      .where(eq(schema.pages.id, pageId));
+  }
+
   // 写 event
   await db.insert(schema.events).values({
     actor,
@@ -301,6 +353,7 @@ export async function enrichSave(
       fieldsSet: Object.keys(opts).filter((k) => opts[k as keyof EnrichSaveOpts] !== undefined),
       aliasesAction,
       aliasesAfter: nextAliases ?? null,
+      completenessScore,
     },
     createBy: actor,
     updateBy: actor,
@@ -310,8 +363,12 @@ export async function enrichSave(
     aliasesAction !== null && nextAliases !== undefined
       ? `, aliases ${aliasesAction} → [${nextAliases.slice(0, 5).join(", ")}${nextAliases.length > 5 ? `, +${nextAliases.length - 5}` : ""}]`
       : "";
+  const scoreLog =
+    completenessScore !== null
+      ? `, completeness=${completenessScore.toFixed(3)}`
+      : "";
   console.log(
-    `[enrich:save] page #${pageId} narrative ${narrative.length} chars, confidence=${opts.confidence ?? "medium"}${aliasLog}`
+    `[enrich:save] page #${pageId} narrative ${narrative.length} chars, confidence=${opts.confidence ?? "medium"}${aliasLog}${scoreLog}`
   );
 }
 

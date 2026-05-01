@@ -17,7 +17,11 @@
 import { and, eq, sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { withCreateAudit } from "~/core/audit.ts";
-import { resolveOrCreatePage, slugToType } from "./_helpers.ts";
+import {
+  maybeEnqueueEnrichForBacklinkGrowth,
+  resolveOrCreatePage,
+  slugToType,
+} from "./_helpers.ts";
 import type { IngestContext } from "~/core/types.ts";
 import type { PageType } from "~/core/schema/pages.ts";
 
@@ -157,7 +161,16 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
       )
       .onConflictDoNothing()
       .returning({ id: schema.links.id });
-    if (inserted.length > 0) linksWritten++;
+    if (inserted.length > 0) {
+      linksWritten++;
+      // 链接刚写入；现在用更新后的 backlink 数判定是否够格 enqueue enrich
+      await maybeEnqueueEnrichForBacklinkGrowth({
+        pageId: targetId,
+        slug,
+        sourcePageId: ctx.pageId,
+        actor: ctx.actor,
+      });
+    }
   }
 
   const afterCount = await countActivePages();
