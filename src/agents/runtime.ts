@@ -52,7 +52,10 @@ type JsonValue =
 
 type AgentContentBlock = Record<string, any>;
 
-const MAX_MODEL_OUTPUT_TOKENS = 4096;
+// 单条 LLM 响应的 max_completion_tokens；env `WIKI_AGENT_MAX_OUTPUT_TOKENS` 控制（默认 20000）。
+// ae-research-ingest 的 narrative 一次输出常达 5-8K tokens（中英混杂 + reasoning + tool args），
+// 太小会撞 stop_reason='length' 中途截断，agent 没机会调 ingest_write 落 narrative。
+const MAX_MODEL_OUTPUT_TOKENS = getEnv().WIKI_AGENT_MAX_OUTPUT_TOKENS;
 
 export interface AgentRunOpts {
   skill: string;

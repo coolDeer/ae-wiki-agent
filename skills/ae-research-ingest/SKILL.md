@@ -1,9 +1,9 @@
 ---
-name: ae-research-ingest
+
+## name: ae-research-ingest
 description: 把 raw_files 中待处理的研究素材 ingest 进 wiki。Triage 流程：peek → 三选一 (commit 深 source / brief 轻量前沿 / pass 噪声) → write → finalize。Agent 当 LLM，core 只做确定性落库。
 metadata:
   short-description: Triage + 三段式 ingest（agent 写 narrative）
----
 
 # ae-research-ingest
 
@@ -15,6 +15,7 @@ metadata:
 **理解原文是 agent 的事**：agent（Codex / runtime）读 raw markdown → 三分判定 → 套对应模板写 narrative → 落库。
 
 为什么三分：
+
 - raw 来源参差（Daiwa 研报 / 长 tweet thread / @xx Thanks 噪声 / chat 散点纪要）
 - 一刀切走 7 段 source 模板：短素材塞不满，agent 编造或大段标"无"
 - 一刀切 pass 掉 twitter：丢失值得留痕的前沿动态（AI 工具 / 行业八卦 / 算力新闻）
@@ -74,14 +75,16 @@ cd ae-wiki-agent && bun src/cli.ts ingest:peek
 
 **用 `v2Stats` 辅助 triage**（0 阅读量也能粗判）：
 
-| 信号 | 解读 |
-|---|---|
-| `pageCount >= 10` + `tableCount >= 3` | 大概率是数据型研报/周报 → **commit** |
-| `pageCount = 1` + `titleCount <= 3` | 短素材（tweet / chat 散点）→ 通常 **brief** 或 **pass** |
-| `topLevelSections` 含 `Q&A`、`专家观点`、`Earnings` 等 | 深度访谈 → **commit** |
-| `tableCount = 0` + `pageCount = 1` | 文字流动态 → 看 preview 决定 brief / pass |
 
-**`hasContentListV2: false` 的处理**：上游 mineru 没产出 V2，commit 会在 stage-2 失败。直接 `ingest:pass <id> --reason "V2 缺失"` 跳过；运维介入修上游后重启 ingest 流程。
+| 信号                                             | 解读                                            |
+| ---------------------------------------------- | --------------------------------------------- |
+| `pageCount >= 10` + `tableCount >= 3`          | 大概率是数据型研报/周报 → **commit**                     |
+| `pageCount = 1` + `titleCount <= 3`            | 短素材（tweet / chat 散点）→ 通常 **brief** 或 **pass** |
+| `topLevelSections` 含 `Q&A`、`专家观点`、`Earnings` 等 | 深度访谈 → **commit**                             |
+| `tableCount = 0` + `pageCount = 1`             | 文字流动态 → 看 preview 决定 brief / pass             |
+
+
+`**hasContentListV2: false` 的处理**：上游 mineru 没产出 V2，commit 会在 stage-2 失败。直接 `ingest:pass <id> --reason "V2 缺失"` 跳过；运维介入修上游后重启 ingest 流程。
 
 > ⚠️ raw 正文不再落本地。peek 已经把全文 fetch 过一次（CLI 进程内已缓存）；
 > agent 端如要看完整原文，直接打开 `markdownUrl` 读取；短素材通常只看 `preview` 就够。
@@ -94,11 +97,13 @@ cd ae-wiki-agent && bun src/cli.ts ingest:peek
 
 ### 判定矩阵
 
-| 类型 | 走 | 典型 researchType | 启发式 |
-|---|---|---|---|
-| **核心投资素材** | `commit` | `meeting_minutes`, `aletheia`, `scuttleblurb`, `acecamp_article`, `vital_knowledge`, `chat_brilliant`, `substack`, `acecamp_opinion` | 含具体公司/ticker / 财务数据 / 行业判断 / 估值讨论；研究员可直接据此调仓 |
-| **前沿动态（brief）** | `brief` | `twitter`（部分）| 提到 AI / 模型 / 工具 / 平台动向，与投资**有边际信号但无 actionability**；产品发布、技术突破、行业八卦、模型对比 |
-| **真噪声** | `pass` | `twitter`（多数）| 纯个人推广、感谢回复、自我营销、跟金融/科技/产业完全无关（如生活段子） |
+
+| 类型              | 走        | 典型 researchType                                                                                                                      | 启发式                                                                     |
+| --------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| **核心投资素材**      | `commit` | `meeting_minutes`, `aletheia`, `scuttleblurb`, `acecamp_article`, `vital_knowledge`, `chat_brilliant`, `substack`, `acecamp_opinion` | 含具体公司/ticker / 财务数据 / 行业判断 / 估值讨论；研究员可直接据此调仓                            |
+| **前沿动态（brief）** | `brief`  | `twitter`（部分）                                                                                                                        | 提到 AI / 模型 / 工具 / 平台动向，与投资**有边际信号但无 actionability**；产品发布、技术突破、行业八卦、模型对比 |
+| **真噪声**         | `pass`   | `twitter`（多数）                                                                                                                        | 纯个人推广、感谢回复、自我营销、跟金融/科技/产业完全无关（如生活段子）                                    |
+
 
 ### 边界判断口诀
 
@@ -118,11 +123,13 @@ cd ae-wiki-agent && bun src/cli.ts ingest:peek
 不确定 commit 还是 brief 时**默认走 brief**（轻量、低成本、不污染 source 池）。
 
 不确定 brief 还是 pass 时也**默认走 brief**。`pass` 只留给以下情形：
+
 - 纯个人推广 / 感谢回复 / 自我营销
 - 与金融、科技、产业研究完全无关
 - 没有任何可沉淀到 `company / industry / thesis` 的边际信息
 
 换句话说：
+
 - `pass` 要非常保守
 - `brief` 是默认缓冲层
 - 日后觉得 brief 值得 deep dive，可以再补一个 source page 引用 brief
@@ -154,9 +161,16 @@ cd ae-wiki-agent && bun src/cli.ts ingest:commit <rawFileId>
 
 **Write the final narrative in English.** Keep ticker symbols, accounting terms, and product names in their standard English forms. Chinese may appear only inside direct quotes, aliases, or source titles when necessary.
 
+**Add a YAML frontmatter block at the top of every source narrative.** At minimum, include `tags` and `view_side`.
+
 ```markdown
+---
+tags: [semiconductor, memory]
+view_side: neutral
+---
+
 ## Source Overview
-（一段话总结：作者 / 主题 / 调研对象 / 关键时点）
+（一段话总结：主题 / 调研对象 / 关键时点）
 
 ## Key Takeaways
 （3-7 条编号列表，每条引用具体数据。覆盖维度：
@@ -211,16 +225,34 @@ cd ae-wiki-agent && bun src/cli.ts ingest:commit <rawFileId>
 
 ### Source 写作约束
 
+- `view_side`（frontmatter，必填）：
+  只允许四个值：`buy_side | sell_side | neutral | unknown`
+- `view_side` 必须**根据内容和 framing 判断**，不要按 `research_type` 机械映射
+- `research_type` 只能作为弱提示，不能作为最终依据
+- 判断优先顺序：
+  1. 先看文章本身的写法、立场、受众、结论结构
+  2. 再看来源机构 / publisher / 是否是 broker-style note
+  3. 仍不确定就写 `unknown`
+- `view_side` 不是质量评分，而是**观点位置标签**：
+  - `sell_side`：broker / analyst coverage / target price / model-update 风格材料
+  - `buy_side`：基金 / PM / 内部研究 memo 风格材料
+  - `neutral`：原始披露、数据看板、客观纪要、事实型汇编，不明显偏 buy/sell side
+  - `unknown`：无法从 `research_type` 和内容可靠判断
+- 实操判断：
+  - 明显是评级、目标价、coverage、模型更新、broker audience → `sell_side`
+  - 明显是投资者 / PM / 内部研究 memo 口吻 → `buy_side`
+  - 更像原始信息、数据看板、纪要整理、事实汇编 → `neutral`
+  - 看不出来、证据不够 → `unknown`
 - `facts`：
-  只写原文**明确给出的**数字、口径、估值、指引，不要把你的推断塞进 fact。
+只写原文**明确给出的**数字、口径、估值、指引，不要把你的推断塞进 fact。
 - `timeline`：
-  只写**明确的离散事件**，例如业绩披露、指引更新、评级调整、产品发布、已发生的会议/管理层表态。
+只写**明确的离散事件**，例如业绩披露、指引更新、评级调整、产品发布、已发生的会议/管理层表态。
 - 如果只有结构性判断、没有明确事件日期：
-  写进 `## 结构性观察`，**不要**硬编 timeline。
+写进 `## 结构性观察`，**不要**硬编 timeline。
 - 如果没有可抽取 fact：
-  `facts` 块可以省略，但对深度 source 来说通常说明提炼还不够，先回头检查一遍原文。
+`facts` 块可以省略，但对深度 source 来说通常说明提炼还不够，先回头检查一遍原文。
 - 如果没有明确 timeline 事件：
-  `<!-- timeline -->` 整段都省略。
+`<!-- timeline -->` 整段都省略。
 
 ---
 
@@ -241,6 +273,7 @@ cd ae-wiki-agent && bun src/cli.ts ingest:brief <rawFileId>
 ```markdown
 ---
 tags: [ai-frontier, llm-tooling, anthropic-ecosystem]
+view_side: unknown
 url: https://x.com/xxx/status/...
 platform: twitter
 ---
@@ -266,6 +299,9 @@ platform: twitter
 
 ### Brief 写作约束
 
+- `view_side`（frontmatter，必填）：
+  只允许 `buy_side | sell_side | neutral | unknown`
+  对 brief 来说，大多数材料应为 `neutral` 或 `unknown`；只有非常明确的 broker / internal-investor 视角才写 `sell_side` / `buy_side`
 - **不强制** `facts` / `timeline` 附录（短素材抽 fact 易污染）—— 没有就别写
 - **wikilink 仍需要**：让 brief 加入图谱，未来 `[[companies/Anthropic]]` 可反向找到
 - 长度控制在 ~60-180 English words，宁少勿多
@@ -279,16 +315,19 @@ platform: twitter
 
 ### 1. 红链分两类：能 auto-create 的 vs 不能的
 
-| Wikilink 类型 | 红链行为 | 你应该怎么做 |
-|---|---|---|
-| `[[companies/X]]` `[[concepts/X]]` `[[industries/X]]` | stage-4 **自动建 stub**（confidence='low'），enrich 队列后续补 | 直接写。新实体被发现是 enrich 流程的入口 |
-| `[[sources/X]]` `[[theses/X]]` `[[outputs/X]]` `[[briefs/X]]` | stage-4 **拒绝 auto-create**，只记 `events.action='wikilink_unresolved'`，链不入库 | **必须先验证存在**，否则改写成纯文本 |
+
+| Wikilink 类型                                                   | 红链行为                                                                     | 你应该怎么做                   |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------ |
+| `[[companies/X]]` `[[concepts/X]]` `[[industries/X]]`         | stage-4 **自动建 stub**（confidence='low'），enrich 队列后续补                      | 直接写。新实体被发现是 enrich 流程的入口 |
+| `[[sources/X]]` `[[theses/X]]` `[[outputs/X]]` `[[briefs/X]]` | stage-4 **拒绝 auto-create**，只记 `events.action='wikilink_unresolved'`，链不入库 | **必须先验证存在**，否则改写成纯文本     |
+
 
 第二类的设计原因：source 页只能由 `ingest:commit/brief` 建，thesis 页只能由 `thesis:open` 建，outputs 由 daily-* 建——agent narrative 里手写这种 wikilink 通常是凭直觉猜 slug，slug 错了会落一堆孤儿空 source/thesis 页。
 
 **禁用通配符 / 占位符语法**：`[[companies/*]]`、`[[companies/<name>]]`、`[[companies/?]]` 这种**不是合法 wikilink**——slug 里的 `* ? < > | : \ "` 都是 CLAUDE.md slug 规则禁止的字符（stage-4 会静默丢弃这种 ref）。要表达"还需建若干 company stub"用纯文本：
+
 - ✅ `Recommend follow-up: extract company-specific mentions (Tianbang, TRS, Jinxinnong) and create stubs.`
-- ❌ `create/confirm [[companies/*]] stubs ...`（事故案例：narrative-1 真这么写过，建了个 `companies/*` 空 stub）
+- ❌ `create/confirm [[companies/*]] stubs ...`（事故案例：narrative-1 真这么写过，建了个 `companies/`* 空 stub）
 
 ### 2. 写 `[[sources/X]]` 或 `[[theses/X]]` 之前必查
 
@@ -304,6 +343,7 @@ mcp__ae-wiki__resolve_wikilink({
 ```
 
 返回最多 5 个候选 + `advice` 字段，告诉你要不要直接用 best_match：
+
 - `confident match` → 用候选 `slug` 写 wikilink
 - `low-confidence matches` → 调 `get_page` 进一步确认再用
 - `no match found` → **改写成纯文本**，不要写成 wikilink
@@ -327,6 +367,7 @@ mcp__ae-wiki__search({ query: "H200 channel check", type: "source", keyword_only
 ### 4. 类型推断：companies/ vs concepts/
 
 **写 wikilink 前先想 type**。常见错误：
+
 - `[[companies/Trainium]]` ❌ Trainium 是 [[companies/Amazon]] 的产品 → 应当写 `[[concepts/Trainium]]` 或就用 `[[companies/Amazon|AWS Trainium]]`
 - `[[companies/HBM3E]]` ❌ HBM 是内存技术 → `[[concepts/HBM3E]]`
 - `[[companies/CoWoS]]` ❌ 封装技术 → `[[concepts/CoWoS]]`
@@ -336,6 +377,7 @@ mcp__ae-wiki__search({ query: "H200 channel check", type: "source", keyword_only
 ### 5. wikilink slug 跟 fact entity slug **必须 case 一致**
 
 narrative 内不能这样：
+
 ```markdown
 正文：[[industries/Hog-Farming]] 行业...
 
@@ -348,6 +390,7 @@ narrative 内不能这样：
 **事故案例**：page #1 的 narrative 正文写 `[[industries/Hog-Farming]]`（大写），fact YAML 写 `entity: industries/hog-farming`（小写）。Stage 4 建了 #6 `industries/Hog-Farming`，Stage 5 没找到精确匹配又建了 #7 `industries/hog-farming` —— 两个 page 同实体，互不知情。
 
 **规则（必守）**：
+
 - 同一份 narrative 内，wikilink 的 slug 和 fact YAML / timeline YAML 的 entity slug 必须**逐字符一致**
 - 推荐用 **kebab-case 小写**作为 slug 标准格式（`companies/jingdong-mall`、`industries/hog-farming`、`concepts/hbm3e`）
 - 公司名带数字 / 标准缩写时（如 `companies/600519.SH` / `companies/AAOI`）保持原写法
@@ -359,6 +402,7 @@ narrative 内不能这样：
 ### 7. 没有 `persons/` 这个 type
 
 **不要写 `[[persons/X]]`**——这个 type 已被废弃。CEO / CFO / 高管 / 创始人的信息应当：
+
 - 写在所属公司的 `[[companies/X]]` narrative 或 frontmatter.management 字段里
 - 高管引言放在 source 页的 `## Notable Quotes / Views`，引用时用 `Andy Jassy（[[companies/Amazon]] CEO）`
 - 匿名专家（"北美广告专家A"）只出现在 source 正文，不需要建实体页
@@ -385,49 +429,56 @@ ORDER BY ts DESC LIMIT 20;
 
 ### Source 页（`type='source'`）允许的 frontmatter key
 
-| Key | 谁写入 | 用途 | 备注 |
-|---|---|---|---|
-| `tags` | agent | 主题标签数组（小写英文，短横线分隔）| 同时被 web UI 和 search 消费 |
-| `title` | agent（可选）| 清洗过的标题，覆盖上游原始 title | **stage-3 同步写入 `pages.title` 列**；不写就保留 stage-1 从 raw_files 拷过来的原值（常带日期前缀 / 中英混杂）|
-| `research_id` | **stage-1 自动写** | 上游 mongo `_id` | agent 不要重写 |
-| `research_type` | **stage-1 自动写** | 上游 type（`acecamp_article` / `merit` / `meeting_minutes` / `semi_analysis` / ...）| agent 不要重写；web UI 读这个字段渲染 |
-| `markdown_url` | **stage-1 自动写** | 解析后 markdown S3 直链 | agent 不要重写；fetch raw 用 |
-| `publish_date` | **stage-1 自动写** | 上游 `mongo_doc.createTime` 的 `YYYY-MM-DD` | agent 不要重写。原文里若有更精确的发布日，写在 `## Source Overview` 叙事里 |
-| `original_url` | **stage-1 自动写** | 上游 `mongo_doc.reportUrl`（原始 PDF / docx）| agent 不要重写。区别于 markdown_url 是解析后的 |
-| `file_type` | **stage-1 自动写** | `pdf` / `docx` / `pptx` ...（来自 `mongo_doc.detectedFileType` / `finalType`）| agent 不要重写 |
 
-**Stage-1 已自动写入 5 个字段**（`research_id` / `research_type` / `markdown_url` / `publish_date` / `original_url` / `file_type`）。agent 只需要专注 `tags`，可选清洗 `title`。**不要在 narrative frontmatter 里重写这些自动字段**——重写会盖掉准确值。
+| Key             | 谁写入             | 用途                                                                               | 备注                                                                               |
+| --------------- | --------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `tags`          | agent           | 主题标签数组（小写英文，短横线分隔）                                                               | 同时被 web UI 和 search 消费                                                           |
+| `view_side`     | agent           | 观点位置标签：`buy_side`, `sell_side`, `neutral`, `unknown`                                 | **必填**；供 daily-review Q7 聚合偏见结构使用                                                |
+| `research_id`   | **stage-1 自动写** | 上游 mongo `_id`                                                                   | agent 不要重写                                                                       |
+| `research_type` | **stage-1 自动写** | 上游 type（`acecamp_article` / `merit` / `meeting_minutes` / `semi_analysis` / ...） | agent 不要重写；web UI 读这个字段渲染                                                        |
+| `markdown_url`  | **stage-1 自动写** | 解析后 markdown S3 直链                                                               | agent 不要重写；fetch raw 用                                                           |
+| `publish_date`  | **stage-1 自动写** | 上游 `mongo_doc.createTime` 的 `YYYY-MM-DD`                                         | agent 不要重写。原文里若有更精确的发布日，写在 `## Source Overview` 叙事里                              |
+| `original_url`  | **stage-1 自动写** | 上游 `mongo_doc.reportUrl`（原始 PDF / docx）                                          | agent 不要重写。区别于 markdown_url 是解析后的                                                |
+| `file_type`     | **stage-1 自动写** | `pdf` / `docx` / `pptx` ...（来自 `mongo_doc.detectedFileType` / `finalType`）       | agent 不要重写                                                                       |
+
+
+**Stage-1 已自动写入 7 个字段**（`title` / `research_id` / `research_type` / `markdown_url` / `publish_date` / `original_url` / `file_type`）。对 source 页，`pages.title` 一律直接使用 `raw_files.title`。agent 只需要专注 `tags` 和 `view_side`。**不要在 narrative frontmatter 里重写这些自动字段**——重写会盖掉准确值。
 
 ### Brief 页（`type='brief'`）允许的 frontmatter key
 
-| Key | 谁写入 | 用途 | 备注 |
-|---|---|---|---|
-| `tags` | agent | 同上 | 必须 |
-| `title` | agent（可选）| 清洗后的标题 | 同 source；stage-3 同步到 `pages.title` |
-| `url` | agent | 原始 URL（同正文 `## Links` 段一致）| 必须；web UI 渲染为可点链接 |
-| `platform` | agent | `twitter` / `substack` / `chat` 等 | 必须 |
-| stage-1 自动字段 | stage-1 | 同 source（`research_id` / `research_type` / `markdown_url` / `publish_date` / `original_url` / `file_type`）| agent 不要重写 |
+
+| Key          | 谁写入       | 用途                                                                                                         | 备注                                 |
+| ------------ | --------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| `tags`       | agent     | 同上                                                                                                         | 必须                                 |
+| `view_side`  | agent     | 观点位置标签：`buy_side`, `sell_side`, `neutral`, `unknown`                                | 必须                                 |
+| `url`        | agent     | 原始 URL（同正文 `## Links` 段一致）                                                                                 | 必须；web UI 渲染为可点链接                  |
+| `platform`   | agent     | `twitter` / `substack` / `chat` 等                                                                          | 必须                                 |
+| stage-1 自动字段 | stage-1   | 同 source（`research_id` / `research_type` / `markdown_url` / `publish_date` / `original_url` / `file_type`） | agent 不要重写                         |
+
 
 ### Entity 页（`company` / `concept` / `industry` / `thesis`）允许的 frontmatter key
 
-| Key | 谁写入 | 用途 | 备注 |
-|---|---|---|---|
-| `title` | agent（可选）| 通常等于 slug 末段；要改名时写这个 | stage-3 同步到 `pages.title` |
-| `management` | agent（仅 company）| CEO / CFO 映射，例 `management: { ceo: 'Andy Jassy', cfo: 'Brian Olsavsky' }` | 替代独立 person 页 |
+
+| Key          | 谁写入              | 用途                                                                        | 备注                        |
+| ------------ | ---------------- | ------------------------------------------------------------------------- | ------------------------- |
+| `title`      | agent（可选）        | 通常等于 slug 末段；要改名时写这个                                                      | stage-3 同步到 `pages.title` |
+| `management` | agent（仅 company） | CEO / CFO 映射，例 `management: { ceo: 'Andy Jassy', cfo: 'Brian Olsavsky' }` | 替代独立 person 页             |
+
 
 其他字段（`ticker` / `sector` / `aliases` / `confidence` 等）通过 `enrich:save` 的 CLI flag 写入 pages 表的对应列，不进 frontmatter。
 
-### `title` 的清洗准则（agent 写时参考）
+### `title` 规则（source / brief）
 
-上游 `pages.title` 经常长这样："260429 - 烧钱换来的是什么？OpenAI 扩张边界的三次溃败"。可以清洗成更适合搜索 / 显示的形式：
+对 `source` 和 `brief`，标题一律直接使用上游 `raw_files.title`。
 
-| 上游原值 | 建议清洗后 |
-|---|---|
-| `260429 - 烧钱换来的是什么？OpenAI 扩张边界的三次溃败` | `OpenAI's three failed consumer expansions: Sora, Agentic Commerce, Microsoft exclusivity (2026-04-29)` |
-| `Hyperscaler FCF Will Be Negative in CY27 - Core Research` | `Hyperscaler FCF will be negative in CY27 (SemiAnalysis, 2026-04-29)` |
-| `[已脱敏] AI 产业链调研 vol.7` | (保留原值；脱敏标识有意义) |
+- agent **不要**在 frontmatter 里写 `title`
+- agent **不要**清洗、改写、缩短、翻译标题
+- 标题如果看起来脏、长、带日期前缀，也先保留原值
 
-清洗原则：去掉日期前缀；保留作者出处；去掉 "Core Research" / "vol.7" 这种系列内部编号；中英混杂的可保留中文核心词或全译，看哪个更有助于将来检索。**只在原值真的不合理时清洗，否则别动**。
+一句话理解：
+
+- `raw_files.title` = source / brief 的正式标题
+- `frontmatter.title` 不属于 source / brief 的可写字段
 
 ### 禁止的字段（曾被 agent 自创过）
 
@@ -487,6 +538,7 @@ cd ae-wiki-agent && bun src/cli.ts ingest:finalize <pageId>
 ```
 
 跑：
+
 - Stage 4 链接抽取（wikilinks → links 表，红链自动建 entity page）
 - Stage 5 facts 抽取（直读末尾 YAML 块）
 - Stage 6 异步 jobs 入队（embed_chunks / detect_signals）
@@ -599,6 +651,7 @@ bun src/cli.ts ingest:promote <pageId>
 ```
 
 这一步只切换 **元数据**：
+
 - `page.type` `brief` → `source`
 - `page.slug` `briefs/...` → `sources/...`
 - `raw_files.triage_decision` `brief` → `commit`
@@ -615,6 +668,7 @@ bun src/cli.ts ingest:finalize <pageId>
 ```
 
 **注意事项**：
+
 - 已 ingest 的 chunks / facts / links 不会自动清理；finalize 重跑时会以新 narrative 重新抽取，但残留数据要靠 stage 内部 dedupe 处理（precedent: facts:re-extract / links:re-extract）
 - 反向（source → brief）当前不支持。深度处理过的内容不应回退
 - promote 之后 wikilink 文本可能仍是 `[[briefs/...]]`，但 links 表用 page_id 关联，不会断；只是显示文本可能略陈旧
@@ -632,17 +686,19 @@ bun src/cli.ts ingest:finalize <pageId>
 
 ## 故障排查
 
-| 症状 | 原因 | 解决 |
-|---|---|---|
-| `ingest:peek` 返回 null | 没有 pending raw_file | 先跑 `$ae-fetch-reports`；或检查 `WHERE deleted=0 AND ingested_at IS NULL AND skipped_at IS NULL` |
-| `ingest:commit` 报"已 ingest" | rawFile 已被 ingest | 不能重复 commit；要重做需先撤销 `ingested_at` |
-| `ingest:commit` 报"已被跳过" | rawFile 已 pass | 撤销 `skipped_at` 后再 commit |
-| `ingest:write` 报 stdin 为空 | 忘记管道 / heredoc | 检查命令拼写 |
-| Stage 5 抽 0 fact（source 页）| `facts` block 漏写或格式错 | 检查 `<!-- facts` 是否在新行开头、是否是 YAML 数组 |
-| Stage 7 抽 0 timeline（source 页）| `timeline` 写成旧的 comment block，或根本没有明确事件 | 检查是否用了 `<!-- timeline -->` sentinel；没有明确离散事件时 0 timeline 也可能正常 |
-| Stage 5 抽 0 fact（brief 页）| **正常** | brief 不强制 YAML，0 fact 符合预期 |
-| Stage 4 创建一堆红链 entity | wikilink slug 写错 / 还没建过 | autoCreate=true，红链 confidence='low'，靠 enrich 补全 |
-| 不确定 commit 还是 brief | 灰区 | 默认 brief（轻量、低成本） |
+
+| 症状                             | 原因                                      | 解决                                                                                          |
+| ------------------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `ingest:peek` 返回 null          | 没有 pending raw_file                     | 先跑 `$ae-fetch-reports`；或检查 `WHERE deleted=0 AND ingested_at IS NULL AND skipped_at IS NULL` |
+| `ingest:commit` 报"已 ingest"    | rawFile 已被 ingest                       | 不能重复 commit；要重做需先撤销 `ingested_at`                                                           |
+| `ingest:commit` 报"已被跳过"        | rawFile 已 pass                          | 撤销 `skipped_at` 后再 commit                                                                   |
+| `ingest:write` 报 stdin 为空      | 忘记管道 / heredoc                          | 检查命令拼写                                                                                      |
+| Stage 5 抽 0 fact（source 页）     | `facts` block 漏写或格式错                    | 检查 `<!-- facts` 是否在新行开头、是否是 YAML 数组                                                         |
+| Stage 7 抽 0 timeline（source 页） | `timeline` 写成旧的 comment block，或根本没有明确事件 | 检查是否用了 `<!-- timeline -->` sentinel；没有明确离散事件时 0 timeline 也可能正常                              |
+| Stage 5 抽 0 fact（brief 页）      | **正常**                                  | brief 不强制 YAML，0 fact 符合预期                                                                  |
+| Stage 4 创建一堆红链 entity          | wikilink slug 写错 / 还没建过                 | autoCreate=true，红链 confidence='low'，靠 enrich 补全                                             |
+| 不确定 commit 还是 brief            | 灰区                                      | 默认 brief（轻量、低成本）                                                                            |
+
 
 ---
 
@@ -662,6 +718,6 @@ bun src/cli.ts ingest:finalize <pageId>
 ## 不在本 skill 范围
 
 - raw 文件的去重、平台拉取 → `$ae-fetch-reports`
-- entity 元数据补全（市值 / 关键人）→ `$ae-enrich`
+- entity 元数据补全（公司信息 / 市值）→ `$ae-enrich`
 - 论点状态机维护 → `$ae-thesis-track`
 - brief 升级为 source（需要二次 ingest 同一份 raw）→ 暂未支持，撤销 ingest 后重跑

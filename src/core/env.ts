@@ -64,6 +64,18 @@ const EnvSchema = z.object({
       return Number.isFinite(n) && n >= 0 ? n : 0;
     }),
 
+  // Agent runtime 单条 LLM 响应的 max_completion_tokens 上限。
+  // 默认 20000：足够 ae-research-ingest agent 一次产出一篇 7-section narrative
+  // （中英混杂的 source 页常占 5-8K tokens）+ tool call args + reasoning。
+  // 老的硬编码 4096 太小，会触发 stop_reason='length' 截断 narrative。
+  WIKI_AGENT_MAX_OUTPUT_TOKENS: z
+    .string()
+    .default("20000")
+    .transform((v) => {
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) && n > 0 ? n : 20000;
+    }),
+
   // 可选
   AWS_ACCESS_KEY_ID: z.string().optional(),
   AWS_SECRET_ACCESS_KEY: z.string().optional(),

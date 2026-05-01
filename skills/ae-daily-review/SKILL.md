@@ -95,9 +95,12 @@ metadata:
 至少 2 条具体 red-team 反问，并完成下方两条**硬指标**：
 
 #### 硬指标 1：sell-side 占比
-- 计算今日 source 中 sell-side（`meeting_minutes` / `arete` / `bernstein_research` / `aletheia` 等）的占比
-- 占比 ≥ 50% 必须显式标注 `⚠️ sell-side 占比 X%，结论可能 inherently positive`
-- 同时检查是否过度集中在某券商 / 分析师覆盖范围
+- 优先读取每个 source / brief 的 `frontmatter.view_side`
+- 只把 `view_side = sell_side` 计入 numerator
+- denominator 默认用今日全部 source / brief；同时单独报告 `unknown` 占比
+- 若 `sell_side / total_sources >= 50%`，必须显式标注 `⚠️ sell-side 占比偏高（X%），结论可能 inherently positive`
+- 同时检查是否过度集中在某一家 house / 叙事来源
+- 如果个别页面缺少 `view_side`，按 `unknown` 处理，不要现场凭 researchType 重新猜
 
 #### 硬指标 2：output 页 7 天冷却期
 - 引用 `outputs/...` 或同类聚合页时，先 `get_page` 看 `update_time`
@@ -128,6 +131,7 @@ metadata:
 4. **逐一 `get_page` 当日 source / brief**
    提取：`## 关键要点` / `## 结构性观察` / `## 与现有知识的关系`（这三段是 ingest 时强制要求的）。
    brief 页只读 `## 关键观察` + `## 投资视角`。
+   同时读取每页 frontmatter 里的 `view_side`，供 Q7 聚合。
 
 5. **识别高价值数表并做 comparison pass**
    对每个当日 source，遇到以下任一情况，必须优先走表格 comparison，而不是只看 prose：
@@ -176,6 +180,7 @@ title: "Daily Research Review - YYYY-MM-DD"
 date: "YYYY-MM-DD"
 sources: [当日所有 source / brief 的 slug]
 sell_side_ratio: 0.42         # Q7 硬指标 1 的计算结果
+unknown_view_side_ratio: 0.17 # 今日 view_side=unknown 的占比
 tags: [daily-review, qa]
 last_updated: "YYYY-MM-DD"
 ---
@@ -205,7 +210,7 @@ last_updated: "YYYY-MM-DD"
 [Content]
 
 ## Q7: Red Team / Bias Check
-[Hard Check 1] Sell-side ratio: X%（≥50% 时显式 ⚠️）
+[Hard Check 1] Sell-side ratio: X% | Unknown ratio: Y%（≥50% 时显式 ⚠️）
 [Hard Check 2] Output-page 7-day cooling rule: pass / violation list
 [At least two additional red-team questions]
 
