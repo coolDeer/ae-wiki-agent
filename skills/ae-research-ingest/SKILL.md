@@ -403,22 +403,26 @@ narrative 内不能这样：
 
 **不要写 `[[companies/300750.SZ]]` / `[[companies/AAPL]]` / `[[companies/3931.HK]]`**——ticker 不是公司名，是该公司的某个市场代码。多重上市的公司一票多 ticker，把 ticker 当 slug 会建出 N 个相同实体的 page。
 
-正确写法：
+正确写法（**slug 全部小写 kebab-case**，跟 §5 一致）：
 
 | ❌ 错（agent 实际撞过事故）| ✅ 对 |
 |---|---|
-| `[[companies/300750.SZ]]` | `[[companies/CATL]]` 或 `[[companies/宁德时代]]` |
-| `[[companies/002594.SZ]]` | `[[companies/BYD]]` |
-| `[[companies/AAPL]]` | `[[companies/Apple]]` |
-| `[[companies/3931.HK]]` | `[[companies/CALB]]` |
+| `[[companies/300750.SZ]]` | `[[companies/catl]]` 或 `[[companies/宁德时代]]` |
+| `[[companies/002594.SZ]]` | `[[companies/byd]]` |
+| `[[companies/AAPL]]` | `[[companies/apple]]` |
+| `[[companies/3931.HK]]` | `[[companies/calb]]` |
+| `[[companies/CATL]]` | `[[companies/catl]]`（slug 必须 lowercase）|
+| `[[companies/EVE Energy]]` | `[[companies/eve-energy]]`（多词 kebab）|
+
+显示用大写写 `[[companies/catl|CATL]]`（slug 仍 lowercase，display 自由）。`pages.title` 列存品牌原写法（"CATL"），slug 是机器友好的标识。
 
 **ticker 的归宿**：
 - enrich:save 时通过 `--ticker 300750.SZ` 写到 `pages.ticker` 列
 - 多重上市的多 ticker 都填到 `pages.aliases`（`["300750.SZ", "Contemporary Amperex Technology", "宁德时代"]`）
 
-**Stage 4 已加 guard**：narrative 里写 ticker-like wikilink（`\d{3,6}\.(SZ|SH|HK|TW|TO|JP|KS)` 或 `^[A-Z]{1,5}$`）会被静默丢弃 + 控制台 warning。所以即使 agent 一时手快写了 ticker wikilink，stage-4 也不会建出错的 stub。
+**Stage 4 已加 guard**：narrative 里写数字+市场后缀格式的 ticker wikilink（`\d{3,6}\.(SZ|SH|HK|TW|TO|JP|KS)`）会被静默丢弃 + 控制台 warning。**美股 4-5 字母 ticker（AAPL/MSFT 等）不拦**——因为 CATL/BYD/TSMC 这种正式名缩写无法跟纯 ticker 区分；agent 写 `[[companies/AAPL]]` 这种应改成 `[[companies/apple]]` 但靠规则不靠 regex。
 
-**事故案例**：钠离子电池调研 narrative 一行写了 6 个 ticker wikilink（CATL/BYD/EVE/CALB/Gotion/Sunwoda 全是 `[[companies/<ticker>]]` 形式），建出 6 个 ticker-slug 的空 stub。修复 = 重 retype + 移 ticker 到 ticker 列。
+**事故案例**：钠离子电池调研 narrative 一行写了 6 个 ticker wikilink（CATL/BYD/EVE/CALB/Gotion/Sunwoda 全是 `[[companies/<ticker>]]` 形式），建出 6 个 ticker-slug 的空 stub。修复 = retype 到 lowercase slug + 移 ticker 到 ticker 列 + 重写 narrative wikilink。
 
 ### 7. 没有 `persons/` 这个 type
 

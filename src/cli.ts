@@ -78,7 +78,7 @@ function printHelp(): void {
 
   ae-wiki enrich:list [--type T] [--limit N]    # 列出待 enrich 的红链 entity
   ae-wiki enrich:next [--type T] [--skip N]     # 取下一个红链 + backlink 上下文
-  ae-wiki enrich:save <page_id> [--ticker X] [--sector Y] [--confidence high|medium]
+  ae-wiki enrich:save <page_id> [--display-name X] [--ticker X] [--sector Y] [--confidence high|medium]
                        [--aliases A,B,C]               # 默认：merge 进现有 aliases（case-insensitive 去重）
                        [--aliases-replace A,B,C]       # 显式完全覆盖（与 --aliases / --aliases-remove 互斥）
                        [--aliases-remove X,Y]          # 从现有 aliases 删除指定项（可与 --aliases 组合）
@@ -652,6 +652,7 @@ async function main(): Promise<void> {
           : undefined;
       try {
         await enrichSave(BigInt(pageIdStr), narrative, {
+          displayName: getArg("--display-name"),
           ticker: getArg("--ticker"),
           sector: getArg("--sector"),
           subSector: getArg("--sub-sector"),

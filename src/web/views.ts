@@ -659,7 +659,7 @@ export async function viewPage(identifier: string): Promise<string> {
   const body = `
 <h2>
   ${pageTag(page.type)}
-  ${escape(page.title)}
+  ${escape((page as Record<string, unknown>).display_name as string | undefined ?? page.title)}
   ${confidenceTag(page.confidence)}
 </h2>
 <div class="muted score">${escape(page.slug)} · #${escape(page.id)}${inlineSourceBtn}</div>

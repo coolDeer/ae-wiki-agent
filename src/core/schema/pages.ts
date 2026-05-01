@@ -39,6 +39,13 @@ export const pages = pgTable(
     slug: text("slug").notNull(),
     type: text("type").notNull(),
     title: text("title").notNull(),
+    /**
+     * 人类友好显示名（"CATL" / "宁德时代" / "NVIDIA"）。slug 总是 lowercase
+     * kebab-case；title 是上游原始或系统赋值（source 类常带日期前缀）；
+     * display_name 才是 UI 渲染时希望看到的"品牌名"。
+     * null = web 视图回退到 title。
+     */
+    displayName: text("display_name"),
 
     // 内容
     content: text("content").notNull().default(""),

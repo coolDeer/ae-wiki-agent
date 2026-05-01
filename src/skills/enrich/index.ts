@@ -176,6 +176,9 @@ export async function enrichLoadContext(pageId: bigint): Promise<RedlinkContext 
 }
 
 export interface EnrichSaveOpts {
+  /** 可选：人类友好显示名（"CATL" / "宁德时代" / "NVIDIA"）。slug 是 lowercase
+   *  kebab；display_name 是品牌原写法。Web UI 的 pageLink 优先用此字段。 */
+  displayName?: string;
   /** 可选：直接更新 ticker 列 */
   ticker?: string;
   /** 可选：sector */
@@ -311,6 +314,7 @@ export async function enrichSave(
     confidence: opts.confidence ?? "medium",
     frontmatter: mergedFrontmatter,
   };
+  if (opts.displayName !== undefined) updateSet.displayName = opts.displayName;
   if (opts.ticker !== undefined) updateSet.ticker = opts.ticker;
   if (opts.sector !== undefined) updateSet.sector = opts.sector;
   if (opts.subSector !== undefined) updateSet.subSector = opts.subSector;

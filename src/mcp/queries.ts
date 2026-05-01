@@ -103,6 +103,7 @@ export async function getPage(
     slug: page.slug,
     type: page.type,
     title: page.title,
+    display_name: page.displayName,
     content: page.content,
     timeline: page.timeline,
     frontmatter: page.frontmatter,

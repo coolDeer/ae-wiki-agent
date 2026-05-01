@@ -47,10 +47,15 @@ export function renderMarkdown(content: string): string {
     .replace(/<!--\s*facts[\s\S]*?-->/g, "")
     .replace(/<!--\s*timeline\s*-->[\s\S]*$/g, "");
   // [[wikilinks]] → 带链接的 <a>
+  // 没有 pipe display 时，用 slug 的 name 部分（"companies/catl" → "catl"）
+  // 而非完整 slug，更接近 display_name 形态。如果想要品牌大写，agent 应写
+  // `[[companies/catl|CATL]]` 显式指定。
   const linked = stripped.replace(
     /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
-    (_m, slug, text) =>
-      `<a href="/pages/${encodeURIComponent(slug)}" class="wikilink">${escape(text || slug)}</a>`
+    (_m, slug, text) => {
+      const display = text || slug.split("/").pop() || slug;
+      return `<a href="/pages/${encodeURIComponent(slug)}" class="wikilink">${escape(display)}</a>`;
+    }
   );
   return marked.parse(linked) as string;
 }
@@ -550,9 +555,23 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function pageLink(p: { id: string | bigint; slug: string; title: string; type?: string }): string {
+export function pageLink(p: {
+  id: string | bigint;
+  slug: string;
+  title: string;
+  type?: string;
+  displayName?: string | null;
+  display_name?: string | null;
+}): string {
   const t = p.type ? ` ${pageTag(p.type)}` : "";
-  return `<a href="/pages/${encodeURIComponent(p.slug)}">${escape(p.title)}</a>${t} <span class="muted score">${escape(p.slug)}</span>`;
+  // 显示优先级：display_name → title → slug
+  const displayed =
+    (typeof p.displayName === "string" && p.displayName.trim()) ||
+    (typeof p.display_name === "string" && p.display_name.trim()) ||
+    p.title ||
+    p.slug.split("/").pop() ||
+    p.slug;
+  return `<a href="/pages/${encodeURIComponent(p.slug)}">${escape(displayed)}</a>${t} <span class="muted score">${escape(p.slug)}</span>`;
 }
 
 /** 渲染可排序表头 — 点击切 ASC/DESC，URL 注入 sortField/sortOrder。 */
