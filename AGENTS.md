@@ -172,7 +172,7 @@ bun src/cli.ts facts:re-extract <pageId>
 bun src/cli.ts links:re-extract <pageId>
 
 # 类型检查（每次代码改动后必跑）
-./node_modules/.bin/tsc --noEmit
+bun x tsc --noEmit
 ```
 
 ---

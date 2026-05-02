@@ -171,7 +171,7 @@ bun src/cli.ts facts:re-extract <pageId>
 bun src/cli.ts links:re-extract <pageId>
 
 # 类型检查（每次代码改动后必跑）
-./node_modules/.bin/tsc --noEmit
+bun x tsc --noEmit
 ```
 
 ---
@@ -837,6 +837,8 @@ git commit -m "extract from llm-wiki"
 
 ## 进一步阅读
 
+- `./doc/setup.md` — **新机器 / 服务器部署 5 步**（bun → 依赖 → .env → 验证 → 起 worker；含 cron 日批 + 关停）
+- `./doc/ops-workers.md` — worker 池 / 队列运维（查状态、故障处理、容量规划）
 - `./doc/concepts.md` — **系统概念导览**（pages / chunks / facts / theses / V2 / wikilink / triage / stages 一文打通；新人入门首选）
 - `./doc/architecture.md` — ingest 8-stage 详解 + 设计决策
 - `./doc/cli-commands.md` — 全 CLI 命令清单
