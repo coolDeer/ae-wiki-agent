@@ -444,6 +444,59 @@ ORDER BY ts DESC LIMIT 20;
 
 修复路径：根据 suggested 改 narrative 里的 wikilink → 重跑 `links:re-extract <pageId>`。
 
+### 9. Typed wikilink — 表达跨 source 关系
+
+普通 mention 形式 `[[slug|display]]` 只表达"提到"。**当你的 narrative 在表达跨 source 的判断关系**（确认/反驳/取代/引用/批评等），用 typed 形式：
+
+```
+[[slug|TYPE: display text]]
+```
+
+`TYPE` 必须在白名单内，写错会被静默降级为 `mention`：
+
+| TYPE | 何时用 | 例子 |
+|------|--------|------|
+| `confirms` | 当前 source 印证另一 source 的数据/观点 | "GM ~46% in line with `[[sources/Daiwa-MTK-260415|confirms: Daiwa's GM 46% call]]`" |
+| `contradicts` | 与另一 source 的数据/观点不同 | "Our $200bn estimate `[[sources/MS-WFE-260420|contradicts: Morgan Stanley's $150bn case]]`" |
+| `supersedes` | 取代旧版本（同一 source 系列的更新） | "Bernstein `[[sources/Bernstein-MTK-260415|supersedes: prior 4/15 model]]`" |
+| `cites` | 引用作为数据来源 | "per `[[sources/IDC-Q1-260301|cites: IDC server shipment data]]`" |
+| `critiques` | 批评方法论 / 假设 | "We `[[sources/aletheia-WFE-260415|critiques: question Aletheia's bottom-up build]]`" |
+| `derives_from` | thesis 基于某 source 论据（仅 thesis 页用） | n/a in source narrative |
+| `tracks` | thesis 跟踪某 entity（仅 thesis 页用） | n/a in source narrative |
+
+**写 typed-edge 的规则：**
+
+1. **必须有 source_quote 支撑** —— 同段落里要有原文引用让审计可追溯，禁止凭印象贴 confirm / contradict
+2. **不确定就用 mention**（即默认无 prefix）—— 错误的 typed 比 mention 还糟，会污染共识图
+3. 主要用在 `## Relation To Existing Knowledge` 段，特别是 `Confirms Existing View` 和 `Contradictions Or Revisions` 子段
+4. **数据点 disagreement 才用 contradicts**——观点角度差异不算（角度差用 mention 即可）
+5. typed edge 是**单向**的：A confirms B 不自动反向给 B confirms A
+
+**正例**：
+
+```markdown
+### Confirms Existing View
+
+The 1Q26 GM of 46.3% [[companies/MediaTek|confirms: prior Daiwa estimate]]
+of GM expansion to 46% (per [[sources/Daiwa-MTK-260415|confirms: Daiwa's
+2Q26 GM trajectory]]).
+
+### Contradictions Or Revisions
+
+Our bottom-up WFE estimate of $200bn [[industries/wfe|contradicts: Morgan
+Stanley's $150bn case]] (per [[sources/MS-WFE-260420|contradicts: MS WFE
+forecast]]).
+```
+
+**反例（不要这么写）：**
+
+```markdown
+"我们也讲了 NVDA"   ← agent 不该把所有 mention 都贴 confirms
+[[companies/nvda|confirms: NVDA growth]]   ← 没有具体数据点，纯泛指
+```
+
+`mention` 默认就够了，**只在你能指明"印证 / 反驳了什么具体内容"时才用 typed**。
+
 ---
 
 ## Frontmatter 字段白名单（写 frontmatter 前必读）

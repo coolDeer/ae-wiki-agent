@@ -46,6 +46,9 @@ function printHelp(): void {
   ae-wiki ingest:commit <raw_file_id>     # peek 后判定值得（核心投资素材）：建 page (type=source)
   ae-wiki ingest:brief <raw_file_id>      # peek 后判定为前沿动态（弱相关）：建 page (type=brief)
   ae-wiki ingest:write <page_id> [--file <path>]  # 从 --file 或 stdin 读 narrative，落 pages.content + page_versions
+  ae-wiki ingest:append <page_id> [--source <slug>] [--file <path>]
+                                          # 增量追加 dated update block（enrich 重复触发用，保留观点演化）
+                                          # 现有 content 为空时退化为 write 模式
   ae-wiki ingest:finalize <page_id>       # 跑 Stage 4-8 收尾
 
   # —— 兜底 / 升级 ——
@@ -81,6 +84,7 @@ function printHelp(): void {
   ae-wiki enrich:save <page_id> [--display-name X] [--ticker X] [--sector Y] [--confidence high|medium]
                        [--aliases A,B,C]               # 默认：merge 进现有 aliases（case-insensitive 去重）
                        [--aliases-replace A,B,C]       # 显式完全覆盖（与 --aliases / --aliases-remove 互斥）
+                       [--append [--append-source slug]] # 增量追加 dated update（已 enriched 的 entity 复 enrich 用）
                        [--aliases-remove X,Y]          # 从现有 aliases 删除指定项（可与 --aliases 组合）
                                                 # 从 stdin 读 narrative 落库 + 更新元数据
   ae-wiki enrich:retype <page_id> --new-type company|industry|concept|thesis [--new-slug X] [--reason "..."]
@@ -107,6 +111,12 @@ function printHelp(): void {
 
   ae-wiki facts:re-extract <page_id>      # 重跑 Stage 5（针对单页）
   ae-wiki links:re-extract <page_id>      # 重跑 Stage 4（针对单页）
+
+  # —— PM dashboard / consensus drift ——
+  ae-wiki entity:pulse <slug|id> [--recent N] [--facts N]
+                                          # entity 级 typed-edge breakdown + 最近 inbound source + facts 概览
+  ae-wiki consensus:show <slug|id> --metric M [--period P]
+                                          # 跨 source 看同一 metric 的观测分布 + drift（rising/falling/stable + outliers）
 
   # —— Web UI ——
   ae-wiki web [--port 3000]               # 启动只读 web UI（home / search / page / theses / entities / outputs / queue）
@@ -245,6 +255,40 @@ async function main(): Promise<void> {
           pageType: "brief",
         })
       );
+      break;
+    }
+
+    case "ingest:append": {
+      const pageIdStr = args[0];
+      if (!pageIdStr) {
+        console.error("ingest:append 需要 page_id 参数");
+        console.error(
+          "  bun cli ingest:append <id> [--source <slug>] [--file <path>]"
+        );
+        process.exit(1);
+      }
+      const { ingestAppendNarrative } = await import("./skills/ingest/index.ts");
+      const fileFlagIdx = args.indexOf("--file");
+      let delta: string;
+      if (fileFlagIdx !== -1) {
+        const filePath = args[fileFlagIdx + 1];
+        if (!filePath) {
+          console.error("--file 需要路径参数");
+          process.exit(1);
+        }
+        delta = await Bun.file(filePath).text();
+      } else {
+        delta = await Bun.stdin.text();
+      }
+      if (!delta.trim()) {
+        console.error("delta 内容为空（用 --file <path> 或 stdin pipe）");
+        process.exit(1);
+      }
+      const sourceSlug = getArg("--source");
+      const result = await ingestAppendNarrative(BigInt(pageIdStr), delta, {
+        sourceSlug,
+      });
+      console.log(JSON.stringify(result));
       break;
     }
 
@@ -662,6 +706,8 @@ async function main(): Promise<void> {
           aliasesReplace: parseList(getArg("--aliases-replace")),
           aliasesRemove: parseList(getArg("--aliases-remove")),
           confidence,
+          append: args.includes("--append"),
+          appendSourceSlug: getArg("--append-source"),
         });
       } catch (e) {
         console.error(`[enrich:save] ${(e as Error).message}`);
@@ -875,6 +921,45 @@ async function main(): Promise<void> {
           console.log(`     [[${u.slug}]] (${u.inferredType})${hint}`);
         }
       }
+      break;
+    }
+
+    case "entity:pulse": {
+      const ident = args[0];
+      if (!ident) {
+        console.error("entity:pulse 需要 entity slug 或 page id");
+        process.exit(1);
+      }
+      const { entityPulse } = await import("./mcp/queries.ts");
+      const recentLimit = getArg("--recent");
+      const factLimit = getArg("--facts");
+      const result = await entityPulse({
+        identifier: ident,
+        recentLimit: recentLimit ? parseInt(recentLimit, 10) : undefined,
+        factLimit: factLimit ? parseInt(factLimit, 10) : undefined,
+      });
+      console.log(JSON.stringify(result, (_, v) =>
+        typeof v === "bigint" ? v.toString() : v, 2));
+      break;
+    }
+
+    case "consensus:show": {
+      const ident = args[0];
+      const metric = getArg("--metric");
+      if (!ident || !metric) {
+        console.error("consensus:show 需要 entity slug + --metric");
+        console.error("示例: bun src/cli.ts consensus:show companies/MediaTek --metric revenue");
+        process.exit(1);
+      }
+      const { consensusView } = await import("./mcp/queries.ts");
+      const period = getArg("--period");
+      const result = await consensusView({
+        entity: ident,
+        metric,
+        period,
+      });
+      console.log(JSON.stringify(result, (_, v) =>
+        typeof v === "bigint" ? v.toString() : v, 2));
       break;
     }
 

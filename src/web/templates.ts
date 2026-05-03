@@ -314,32 +314,6 @@ a.btn, a.btn:hover { text-decoration: none; }
   font-family: inherit; line-height: 1.4;
 }
 .btn-inline:hover { border-color: var(--accent); color: var(--accent); }
-
-/* Source 原文弹窗 */
-.source-modal {
-  position: fixed; inset: 0; z-index: 9999;
-  background: rgba(0,0,0,0.55);
-  display: flex; align-items: center; justify-content: center;
-  padding: 24px;
-}
-.source-modal-content {
-  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-  width: min(960px, 100%); max-height: 85vh;
-  display: flex; flex-direction: column;
-  box-shadow: 0 12px 48px rgba(0,0,0,0.3);
-}
-.source-modal-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 16px; border-bottom: 1px solid var(--border);
-}
-.source-modal-title { font-weight: 600; }
-.source-modal-body {
-  flex: 1; overflow: auto; margin: 0; padding: 16px;
-  background: var(--bg);
-  font-family: ui-monospace, SF Mono, Menlo, monospace;
-  font-size: 12px; line-height: 1.5;
-  white-space: pre-wrap; word-break: break-word;
-}
 .flash {
   padding: 10px 14px; margin: 12px 0;
   border-radius: 6px; border: 1px solid var(--accent);

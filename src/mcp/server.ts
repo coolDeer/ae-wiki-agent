@@ -23,6 +23,8 @@ import {
   listEntities,
   recentActivity,
   resolveWikilink,
+  entityPulse,
+  consensusView,
 } from "./queries.ts";
 
 const server = new Server(
@@ -235,6 +237,56 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: "entity_pulse",
+    description:
+      "Entity-level PM dashboard: typed-edge breakdown (mention/confirms/contradicts/...), recent inbound sources, fact summary, consensus strength score (-1..1). Use this when you want a snapshot of how the wiki views a company/industry/concept.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        identifier: {
+          type: "string",
+          description: "Entity slug (e.g. 'companies/MediaTek') or page id",
+        },
+        recent_limit: {
+          type: "number",
+          description: "How many recent inbound sources to return (default 10)",
+        },
+        fact_limit: {
+          type: "number",
+          description: "How many latest facts to return (default 10)",
+        },
+      },
+      required: ["identifier"],
+    },
+  },
+  {
+    name: "consensus_view",
+    description:
+      "Consensus drift analysis: for a given (entity, metric) pair, return all source observations sorted by date plus stats (mean/std/range) and drift signal (rising/falling/stable + outliers). Use this when you want to know 'do analysts agree on TSMC's 1Q26 GM?'",
+    inputSchema: {
+      type: "object",
+      properties: {
+        entity: {
+          type: "string",
+          description: "Entity slug (e.g. 'companies/MediaTek') or page id",
+        },
+        metric: {
+          type: "string",
+          description: "Fact metric name (e.g. 'revenue', 'gross_margin', 'eps_non_gaap')",
+        },
+        period: {
+          type: "string",
+          description: "Optional period filter (e.g. '1Q26A', 'FY2026E'). Omit to span all.",
+        },
+        min_observations: {
+          type: "number",
+          description: "Minimum observations to compute drift (default 2)",
+        },
+      },
+      required: ["entity", "metric"],
+    },
+  },
 ];
 
 // ============================================================================
@@ -306,6 +358,21 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           days: (args as { days?: number }).days,
           kinds: (args as { kinds?: ("event" | "signal" | "page")[] }).kinds,
           limit: (args as { limit?: number }).limit,
+        });
+        break;
+      case "entity_pulse":
+        result = await entityPulse({
+          identifier: (args as { identifier: string }).identifier,
+          recentLimit: (args as { recent_limit?: number }).recent_limit,
+          factLimit: (args as { fact_limit?: number }).fact_limit,
+        });
+        break;
+      case "consensus_view":
+        result = await consensusView({
+          entity: (args as { entity: string }).entity,
+          metric: (args as { metric: string }).metric,
+          period: (args as { period?: string }).period,
+          minObservations: (args as { min_observations?: number }).min_observations,
         });
         break;
       default:

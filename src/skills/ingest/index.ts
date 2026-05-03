@@ -234,6 +234,28 @@ export async function ingestWriteNarrative(
 }
 
 /**
+ * 增量更新：把 delta 追加到现有 narrative，不整页重写。
+ *
+ * 主要用于 enrich 重复触发：一个 entity 已经 enriched 过，新 source 进来后
+ * 想"在已有内容基础上加一条 dated update"，保留观点演化轨迹。
+ *
+ * 现有 content 空时自动退化为整页写入（首次 enrich）。
+ */
+export async function ingestAppendNarrative(
+  pageId: bigint,
+  delta: string,
+  opts: { sourceSlug?: string; reason?: string } = {}
+): Promise<{ mode: "append" | "write_initial" }> {
+  const { stage3AppendNarrative } = await import("./stage-3-narrative.ts");
+  const result = await stage3AppendNarrative(pageId, delta, Actor.agentClaude, opts);
+  console.log(
+    `[ingest:append] page #${pageId} ${result.mode} ${delta.length} chars` +
+      (opts.sourceSlug ? ` (source=${opts.sourceSlug})` : "")
+  );
+  return result;
+}
+
+/**
  * Triage 跳过：raw 不值得 ingest（噪声 / 与投资研究无关）。
  *
  * 软删 page + 软删 raw_file（防止重新被 pickPending 拿到），写 events 留痕。

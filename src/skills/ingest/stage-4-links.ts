@@ -3,15 +3,16 @@
  *
  * 从 page.content 提取：
  *   1. [[dir/slug]] / [[dir/slug|display]] — Obsidian wikilink
- *   2. [text](dir/slug) — markdown 内联链接（仅当 dir 在白名单时算 entity link）
+ *   2. [[dir/slug|TYPE: display]] — typed wikilink（投资语义）
+ *      其中 TYPE ∈ VALID_LINK_TYPES，写入 links.link_type；不识别则降级为 mention
+ *   3. [text](dir/slug) — markdown 内联链接（仅当 dir 在白名单时算 entity link）
  *
  * 对每个引用：
  *   - resolveOrCreatePage(slug)（不存在则自动建，confidence='low'）
  *   - INSERT INTO links (link_source='extracted', origin_page_id=ctx.pageId)
  *
- * v1 暂不做：
- *   - ticker 字符串反查（'NVDA' → companies/NVIDIA），需要 alias 索引
- *   - 链接周围 context 提取（前后 N 字符）— 现在留空
+ * 多 typed link 同一 (from, to) 可共存（schema uq_links 含 link_type）。
+ * 同 slug 同 type 同来源去重；不同 type 写多行。
  */
 
 import { and, eq, sql as drizzleSql } from "drizzle-orm";
@@ -34,6 +35,40 @@ const ENTITY_DIRS = [
   "outputs",
   "briefs",
 ];
+
+/**
+ * Typed wikilink 白名单。agent 写 `[[slug|TYPE: display]]` 时只允许这些 TYPE。
+ * 不在白名单的 prefix 静默降级为 mention（display 保持原样）。
+ *
+ * 语义（投资研究专用）:
+ *   mention      仅提及，无判断
+ *   confirms     确认/印证另一 source 的数据或观点
+ *   contradicts  反驳/不同看法
+ *   supersedes   取代旧版本（同源更新）
+ *   cites        引用作为数据来源
+ *   critiques    批评方法论 / 假设
+ *   derives_from thesis 基于某 source 论据
+ *   tracks       thesis 跟踪某 entity
+ */
+export const VALID_LINK_TYPES = new Set([
+  "mention",
+  "confirms",
+  "contradicts",
+  "supersedes",
+  "cites",
+  "critiques",
+  "derives_from",
+  "tracks",
+]);
+
+/** 解析 [[slug|TYPE: display]] 中 display 段开头的 TYPE prefix。 */
+const TYPE_PREFIX_RE = /^([a-z_]+)\s*:\s*/;
+function parseLinkType(display: string | undefined): string {
+  if (!display) return "mention";
+  const m = display.match(TYPE_PREFIX_RE);
+  if (!m || !m[1]) return "mention";
+  return VALID_LINK_TYPES.has(m[1]) ? m[1] : "mention";
+}
 
 /**
  * 这些 type 的红链允许 stage-4 auto-create 空 stub（confidence='low'，等 enrich）。
@@ -102,24 +137,18 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
   const unresolved: UnresolvedWikilink[] = [];
 
   for (const [slug, occurrences] of refsMap) {
-    if (slug === page.slug) continue; // 不给自己建链
+    if (slug === page.slug) continue;
     const inferredType = slugToType(slug);
     if (!inferredType) continue;
 
-    // 红链按 type 分流：
-    //   - company/concept/industry → 调 helper 找或建（带 alias dedupe + case-insensitive）
-    //   - source/thesis/output/brief → 拒绝建，记 events 让人后续清理
     let targetId: bigint | null = null;
     if (AUTO_CREATE_TYPES.has(inferredType)) {
-      // helper 内部做智能查找：精确 slug → 大小写不敏感 → aliases 命中
-      // 没找到才建新（建时 alias 默认带 namePart）。建/命中由 helper 自己 log。
       targetId = await resolveOrCreatePage(slug, {
         actor: ctx.actor,
         autoCreate: true,
         sourcePageId: ctx.pageId,
       });
     } else {
-      // 不允许 auto-create —— 但存在就连
       targetId = await resolveOrCreatePage(slug, {
         actor: ctx.actor,
         autoCreate: false,
@@ -140,36 +169,43 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
 
     if (!targetId) continue;
 
-    // 3. 取第一个出现位置前后 ±50 字符做 context（链接表的查询上下文）
-    const ctxText = buildContext(page.content, occurrences[0]);
-
-    const inserted = await db
-      .insert(schema.links)
-      .values(
-        withCreateAudit(
-          {
-            fromPageId: ctx.pageId,
-            toPageId: targetId,
-            linkType: "mention",
-            context: ctxText,
-            linkSource: "extracted",
-            originPageId: ctx.pageId,
-            weight: "1.0",
-          },
-          ctx.actor
+    // 同 (slug, link_type) 共用一行（schema uq_links 含 link_type）。
+    // 不同 type 写多行，让 typed-edge graph 长出来。
+    const occByType = groupOccurrencesByLinkType(occurrences);
+    let firstWrite = true;
+    for (const [linkType, occs] of occByType) {
+      const ctxText = buildContext(page.content, occs[0]!);
+      const inserted = await db
+        .insert(schema.links)
+        .values(
+          withCreateAudit(
+            {
+              fromPageId: ctx.pageId,
+              toPageId: targetId,
+              linkType,
+              context: ctxText,
+              linkSource: "extracted",
+              originPageId: ctx.pageId,
+              weight: "1.0",
+            },
+            ctx.actor
+          )
         )
-      )
-      .onConflictDoNothing()
-      .returning({ id: schema.links.id });
-    if (inserted.length > 0) {
-      linksWritten++;
-      // 链接刚写入；现在用更新后的 backlink 数判定是否够格 enqueue enrich
-      await maybeEnqueueEnrichForBacklinkGrowth({
-        pageId: targetId,
-        slug,
-        sourcePageId: ctx.pageId,
-        actor: ctx.actor,
-      });
+        .onConflictDoNothing()
+        .returning({ id: schema.links.id });
+      if (inserted.length > 0) {
+        linksWritten++;
+        // backlink 增长 enrich 触发只看第一次写入即可（避免每个 type 都触发一次）
+        if (firstWrite) {
+          await maybeEnqueueEnrichForBacklinkGrowth({
+            pageId: targetId,
+            slug,
+            sourcePageId: ctx.pageId,
+            actor: ctx.actor,
+          });
+          firstWrite = false;
+        }
+      }
     }
   }
 
@@ -189,6 +225,22 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
     linksWritten,
     unresolved,
   };
+}
+
+/**
+ * 把同 slug 的多次出现按 link_type 分组。每组共用一行 link_type 的 link 行；
+ * 同 type 出现多次只取第一次的 occurrence 用作 context（足够定位）。
+ */
+function groupOccurrencesByLinkType(
+  occurrences: RefOccurrence[]
+): Map<string, RefOccurrence[]> {
+  const grouped = new Map<string, RefOccurrence[]>();
+  for (const occ of occurrences) {
+    const arr = grouped.get(occ.linkType) ?? [];
+    arr.push(occ);
+    grouped.set(occ.linkType, arr);
+  }
+  return grouped;
 }
 
 async function countActivePages(): Promise<number> {
@@ -304,19 +356,25 @@ const FORBIDDEN_SLUG_CHARS_RE = /[*?<>|:\\"]/;
  */
 const TICKER_SLUG_RE = /^[0-9]{3,6}\.(?:SZ|SH|HK|TW|TO|JP|KS)$/;
 
-function extractRefs(
-  content: string
-): Map<string, Array<{ start: number; end: number }>> {
-  const refs = new Map<string, Array<{ start: number; end: number }>>();
+/**
+ * 一次出现：位置 + 该处的 link_type（typed wikilink 各自带）。
+ * markdown 内联链接 [text](slug) 永远是 'mention'（不支持 type prefix）。
+ */
+interface RefOccurrence {
+  start: number;
+  end: number;
+  linkType: string;
+}
 
-  const addRef = (slug: string, start: number, end: number): void => {
-    // 静默丢弃含禁止字符的 slug（占位符 / 通配符），不入 refs map
+function extractRefs(content: string): Map<string, RefOccurrence[]> {
+  const refs = new Map<string, RefOccurrence[]>();
+
+  const addRef = (slug: string, occ: RefOccurrence): void => {
     const namePart = slug.split("/").slice(1).join("/");
     if (FORBIDDEN_SLUG_CHARS_RE.test(namePart)) {
       console.log(`  [stage4] 丢弃非法 slug: ${slug}（含 * ? < > | : \\ " 等占位字符）`);
       return;
     }
-    // ticker / stock code 不能当 slug —— 用真实公司名 + ticker 列才对
     if (slug.startsWith("companies/") && TICKER_SLUG_RE.test(namePart)) {
       console.log(
         `  [stage4] 丢弃 ticker-as-slug: ${slug} —— ticker 写 frontmatter 或 enrich:save --ticker，slug 必须用公司名（如 companies/CATL，不是 companies/300750.SZ）`
@@ -324,7 +382,7 @@ function extractRefs(
       return;
     }
     const arr = refs.get(slug) ?? [];
-    arr.push({ start, end });
+    arr.push(occ);
     refs.set(slug, arr);
   };
 
@@ -333,12 +391,13 @@ function extractRefs(
   for (const m of content.matchAll(WIKILINK_RE)) {
     const dir = m[1];
     const tail = m[2];
+    const display = m[3]; // 可选 |display 段
     if (!dir || !tail) continue;
     const slug = `${dir}/${normalize(tail)}`;
-    if (!slug.split("/")[1]) continue; // 空 name part 跳过
+    if (!slug.split("/")[1]) continue;
     const start = m.index ?? 0;
     const end = start + m[0].length;
-    addRef(slug, start, end);
+    addRef(slug, { start, end, linkType: parseLinkType(display) });
   }
 
   for (const m of content.matchAll(MD_LINK_RE)) {
@@ -352,7 +411,7 @@ function extractRefs(
     const slug = `${dir}/${normalize(tail)}`;
     const start = m.index ?? 0;
     const end = start + m[0].length;
-    addRef(slug, start, end);
+    addRef(slug, { start, end, linkType: "mention" });
   }
 
   return refs;

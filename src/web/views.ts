@@ -17,6 +17,8 @@ import {
   getPage,
   recentActivity,
   queryFacts,
+  entityPulse,
+  consensusView,
 } from "~/mcp/queries.ts";
 // thesis CLI is read directly via SQL in viewTheses to support pagination.
 
@@ -647,13 +649,99 @@ export async function viewPage(identifier: string): Promise<string> {
   const meta = page.frontmatter ?? {};
   const isEntity = ["company", "industry", "concept"].includes(page.type);
 
-  // Source/brief 类型：在 slug · #id 行尾追加一个小"查看原文"按钮。
-  // 点了之后弹窗显示，不开新标签。markdown 由服务端 /source-raw/:id 代理拉取。
+  // entity 页才拉 PM dashboard 数据：typed-edge breakdown + top consensus metrics
+  let entityDashboard: Record<string, unknown> | null = null;
+  let topConsensusMetrics: Array<{
+    metric: string;
+    obs_count: number;
+    drift_direction: string;
+    range_pct: number | null;
+    latest: number | null;
+    sources_count: number;
+  }> = [];
+  if (isEntity) {
+    entityDashboard = (await entityPulse({
+      identifier: page.slug,
+      recentLimit: 0, // 不在 web 里展示 recent inbound（已有 backlinks 列表）
+      factLimit: 0,
+    })) as Record<string, unknown>;
+
+    // 单 SQL 一次性算所有 metric 的 stats + drift（避免 N+1 串行 consensusView
+    // 引发 web 请求 timeout）。latest 用 MAX(rn) 行的 v 取出。
+    const stats = (await db.execute(sql`
+      WITH ordered AS (
+        SELECT metric,
+               value_numeric::float AS v,
+               source_page_id,
+               ROW_NUMBER() OVER (PARTITION BY metric ORDER BY valid_from, id) AS rn,
+               COUNT(*) OVER (PARTITION BY metric) AS n,
+               LAST_VALUE(value_numeric::float) OVER (
+                 PARTITION BY metric
+                 ORDER BY valid_from, id
+                 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+               ) AS latest_v
+        FROM facts
+        WHERE deleted=0 AND entity_page_id=${BigInt(page.id)} AND value_numeric IS NOT NULL
+      )
+      SELECT metric,
+             COUNT(*)::int AS obs,
+             COUNT(DISTINCT source_page_id)::int AS sources_n,
+             MIN(v) AS min_v,
+             MAX(v) AS max_v,
+             AVG(v) AS mean_v,
+             AVG(v) FILTER (WHERE rn <= n/2) AS first_half_avg,
+             AVG(v) FILTER (WHERE rn > n - n/2) AS second_half_avg,
+             MAX(latest_v) AS latest
+      FROM ordered
+      GROUP BY metric
+      HAVING COUNT(*) >= 3 AND COUNT(DISTINCT source_page_id) >= 2
+      ORDER BY obs DESC, sources_n DESC
+      LIMIT 6
+    `)) as Array<{
+      metric: string;
+      obs: number;
+      sources_n: number;
+      min_v: number | null;
+      max_v: number | null;
+      mean_v: number | null;
+      first_half_avg: number | null;
+      second_half_avg: number | null;
+      latest: number | null;
+    }>;
+
+    for (const s of stats) {
+      const mean = Number(s.mean_v ?? 0);
+      const rangePct =
+        mean !== 0 && s.min_v !== null && s.max_v !== null
+          ? (Number(s.max_v) - Number(s.min_v)) / Math.abs(mean)
+          : null;
+      let direction = "stable";
+      if (s.first_half_avg !== null && s.second_half_avg !== null) {
+        const f = Number(s.first_half_avg);
+        const sec = Number(s.second_half_avg);
+        const driftPct = f !== 0 ? (sec - f) / Math.abs(f) : 0;
+        if (Math.abs(driftPct) < 0.02) direction = "stable";
+        else if (driftPct > 0) direction = "rising";
+        else direction = "falling";
+      }
+      topConsensusMetrics.push({
+        metric: s.metric,
+        obs_count: s.obs,
+        drift_direction: direction,
+        range_pct: rangePct,
+        latest: s.latest !== null ? Number(s.latest) : null,
+        sources_count: s.sources_n,
+      });
+    }
+  }
+
+  // Source/brief 类型：在 slug · #id 行尾追加"查看原文"链接。
+  // 新标签页打开 /source-view/:id，服务端渲染 markdown → HTML。
   const isSourceLike = page.type === "source" || page.type === "brief";
   const markdownUrl = typeof meta.markdown_url === "string" ? meta.markdown_url : null;
   const inlineSourceBtn =
     isSourceLike && markdownUrl
-      ? ` · <button type="button" class="btn-inline" onclick="openSourceModal('${escape(page.id)}')">📄 查看原文</button>`
+      ? ` · <a href="/source-view/${encodeURIComponent(page.id)}" target="_blank" rel="noopener" class="btn-inline">📄 查看原文</a>`
       : "";
 
   const body = `
@@ -723,6 +811,8 @@ export async function viewPage(identifier: string): Promise<string> {
   }
 </div>
 
+${isEntity && entityDashboard ? renderEntityDashboard(page.slug, entityDashboard, topConsensusMetrics) : ""}
+
 ${page.content
   ? `<h2>Content</h2><div class="content">${renderMarkdown(page.content)}</div>`
   : isEntity
@@ -770,55 +860,285 @@ ${inLinks.length > 0
 }
 
 ${page.type === "thesis" ? await renderThesisAdmin(BigInt(page.id), page.content ?? "") : ""}
-
-${isSourceLike && markdownUrl ? sourceModalHtml() : ""}
 `;
   return layout({ title: page.title, body });
 }
 
-/** 弹窗 HTML + JS 注入（只在 source/brief 页才输出）。 */
-function sourceModalHtml(): string {
+/**
+ * Entity 页 PM dashboard 卡片：
+ *   - typed-edge breakdown（mention/confirms/contradicts/...）
+ *   - consensus strength score
+ *   - top metrics 的 drift 概览
+ */
+function renderEntityDashboard(
+  slug: string,
+  dashboard: Record<string, unknown>,
+  consensusMetrics: Array<{
+    metric: string;
+    obs_count: number;
+    drift_direction: string;
+    range_pct: number | null;
+    latest: number | null;
+    sources_count: number;
+  }>
+): string {
+  const lb = dashboard.link_breakdown as
+    | {
+        inbound: Record<string, number>;
+        outbound: Record<string, number>;
+        consensus_strength: number | null;
+      }
+    | undefined;
+  if (!lb) return "";
+
+  const inboundTotal = Object.values(lb.inbound).reduce((a, b) => a + b, 0);
+  const outboundTotal = Object.values(lb.outbound).reduce((a, b) => a + b, 0);
+
+  // typed-edge 颜色
+  const typeColor = (t: string): string => {
+    if (t === "confirms") return "var(--positive, #15803d)";
+    if (t === "contradicts") return "var(--negative, #b91c1c)";
+    if (t === "supersedes") return "var(--warning, #c2410c)";
+    if (t === "critiques") return "var(--warning, #c2410c)";
+    if (t === "cites") return "var(--accent, #1d4ed8)";
+    return "var(--muted, #78716c)";
+  };
+
+  const directionEmoji = (d: string): string => {
+    if (d === "rising") return "↗";
+    if (d === "falling") return "↘";
+    if (d === "stable") return "→";
+    return "·";
+  };
+
+  const renderTypeBar = (
+    dist: Record<string, number>,
+    total: number,
+    label: string
+  ): string => {
+    if (total === 0) return `<div class="muted">${label}: (0 links)</div>`;
+    const order = [
+      "mention",
+      "confirms",
+      "contradicts",
+      "supersedes",
+      "cites",
+      "critiques",
+      "derives_from",
+      "tracks",
+    ];
+    const segments = order
+      .filter((t) => (dist[t] ?? 0) > 0)
+      .map((t) => {
+        const n = dist[t]!;
+        const pct = (n / total) * 100;
+        return `<span class="edge-seg" style="background:${typeColor(t)};width:${pct.toFixed(1)}%" title="${escape(t)}: ${n}"></span>`;
+      })
+      .join("");
+    const legend = order
+      .filter((t) => (dist[t] ?? 0) > 0)
+      .map(
+        (t) =>
+          `<span class="edge-legend"><span class="edge-dot" style="background:${typeColor(t)}"></span>${escape(t)} <strong>${dist[t]}</strong></span>`
+      )
+      .join(" ");
+    return `
+      <div class="edge-bar-wrap">
+        <div class="muted edge-bar-label">${escape(label)} (${total})</div>
+        <div class="edge-bar">${segments}</div>
+        <div class="edge-legends">${legend}</div>
+      </div>`;
+  };
+
+  const cs = lb.consensus_strength;
+  const csBadge =
+    cs === null
+      ? `<span class="muted">no typed-edge yet</span>`
+      : `<span class="tag" style="background:${cs > 0.3 ? "var(--positive,#15803d)" : cs < -0.3 ? "var(--negative,#b91c1c)" : "var(--muted,#78716c)"};color:#fff">consensus = ${cs.toFixed(2)}</span>`;
+
+  const consensusTable =
+    consensusMetrics.length === 0
+      ? `<div class="muted">no metric has ≥3 observations across ≥2 sources yet</div>`
+      : `<table><thead><tr><th>Metric</th><th>Drift</th><th>Range</th><th>Latest</th><th>Obs / Sources</th><th></th></tr></thead><tbody>
+          ${consensusMetrics
+            .map(
+              (m) => `<tr>
+                <td>${escape(m.metric)}</td>
+                <td>${directionEmoji(m.drift_direction)} <span class="muted">${escape(m.drift_direction)}</span></td>
+                <td class="muted">${m.range_pct !== null ? `${(m.range_pct * 100).toFixed(0)}%` : "-"}</td>
+                <td>${m.latest !== null ? escape(String(m.latest)) : "-"}</td>
+                <td class="muted">${m.obs_count} / ${m.sources_count}</td>
+                <td><a class="btn-inline" href="/consensus?slug=${encodeURIComponent(slug)}&metric=${encodeURIComponent(m.metric)}">view →</a></td>
+              </tr>`
+            )
+            .join("")}
+        </tbody></table>`;
+
   return `
-<div id="source-modal" class="source-modal" style="display:none;" onclick="if(event.target===this)closeSourceModal()">
-  <div class="source-modal-content">
-    <div class="source-modal-header">
-      <span class="source-modal-title">原文</span>
-      <button type="button" class="btn-inline" onclick="closeSourceModal()">✕ 关闭</button>
-    </div>
-    <pre id="source-modal-body" class="source-modal-body">加载中…</pre>
+<h2>PM Dashboard ${csBadge}</h2>
+<style>
+.edge-bar-wrap { margin: 8px 0 16px; }
+.edge-bar-label { font-size: 12px; margin-bottom: 4px; }
+.edge-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--bg-soft, #f5f5f4); }
+.edge-seg { display: block; min-width: 1px; }
+.edge-legends { margin-top: 6px; font-size: 12px; line-height: 1.6; }
+.edge-legend { margin-right: 12px; white-space: nowrap; }
+.edge-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+</style>
+<div class="grid">
+  <div class="card">
+    <h3>Typed-edge breakdown</h3>
+    ${renderTypeBar(lb.inbound, inboundTotal, "Inbound")}
+    ${renderTypeBar(lb.outbound, outboundTotal, "Outbound")}
+    <p class="muted" style="margin-top:8px;font-size:12px">
+      consensus_strength = (confirms − contradicts) / (confirms + contradicts).
+      区间 [-1, 1]：≥ 0.3 强共识；≤ -0.3 强争议；中间灰色。
+    </p>
+  </div>
+  <div class="card">
+    <h3>Consensus drift across sources</h3>
+    ${consensusTable}
   </div>
 </div>
-<script>
-async function openSourceModal(pageId) {
-  const modal = document.getElementById('source-modal');
-  const body = document.getElementById('source-modal-body');
-  modal.style.display = 'flex';
-  body.textContent = '加载中…';
-  try {
-    const resp = await fetch('/source-raw/' + encodeURIComponent(pageId));
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    body.textContent = await resp.text();
-    body.scrollTop = 0;
-  } catch (err) {
-    body.textContent = '加载失败：' + (err && err.message ? err.message : err);
-  }
-}
-function closeSourceModal() {
-  document.getElementById('source-modal').style.display = 'none';
-}
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') closeSourceModal();
-});
-</script>
 `;
 }
 
-/** 给 server.ts 的 /source-raw/:id 路由用：拉 markdown_url 的原始内容。 */
-export async function fetchSourceRaw(
-  pageId: bigint
-): Promise<{ markdown: string } | null> {
+/** /consensus/:slug/:metric —— consensus drift 详情页（observations 时序 + 统计）。 */
+export async function viewConsensus(
+  slug: string,
+  metric: string,
+  period?: string
+): Promise<string | null> {
+  const result = (await consensusView({
+    entity: slug,
+    metric,
+    period,
+  })) as
+    | {
+        error?: string;
+        entity: { slug: string; title: string };
+        metric: string;
+        period: string | null;
+        observations: Array<{
+          source_slug: string | null;
+          source_title: string | null;
+          period: string | null;
+          value: number | string | null;
+          unit: string | null;
+          valid_from: string | null;
+        }>;
+        stats: {
+          count: number;
+          mean: number;
+          std: number;
+          min: number;
+          max: number;
+          range_pct: number;
+          latest: number;
+          earliest: number;
+        } | null;
+        drift: {
+          direction: string;
+          drift_pct?: number;
+          first_half_avg?: number;
+          second_half_avg?: number;
+          outliers?: Array<{
+            source_slug: string;
+            period: string;
+            value: number;
+            deviation_pct: number;
+          }>;
+          note?: string;
+        } | null;
+      }
+    | null;
+
+  if (!result || result.error) {
+    return layout({
+      title: "Consensus not found",
+      body: `<div class="empty">${escape(result?.error ?? "not found")}</div>`,
+    });
+  }
+
+  const { entity, observations, stats, drift } = result;
+
+  const obsTable =
+    observations.length === 0
+      ? `<div class="empty">no observations</div>`
+      : `<table><thead><tr><th>Date</th><th>Period</th><th>Source</th><th>Value</th><th>Unit</th></tr></thead><tbody>
+          ${observations
+            .map(
+              (o) => `<tr>
+                <td class="muted">${escape(o.valid_from ?? "")}</td>
+                <td>${escape(o.period ?? "")}</td>
+                <td>${o.source_slug ? `<a href="/pages/${encodeURIComponent(o.source_slug)}">${escape(o.source_title ?? o.source_slug)}</a>` : "-"}</td>
+                <td><strong>${escape(String(o.value ?? ""))}</strong></td>
+                <td class="muted">${escape(o.unit ?? "")}</td>
+              </tr>`
+            )
+            .join("")}
+        </tbody></table>`;
+
+  const statsBlock = stats
+    ? `<div class="kv">
+        <div class="k">count</div><div>${stats.count}</div>
+        <div class="k">mean</div><div>${stats.mean.toFixed(2)}</div>
+        <div class="k">std</div><div>${stats.std.toFixed(2)}</div>
+        <div class="k">range</div><div>${stats.min} → ${stats.max} (${(stats.range_pct * 100).toFixed(0)}% of mean)</div>
+        <div class="k">earliest → latest</div><div>${stats.earliest} → ${stats.latest}</div>
+      </div>`
+    : `<div class="muted">no numeric observations</div>`;
+
+  const driftBlock =
+    drift && drift.direction !== "insufficient_data"
+      ? `<div class="kv">
+          <div class="k">direction</div><div><span class="tag">${escape(drift.direction)}</span> ${drift.drift_pct !== undefined ? `(${(drift.drift_pct * 100).toFixed(1)}%)` : ""}</div>
+          ${drift.first_half_avg !== undefined ? `<div class="k">first half avg</div><div>${drift.first_half_avg.toFixed(2)}</div>` : ""}
+          ${drift.second_half_avg !== undefined ? `<div class="k">second half avg</div><div>${drift.second_half_avg.toFixed(2)}</div>` : ""}
+        </div>
+        ${(drift.outliers ?? []).length > 0
+          ? `<h4 style="margin-top:12px">Outliers (|σ| > 1.5)</h4>
+             <ul class="plain">
+              ${(drift.outliers ?? [])
+                .map(
+                  (o) =>
+                    `<li><a href="/pages/${encodeURIComponent(o.source_slug)}">${escape(o.source_slug)}</a> · ${escape(o.period)} · <strong>${o.value}</strong> · σ=${o.deviation_pct.toFixed(2)}</li>`
+                )
+                .join("")}
+             </ul>`
+          : `<p class="muted">no outliers (>1.5σ)</p>`}`
+      : `<div class="muted">${escape(drift?.note ?? "insufficient data for drift analysis")}</div>`;
+
+  const body = `
+<div class="muted score" style="margin-bottom:8px;">
+  <a href="/pages/${encodeURIComponent(entity.slug)}">← ${escape(entity.title ?? entity.slug)}</a>
+</div>
+<h2>Consensus drift: ${escape(entity.title ?? entity.slug)} / <code>${escape(metric)}</code></h2>
+${period ? `<p class="muted">filter: period = ${escape(period)}</p>` : ""}
+
+<div class="grid">
+  <div class="card">
+    <h3>Stats</h3>
+    ${statsBlock}
+  </div>
+  <div class="card">
+    <h3>Drift signal</h3>
+    ${driftBlock}
+  </div>
+</div>
+
+<h3>Observations (${observations.length})</h3>
+${obsTable}
+`;
+  return layout({ title: `consensus / ${entity.slug} / ${metric}`, body });
+}
+
+/** /source-view/:id —— 整页渲染 raw markdown 为 HTML，新标签页打开用。 */
+export async function viewSourceRaw(pageId: bigint): Promise<string | null> {
   const [p] = await db
     .select({
+      title: schema.pages.title,
+      slug: schema.pages.slug,
       type: schema.pages.type,
       frontmatter: schema.pages.frontmatter,
     })
@@ -832,15 +1152,24 @@ export async function fetchSourceRaw(
   const url = typeof fm.markdown_url === "string" ? fm.markdown_url : null;
   if (!url) return null;
 
+  let markdown: string;
   try {
     const resp = await fetch(url);
-    if (!resp.ok) {
-      return { markdown: `(failed to fetch markdown_url: HTTP ${resp.status})` };
-    }
-    return { markdown: await resp.text() };
+    markdown = resp.ok
+      ? await resp.text()
+      : `> ⚠️ failed to fetch markdown_url: HTTP ${resp.status}`;
   } catch (e) {
-    return { markdown: `(fetch error: ${(e as Error).message})` };
+    markdown = `> ⚠️ fetch error: ${(e as Error).message}`;
   }
+
+  const body = `
+<div class="muted score" style="margin-bottom:8px;">
+  <a href="/pages/${encodeURIComponent(p.slug)}">← 回到 ${escape(p.slug)}</a>
+</div>
+<h2>${escape(p.title ?? "原文")}</h2>
+<div class="content">${renderMarkdown(markdown)}</div>
+`;
+  return layout({ title: `原文 · ${p.title ?? p.slug}`, body });
 }
 
 /**

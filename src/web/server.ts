@@ -46,6 +46,9 @@ export async function startWebServer(opts: ServeOpts = {}): Promise<void> {
 
   Bun.serve({
     port,
+    // 默认 10s 对 entity 页（多个 SQL roundtrip + 含 dashboard）不够。30s 留余量；
+    // 单个长查询超 30s 应该独立调优，不该在 web 层兜底更长。
+    idleTimeout: 30,
     async fetch(req): Promise<Response> {
       const url = new URL(req.url);
       const path = url.pathname;
@@ -106,19 +109,29 @@ export async function startWebServer(opts: ServeOpts = {}): Promise<void> {
           return html(await viewPage(identifier));
         }
 
-        // Source raw markdown — proxy fetch + return text/markdown
-        // 给 page detail 弹窗里"查看原文"用，避开 S3 直链 CORS 问题。
-        const sourceRawMatch = path.match(/^\/source-raw\/(\d+)$/);
-        if (sourceRawMatch && req.method === "GET") {
-          const { fetchSourceRaw } = await import("./views.ts");
-          const result = await fetchSourceRaw(BigInt(sourceRawMatch[1] ?? "0"));
-          if (!result) return new Response("not found", { status: 404 });
-          return new Response(result.markdown, {
-            headers: {
-              "content-type": "text/plain; charset=utf-8",
-              "cache-control": "private, max-age=60",
-            },
-          });
+        // Source 原文整页渲染（页内"查看原文"链接 target="_blank" 打开此路由）。
+        // markdown_url 服务端代理 fetch + marked 渲染，避开浏览器 S3 CORS。
+        const sourceViewMatch = path.match(/^\/source-view\/(\d+)$/);
+        if (sourceViewMatch && req.method === "GET") {
+          const { viewSourceRaw } = await import("./views.ts");
+          const rendered = await viewSourceRaw(BigInt(sourceViewMatch[1] ?? "0"));
+          if (!rendered) return new Response("not found", { status: 404 });
+          return html(rendered);
+        }
+
+        // Consensus drift drill-down: /consensus?slug=<entity>&metric=<m>[&period=<p>]
+        // 用 query string 而不是 path segment，避免 slug 内含 / 跟路径分隔符冲突。
+        if (path === "/consensus" && req.method === "GET") {
+          const { viewConsensus } = await import("./views.ts");
+          const slug = url.searchParams.get("slug") ?? "";
+          const metric = url.searchParams.get("metric") ?? "";
+          const period = url.searchParams.get("period") ?? undefined;
+          if (!slug || !metric) {
+            return new Response("missing slug or metric query param", { status: 400 });
+          }
+          const rendered = await viewConsensus(slug, metric, period);
+          if (!rendered) return new Response("not found", { status: 404 });
+          return html(rendered);
         }
 
         // Theses — list

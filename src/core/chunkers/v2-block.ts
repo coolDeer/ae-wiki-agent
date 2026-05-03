@@ -107,6 +107,17 @@ export interface V2ChunkerOptions {
   targetTokens?: number;
   /** list 整体不拆的上限。超过此值才按 item 切。默认 2400。 */
   maxListAtomicTokens?: number;
+  /**
+   * 含 CJK 字符的 chunk 硬上限（tokens）。默认 4000。
+   * OpenAI cl100k BPE 对中文常 ~1 char/token，比 estimateTokens 的 1.5 启发式
+   * 多 50% 真实 token，所以 CJK 内容要保守。
+   */
+  maxHardTokensCjk?: number;
+  /**
+   * 纯 ASCII chunk 硬上限（tokens）。默认 6500。
+   * 英文 ~4 chars/token 跟 estimateTokens 启发式吻合，可以放更宽。
+   */
+  maxHardTokensAscii?: number;
   /** 末尾过滤：chunk_text 字符数 < 此阈值则丢弃。默认 30。 */
   minChunkChars?: number;
   /** list 拆 item 时 overlap 几个 item。默认 1。 */
@@ -116,6 +127,8 @@ export interface V2ChunkerOptions {
 const DEFAULTS = {
   targetTokens: 800,
   maxListAtomicTokens: 2400,
+  maxHardTokensCjk: 4000,
+  maxHardTokensAscii: 6500,
   minChunkChars: 30,
   listSplitOverlap: 1,
 };
@@ -326,8 +339,17 @@ export function chunkContentListV2(
 
   flush();
 
+  // 硬上限兜底：扫一遍超限的 chunk，按段落 → 句子 → 字符强制切。
+  // 防 OpenAI embedding API 因单条 > 8192 token 拒收。
+  const splitOut = out.flatMap((c) =>
+    splitOversizedChunk(c, {
+      maxCjkTokens: cfg.maxHardTokensCjk,
+      maxAsciiTokens: cfg.maxHardTokensAscii,
+    })
+  );
+
   // 末尾过滤：极短碎片丢弃（"保密" / 残留页码等）
-  return out.filter((c) => stripSectionHeader(c.text).length >= cfg.minChunkChars);
+  return splitOut.filter((c) => stripSectionHeader(c.text).length >= cfg.minChunkChars);
 }
 
 // =============================================================================
@@ -378,6 +400,124 @@ function renderList(lb: V2ListBlock): string {
     })
     .filter((line) => line.replace(/^[\s\-*•]+/, "").length > 0)
     .join("\n");
+}
+
+/**
+ * 检测是否含 CJK 字符（中日韩 + 全角标点），含则按 CJK 上限处理。
+ */
+function containsCjk(text: string): boolean {
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (
+      (code >= 0x4e00 && code <= 0x9fff) ||
+      (code >= 0x3000 && code <= 0x30ff) ||
+      (code >= 0xff00 && code <= 0xffef)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 按句子边界切，保留分隔符。匹配 [.!?。！？] 后做断句。
+ * 没有标点的整段会作为单一"句子"返回（由调用方做字符兜底切）。
+ */
+function splitIntoSentences(text: string): string[] {
+  return text.split(/(?<=[.!?。！？])\s*/).filter((s) => s.length > 0);
+}
+
+/**
+ * 末尾兜底：单 chunk 超限时强制切。
+ *   1. 含 CJK 走 maxCjkTokens（默认 4000，对应 OpenAI ~1 char/token）
+ *      纯 ASCII 走 maxAsciiTokens（默认 6500，对应 ~4 chars/token）
+ *   2. 段落边界优先（\n\n）
+ *   3. 段落仍超限 → 句子边界（[.!?。！？]）
+ *   4. 单句仍超限（如无标点的 SQL / 代码 / 字符串）→ 字符硬切兜底
+ */
+function splitOversizedChunk(
+  chunk: V2Chunk,
+  opts: { maxCjkTokens: number; maxAsciiTokens: number }
+): V2Chunk[] {
+  const cap = containsCjk(chunk.text) ? opts.maxCjkTokens : opts.maxAsciiTokens;
+  if (estimateTokens(chunk.text) <= cap) return [chunk];
+
+  // header 也算 token，body budget 要扣掉
+  const headerText =
+    chunk.sectionPath.length > 0 ? `${chunk.sectionPath.join(" > ")}\n\n` : "";
+  const headerTokens = estimateTokens(headerText);
+  const bodyMaxTokens = Math.max(1, cap - headerTokens);
+
+  const body = stripSectionHeader(chunk.text);
+  const paragraphs = body.split(/\n\n+/);
+  const pieces: string[] = [];
+  let cur: string[] = [];
+  let curTokens = 0;
+
+  const flushCur = () => {
+    if (cur.length > 0) {
+      pieces.push(cur.join("\n\n"));
+      cur = [];
+      curTokens = 0;
+    }
+  };
+
+  for (const para of paragraphs) {
+    const t = estimateTokens(para);
+    if (t > bodyMaxTokens) {
+      // 段落超限 → 转句子级处理
+      flushCur();
+      pieces.push(...splitParagraphSmart(para, bodyMaxTokens));
+      continue;
+    }
+    if (curTokens + t > bodyMaxTokens) flushCur();
+    cur.push(para);
+    curTokens += t;
+  }
+  flushCur();
+
+  // 每段重新挂 section header；类型沿用原 chunk 类型。
+  return pieces.map((p) =>
+    makeChunk(chunk.sectionPath, p, chunk.type, chunk.pageIdx)
+  );
+}
+
+/**
+ * 单段落（无段落边界可切）按句子聚合到 maxTokens；单句仍超限按字符兜底。
+ */
+function splitParagraphSmart(para: string, maxTokens: number): string[] {
+  const sentences = splitIntoSentences(para);
+  const out: string[] = [];
+  let cur: string[] = [];
+  let curTokens = 0;
+
+  const flushCur = () => {
+    if (cur.length > 0) {
+      out.push(cur.join(""));
+      cur = [];
+      curTokens = 0;
+    }
+  };
+
+  for (const sent of sentences) {
+    const t = estimateTokens(sent);
+    if (t > maxTokens) {
+      // 单句仍超限（罕见：无标点长串、URL、code）→ 字符硬切兜底
+      flushCur();
+      const isCjk = containsCjk(sent);
+      // CJK 1 char ≈ 1 OpenAI token；ASCII ~3 chars/token 留余量
+      const charsPerPiece = isCjk ? maxTokens : maxTokens * 3;
+      for (let i = 0; i < sent.length; i += charsPerPiece) {
+        out.push(sent.slice(i, i + charsPerPiece));
+      }
+      continue;
+    }
+    if (curTokens + t > maxTokens) flushCur();
+    cur.push(sent);
+    curTokens += t;
+  }
+  flushCur();
+  return out;
 }
 
 /**

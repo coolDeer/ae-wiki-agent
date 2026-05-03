@@ -208,6 +208,14 @@ export interface EnrichSaveOpts {
   confidence?: "high" | "medium" | "low";
   /** 可选：frontmatter 合并（不动现有字段，仅补充）*/
   frontmatterMerge?: Record<string, unknown>;
+  /**
+   * 增量模式：narrative 当作 delta 追加到现有 content（## Updates / ### date 块），
+   * 不覆盖。元数据字段（ticker / sector / aliases / confidence / frontmatter）正常更新。
+   * 现有 content 空时退化为整页写入（首次 enrich）。
+   */
+  append?: boolean;
+  /** append 模式下可选：关联 source slug，作为 update 块标题的 (per [[X]]) 标注 */
+  appendSourceSlug?: string;
 }
 
 /** Case-insensitive trim dedupe，保留首次出现顺序。*/
@@ -293,24 +301,9 @@ export async function enrichSave(
           : "merge";
   }
 
-  await db.insert(schema.pageVersions).values(
-    withCreateAudit(
-      {
-        pageId,
-        content: narrative,
-        timeline: "",
-        frontmatter: mergedFrontmatter,
-        editedBy: actor,
-        reason: "enrich",
-      },
-      actor
-    )
-  );
-
-  // 构造 update set —— 只更新提供的字段
+  // 构造 update set —— 只更新提供的字段。append 模式下 content / contentHash
+  // 由 stage3AppendNarrative 内部更新（含 page_versions 快照）。
   const updateSet: Record<string, unknown> = {
-    content: narrative,
-    contentHash,
     confidence: opts.confidence ?? "medium",
     frontmatter: mergedFrontmatter,
   };
@@ -322,10 +315,42 @@ export async function enrichSave(
   if (opts.exchange !== undefined) updateSet.exchange = opts.exchange;
   if (nextAliases !== undefined) updateSet.aliases = nextAliases;
 
-  await db
-    .update(schema.pages)
-    .set(withAudit(updateSet, actor))
-    .where(eq(schema.pages.id, pageId));
+  if (opts.append) {
+    // 增量：narrative 当 delta 追加；元数据字段单独 update（不动 content）
+    const { stage3AppendNarrative } = await import("../ingest/stage-3-narrative.ts");
+    await stage3AppendNarrative(pageId, narrative, actor, {
+      sourceSlug: opts.appendSourceSlug,
+      reason: "enrich:append",
+    });
+    // append 不动 content / hash，但 confidence / aliases / ticker 等 still update
+    if (Object.keys(updateSet).length > 0) {
+      await db
+        .update(schema.pages)
+        .set(withAudit(updateSet, actor))
+        .where(eq(schema.pages.id, pageId));
+    }
+  } else {
+    // 整页写入：snapshot + update content
+    await db.insert(schema.pageVersions).values(
+      withCreateAudit(
+        {
+          pageId,
+          content: narrative,
+          timeline: "",
+          frontmatter: mergedFrontmatter,
+          editedBy: actor,
+          reason: "enrich",
+        },
+        actor
+      )
+    );
+    updateSet.content = narrative;
+    updateSet.contentHash = contentHash;
+    await db
+      .update(schema.pages)
+      .set(withAudit(updateSet, actor))
+      .where(eq(schema.pages.id, pageId));
+  }
 
   // 写完之后跑 completeness scoring（gbrain-style 客观分），cache 到 pages 列。
   // 给 enrich:retrigger / search rank / lint 报表用。

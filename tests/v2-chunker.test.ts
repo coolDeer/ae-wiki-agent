@@ -264,6 +264,80 @@ describe("V2 chunker — paragraph budget rolling", () => {
     expect(chunks[0]!.text).toContain("xxxxxx");
     expect(chunks[1]!.text).toContain("epilogue");
   });
+
+  test("CJK 超 maxHardTokensCjk 的 chunk 被强制切（防御 OpenAI 8192 上限）", () => {
+    // 纯 CJK 6500 字符 ~= 4333 estimateTokens > 4000 默认上限
+    const giant = "中".repeat(6500);
+    const data: V2ContentList = [[title(1, "S"), paragraph(giant)]];
+    const chunks = chunkContentListV2(data); // 默认 maxHardTokensCjk=4000
+
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) {
+      expect(estimateTokens(c.text)).toBeLessThanOrEqual(4000);
+      expect(c.sectionPath).toEqual(["S"]);
+      expect(c.text.startsWith("S\n\n")).toBe(true);
+    }
+  });
+
+  test("纯 ASCII 用 maxHardTokensAscii=6500，CJK 阈值不影响", () => {
+    // 纯 ASCII 22000 字符 ~= 5500 tokens（< 6500），不应被切
+    const big = "x".repeat(22000);
+    const data: V2ContentList = [[title(1, "S"), paragraph(big)]];
+    const chunks = chunkContentListV2(data);
+    expect(chunks).toHaveLength(1);
+  });
+
+  test("段落级切优先（保留段落边界）", () => {
+    // 5 段中文，每段 1500 字 ≈ 1000 tokens；总 5000 > 4000 → 必切
+    const para = "中".repeat(1500);
+    const body = [para, para, para, para, para].join("\n\n");
+    const data: V2ContentList = [[title(1, "S"), paragraph(body)]];
+    const chunks = chunkContentListV2(data);
+    expect(chunks.length).toBeGreaterThan(1);
+    // 切完每片都 ≤ 4000
+    for (const c of chunks) {
+      expect(estimateTokens(c.text)).toBeLessThanOrEqual(4000);
+    }
+  });
+
+  test("单段落超限走句子边界（不一刀切字符）", () => {
+    // 一段中文 8 句，每句 800 字（带句号），总 6400+ 字
+    // 单段 ~4500 token > 4000 → 触发段落内 split
+    const sent = "中".repeat(800) + "。";
+    const para = sent.repeat(8); // ~6400 chars + 句号
+    const data: V2ContentList = [[title(1, "S"), paragraph(para)]];
+    const chunks = chunkContentListV2(data);
+    expect(chunks.length).toBeGreaterThan(1);
+    // 关键：切片应该以句号结尾（说明是按句子切的，不是字符切）
+    const allEndOnSentence = chunks.every((c) => {
+      const body = c.text.replace(/^S\n\n/, "");
+      return /[.!?。！？]\s*$/.test(body);
+    });
+    expect(allEndOnSentence).toBe(true);
+  });
+
+  test("无标点的超长字符串走字符兜底", () => {
+    // 没有任何句子边界，单"句"超限 → 字符切
+    const giant = "中".repeat(5000); // ~3333 token，> 默认 CJK 上限 4000? 不超
+    // 改用 8000 中字 ~5333 tokens > 4000，且没有标点
+    const noPunct = "中".repeat(8000);
+    const data: V2ContentList = [[title(1, "S"), paragraph(noPunct)]];
+    const chunks = chunkContentListV2(data);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) {
+      expect(estimateTokens(c.text)).toBeLessThanOrEqual(4000);
+    }
+  });
+
+  test("自定义 maxHardTokensCjk 生效", () => {
+    const giant = "中".repeat(2000);
+    const data: V2ContentList = [[title(1, "S"), paragraph(giant)]];
+    const chunks = chunkContentListV2(data, { maxHardTokensCjk: 200 });
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) {
+      expect(estimateTokens(c.text)).toBeLessThanOrEqual(200);
+    }
+  });
 });
 
 // =============================================================================

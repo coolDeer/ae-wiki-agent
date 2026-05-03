@@ -696,3 +696,285 @@ export async function recentActivity(
   });
   return out.slice(0, limit);
 }
+
+// ============================================================================
+// 8. entity_pulse — entity 级 PM dashboard：typed-edge 分布 + 最近来源 + facts 概览
+// ============================================================================
+
+export interface EntityPulseArgs {
+  identifier: string | number | bigint;
+  /** 最近 N 条 inbound source（默认 10）*/
+  recentLimit?: number;
+  /** 最近 N 条 facts（默认 10）*/
+  factLimit?: number;
+}
+
+export async function entityPulse(args: EntityPulseArgs): Promise<unknown> {
+  const recentLimit = args.recentLimit ?? 10;
+  const factLimit = args.factLimit ?? 10;
+
+  // 1. 解析 identifier → page
+  const isNumeric =
+    typeof args.identifier === "number" ||
+    typeof args.identifier === "bigint" ||
+    /^\d+$/.test(String(args.identifier));
+  const [page] = isNumeric
+    ? await db
+        .select()
+        .from(schema.pages)
+        .where(
+          and(
+            eq(schema.pages.id, BigInt(args.identifier as string | number | bigint)),
+            eq(schema.pages.deleted, 0)
+          )
+        )
+        .limit(1)
+    : await db
+        .select()
+        .from(schema.pages)
+        .where(
+          and(eq(schema.pages.slug, String(args.identifier)), eq(schema.pages.deleted, 0))
+        )
+        .limit(1);
+
+  if (!page) return { error: `entity not found: ${args.identifier}` };
+
+  // 2-5. 并行跑所有 SQL（serial 之前 ~6.7s，parallel ~1.3s）。
+  // limit=0 的查询直接跳过，避免浪费 roundtrip。
+  const [inboundDist, outboundDist, recentInbound, factSummary, latestFacts] =
+    await Promise.all([
+      db.execute(drizzleSql`
+        SELECT link_type, COUNT(*)::int AS c
+        FROM links
+        WHERE deleted = 0 AND to_page_id = ${page.id}
+        GROUP BY 1 ORDER BY c DESC
+      `),
+      db.execute(drizzleSql`
+        SELECT link_type, COUNT(*)::int AS c
+        FROM links
+        WHERE deleted = 0 AND from_page_id = ${page.id}
+        GROUP BY 1 ORDER BY c DESC
+      `),
+      recentLimit > 0
+        ? db.execute(drizzleSql`
+            SELECT l.link_type, l.context,
+                   p.slug AS from_slug, p.title AS from_title, p.type AS from_type,
+                   p.create_time::text AS source_date
+            FROM links l
+            JOIN pages p ON p.id = l.from_page_id
+            WHERE l.deleted = 0 AND l.to_page_id = ${page.id}
+              AND p.deleted = 0
+            ORDER BY p.create_time DESC
+            LIMIT ${recentLimit}
+          `)
+        : Promise.resolve([] as unknown as Awaited<ReturnType<typeof db.execute>>),
+      db.execute(drizzleSql`
+        SELECT COUNT(*)::int AS fact_count,
+               COUNT(DISTINCT metric)::int AS distinct_metrics,
+               COUNT(DISTINCT source_page_id)::int AS distinct_sources
+        FROM facts
+        WHERE deleted = 0 AND entity_page_id = ${page.id}
+      `),
+      factLimit > 0
+        ? db.execute(drizzleSql`
+            SELECT f.metric, f.value_numeric, f.value_text, f.unit, f.period,
+                   f.valid_from::text AS valid_from,
+                   p.slug AS source_slug
+            FROM facts f
+            LEFT JOIN pages p ON p.id = f.source_page_id
+            WHERE f.deleted = 0 AND f.entity_page_id = ${page.id}
+            ORDER BY f.valid_from DESC, f.id DESC
+            LIMIT ${factLimit}
+          `)
+        : Promise.resolve([] as unknown as Awaited<ReturnType<typeof db.execute>>),
+    ]);
+
+  // 5. 共识强度：confirms - contradicts 比例
+  const inboundDistTyped = inboundDist as unknown as Array<{ link_type: string; c: number }>;
+  const outboundDistTyped = outboundDist as unknown as Array<{ link_type: string; c: number }>;
+  const confirmCount = inboundDistTyped.find((r) => r.link_type === "confirms")?.c ?? 0;
+  const contradictCount = inboundDistTyped.find((r) => r.link_type === "contradicts")?.c ?? 0;
+  const consensusStrength =
+    confirmCount + contradictCount === 0
+      ? null
+      : (confirmCount - contradictCount) / (confirmCount + contradictCount);
+
+  return {
+    page: {
+      id: page.id.toString(),
+      slug: page.slug,
+      title: page.title,
+      type: page.type,
+      ticker: page.ticker,
+      sector: page.sector,
+      confidence: page.confidence,
+    },
+    link_breakdown: {
+      inbound: Object.fromEntries(inboundDistTyped.map((r) => [r.link_type, r.c])),
+      outbound: Object.fromEntries(outboundDistTyped.map((r) => [r.link_type, r.c])),
+      consensus_strength: consensusStrength, // -1..1，越高越被确认；null=没 typed-edge
+    },
+    recent_inbound: recentInbound,
+    fact_summary: {
+      ...((factSummary as Array<Record<string, number>>)[0] ?? {}),
+      latest_facts: (
+        latestFacts as Array<Record<string, unknown>>
+      ).map((f) => ({
+        ...f,
+        value:
+          f.value_numeric !== null
+            ? Number(f.value_numeric as string)
+            : f.value_text ?? null,
+      })),
+    },
+  };
+}
+
+// ============================================================================
+// 9. consensus_view — metric 时序 + drift 检测
+// ============================================================================
+
+export interface ConsensusViewArgs {
+  /** entity slug 或 page id */
+  entity: string | number | bigint;
+  /** 必填：要分析的 metric（如 'revenue', 'gross_margin'）*/
+  metric: string;
+  /** 可选：限定 period（如 '1Q26A', 'FY2026E'）；不填则跨 period 都看 */
+  period?: string;
+  /** 数值化阈值：低于此 source 数（默认 2）就跳过 drift 分析，只返回 observations */
+  minObservations?: number;
+}
+
+export async function consensusView(args: ConsensusViewArgs): Promise<unknown> {
+  const minObs = args.minObservations ?? 2;
+
+  // 1. 解析 entity
+  const isNumeric =
+    typeof args.entity === "number" ||
+    typeof args.entity === "bigint" ||
+    /^\d+$/.test(String(args.entity));
+  const [entity] = isNumeric
+    ? await db
+        .select({ id: schema.pages.id, slug: schema.pages.slug, title: schema.pages.title })
+        .from(schema.pages)
+        .where(
+          and(
+            eq(schema.pages.id, BigInt(args.entity as string | number | bigint)),
+            eq(schema.pages.deleted, 0)
+          )
+        )
+        .limit(1)
+    : await db
+        .select({ id: schema.pages.id, slug: schema.pages.slug, title: schema.pages.title })
+        .from(schema.pages)
+        .where(and(eq(schema.pages.slug, String(args.entity)), eq(schema.pages.deleted, 0)))
+        .limit(1);
+
+  if (!entity) return { error: `entity not found: ${args.entity}` };
+
+  // 2. 拉所有相关 fact 观测
+  const periodFilter = args.period
+    ? drizzleSql`AND f.period = ${args.period}`
+    : drizzleSql``;
+
+  const observations = await db.execute(drizzleSql`
+    SELECT f.id, f.metric, f.period, f.value_numeric, f.value_text, f.unit,
+           f.valid_from::text AS valid_from,
+           f.confidence,
+           p.slug AS source_slug, p.title AS source_title,
+           p.create_time::text AS source_created_at
+    FROM facts f
+    LEFT JOIN pages p ON p.id = f.source_page_id
+    WHERE f.deleted = 0
+      AND f.entity_page_id = ${entity.id}
+      AND f.metric = ${args.metric}
+      ${periodFilter}
+    ORDER BY f.valid_from ASC, f.id ASC
+  `);
+
+  const obsTyped = observations as Array<Record<string, unknown>>;
+  const numericValues = obsTyped
+    .map((o) => (o.value_numeric === null ? null : Number(o.value_numeric)))
+    .filter((v): v is number => v !== null && Number.isFinite(v));
+
+  // 3. 统计 + drift
+  let stats: Record<string, unknown> | null = null;
+  let drift: Record<string, unknown> | null = null;
+
+  if (numericValues.length >= 1) {
+    const sum = numericValues.reduce((a, b) => a + b, 0);
+    const mean = sum / numericValues.length;
+    const variance =
+      numericValues.length > 1
+        ? numericValues.reduce((a, b) => a + (b - mean) ** 2, 0) / (numericValues.length - 1)
+        : 0;
+    const std = Math.sqrt(variance);
+    const min = Math.min(...numericValues);
+    const max = Math.max(...numericValues);
+    const latest = numericValues[numericValues.length - 1]!;
+    const earliest = numericValues[0]!;
+    const rangePct = mean !== 0 ? (max - min) / Math.abs(mean) : 0;
+
+    stats = {
+      count: numericValues.length,
+      mean,
+      std,
+      min,
+      max,
+      range_pct: rangePct,
+      latest,
+      earliest,
+    };
+
+    if (numericValues.length >= minObs) {
+      // 方向判定：first-half avg vs second-half avg
+      const half = Math.floor(numericValues.length / 2);
+      const firstAvg = numericValues.slice(0, half).reduce((a, b) => a + b, 0) / Math.max(half, 1);
+      const secondAvg =
+        numericValues.slice(-half).reduce((a, b) => a + b, 0) / Math.max(half, 1);
+      const driftPct = firstAvg !== 0 ? (secondAvg - firstAvg) / Math.abs(firstAvg) : 0;
+      let direction: string;
+      if (Math.abs(driftPct) < 0.02) direction = "stable";
+      else if (driftPct > 0) direction = "rising";
+      else direction = "falling";
+
+      // outliers: |val - mean| > 1.5 * std
+      const outliers = obsTyped
+        .map((o, idx) => ({
+          source_slug: o.source_slug,
+          period: o.period,
+          value: o.value_numeric === null ? null : Number(o.value_numeric),
+          deviation_pct:
+            std === 0 || o.value_numeric === null
+              ? 0
+              : (Number(o.value_numeric) - mean) / std,
+        }))
+        .filter((x) => Math.abs(x.deviation_pct) > 1.5 && x.value !== null);
+
+      drift = {
+        direction,
+        drift_pct: driftPct,
+        first_half_avg: firstAvg,
+        second_half_avg: secondAvg,
+        outliers,
+      };
+    } else {
+      drift = { direction: "insufficient_data", note: `need ≥${minObs} observations` };
+    }
+  }
+
+  return {
+    entity: { id: entity.id.toString(), slug: entity.slug, title: entity.title },
+    metric: args.metric,
+    period: args.period ?? null,
+    observations: obsTyped.map((o) => ({
+      ...o,
+      value:
+        o.value_numeric !== null
+          ? Number(o.value_numeric as string)
+          : o.value_text ?? null,
+    })),
+    stats,
+    drift,
+  };
+}

@@ -137,11 +137,53 @@ skill 本身就是模板源，不依赖额外 `templates/` 文件。
 
 ### Step 4：落库
 
-```bash
-cd ae-wiki-agent && bun src/cli.ts enrich:save <pageId> [选项] < /tmp/narrative.md
+#### 模式判定（写之前必读）
+
+先调 `mcp__ae-wiki__get_page(slug)` 看 `content` 字段：
+
+| 现状 | 模式 | 命令 | 写什么 |
+|---|---|---|---|
+| 空 / < 200 字符（首次 enrich） | **write** | `enrich:save` | 完整 narrative（按 type 模板 6/4/4 段） |
+| 已有 narrative ≥ 200 字符 | **append** | `enrich:save --append` | **只写本次新增** delta（1-3 段，禁止重复旧内容） |
+
+> ⚠️ **NEVER overwrite paragraphs**——已有 narrative 一定走 append。投资 thesis 演化轨迹（「3 月看好 → 4 月质疑 → 5 月 unwind」）是核心知识资产，整页重写会丢失这条链。
+
+#### Append 模式约束
+
+写 delta 时 **必须** 满足：
+
+1. **只写新东西**：不要复述 backlinks 里早就 enrich 过的信息，agent 看现有 content 自己判断什么是新
+2. **明确的 (per [[sources/X]]) 出处**：每段 delta 显式带本次驱动 source 的 wikilink；多 source 时分段
+3. **能用 typed wikilink 就用**（参见 ae-research-ingest/SKILL.md §9）：
+   - `[[companies/X|confirms: prior view of...]]` 当 delta 印证之前结论
+   - `[[companies/X|contradicts: prior view of...]]` 当 delta 反驳之前结论
+4. **不带 frontmatter**：append 模式忽略 YAML，metadata 走 CLI flag 单独传
+
+落库会自动包成：
+
+```markdown
+[现有 narrative 不动]
+
+## Updates       ← 已存在则不重复加
+
+### 2026-05-03 (per [[sources/aletheia-xxx]])
+
+[你写的 delta]
 ```
 
-可选 flag：
+多次 append 会在 `## Updates` 下不断追加 `### date` 块，时间序自然形成。
+
+#### 命令
+
+```bash
+# 首次 enrich（content 空）
+cd ae-wiki-agent && bun src/cli.ts enrich:save <pageId> [元数据 flags] < /tmp/narrative.md
+
+# 重 enrich（已有 content）
+cd ae-wiki-agent && bun src/cli.ts enrich:save <pageId> --append --append-source sources/X [元数据 flags] < /tmp/delta.md
+```
+
+可选 flag（write / append 两种模式都生效）：
 
 | flag | 说明 |
 |---|---|
@@ -150,12 +192,14 @@ cd ae-wiki-agent && bun src/cli.ts enrich:save <pageId> [选项] < /tmp/narrativ
 | `--sector X` | 行业（与 wiki/industry/ 对齐） |
 | `--sub-sector X` | 细分行业 |
 | `--country X` | 国家代码 / 名称 |
-| `--aliases A,B,C` | 别名列表（覆盖式更新；中英日韩混填）|
+| `--aliases A,B,C` | 别名 merge（默认）；其他形式见下文 §Aliases |
 | `--confidence high\|medium\|low` | 默认 `medium`；调研充分可设 `high` |
+| `--append` | **增量模式**（已有 content 时必须用） |
+| `--append-source slug` | 关联 source slug（自动写到 update 块标题） |
 
 默认行为：
 - `confidence` 默认从 `'low'` bump 到 `'medium'`
-- 写一份 page_versions 快照（reason='enrich'）
+- 写一份 page_versions 快照（reason='enrich' / 'enrich:append'）
 - 写一条 events 记录
 
 建议：
@@ -290,6 +334,40 @@ bun src/cli.ts enrich:save 100 \
 - 数据点是否都能回指到具体 `[[sources/...]]`
 - 没把缺失信息硬补成确定事实
 - `confidence` 是否和信息完整度匹配
+
+## Typed wikilink（跨 source 关系标注）
+
+写 narrative 时，凡是引用具体 source 论据/数据，用 typed wikilink 表达关系：
+
+```
+[[slug|TYPE: display]]
+```
+
+`TYPE` 在白名单内才生效，否则降级 mention：
+
+| TYPE | 何时用 |
+|------|--------|
+| `mention` | 仅提及（默认，无 prefix）|
+| `cites` | 引用 source 作为数据来源（最常用于 enrich） |
+| `confirms` | 多个 source 给出一致数据时 |
+| `contradicts` | source 间数据冲突时（在 Risk Factors 段标） |
+| `supersedes` | 新版 source 取代旧版 |
+
+**enrich narrative 里大多用 `cites`**——典型场景：
+
+```markdown
+## Financial Summary
+
+1Q26 revenue TWD149b, GM 46.3% (per [[sources/Daiwa-MTK-260430|cites: Daiwa
+1Q26 conference call notes]]).
+
+## Risk Factors
+
+Bottom-up WFE estimate diverges: Aletheia $200bn vs Morgan Stanley $150bn
+(see [[sources/MS-WFE-260420|contradicts: MS WFE forecast]]).
+```
+
+不写 typed 也不会出错（默认 mention），但用对了能让 PM 一眼看出"这个 entity 页的某个数据点是哪几家研究机构的什么关系"。详细规则见 `ae-research-ingest/SKILL.md` 的「Wikilink 纪律 §9」。
 
 ## 不在本 skill 范围
 
