@@ -12,3 +12,7 @@ drizzle/meta/
 /raw/
 
 /wiki/
+
+# Claude Code session state — local only（.claude/skills/ 仍 tracked）
+.claude/*.lock
+.claude/settings.local.json
