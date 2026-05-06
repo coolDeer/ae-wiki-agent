@@ -45,7 +45,9 @@ export function renderMarkdown(content: string): string {
   // 删 <!-- facts --> / <!-- timeline --> block，给视图单独显示
   const stripped = content
     .replace(/<!--\s*facts[\s\S]*?-->/g, "")
-    .replace(/<!--\s*timeline\s*-->[\s\S]*$/g, "");
+    .replace(/<!--\s*timeline\s*-->[\s\S]*$/g, "")
+    // Escape lone ~ (approximation sign) so marked GFM doesn't treat it as <del>
+    .replace(/(?<!~)~(?!~)/g, "\\~");
   // [[wikilinks]] → 带链接的 <a>
   // 没有 pipe display 时，用 slug 的 name 部分（"companies/catl" → "catl"）
   // 而非完整 slug，更接近 display_name 形态。如果想要品牌大写，agent 应写
