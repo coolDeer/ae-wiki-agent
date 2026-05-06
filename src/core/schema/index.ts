@@ -21,4 +21,5 @@ export * from "./minion-jobs.ts";
 export * from "./agent-messages.ts";
 export * from "./agent-tool-executions.ts";
 export * from "./llm-usage.ts";
+export * from "./page-comments.ts";
 export * from "./config.ts";

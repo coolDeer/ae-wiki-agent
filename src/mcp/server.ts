@@ -25,6 +25,7 @@ import {
   resolveWikilink,
   entityPulse,
   consensusView,
+  listRecentComments,
 } from "./queries.ts";
 
 const server = new Server(
@@ -287,6 +288,32 @@ const TOOLS = [
       required: ["entity", "metric"],
     },
   },
+  {
+    name: "list_recent_comments",
+    description:
+      "Recent human-written page_comments (web UI feedback). Use this to read user corrections/feedback before re-running ingest / enrich / rewriting narrative. Each row links back to its target page (slug, type, title).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        page: {
+          type: "string",
+          description: "Optional: limit to a single page (slug like 'companies/Tencent' or numeric page id)",
+        },
+        intent: {
+          type: "string",
+          description: "Optional: filter by metadata.intent (e.g. 'narrative_gap', 'fact_correction', 'triage_wrong', 'skill_feedback')",
+        },
+        days: {
+          type: "number",
+          description: "Lookback window in days (default 30)",
+        },
+        limit: {
+          type: "number",
+          description: "Max rows (default 50)",
+        },
+      },
+    },
+  },
 ];
 
 // ============================================================================
@@ -373,6 +400,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           metric: (args as { metric: string }).metric,
           period: (args as { period?: string }).period,
           minObservations: (args as { min_observations?: number }).min_observations,
+        });
+        break;
+      case "list_recent_comments":
+        result = await listRecentComments({
+          page: (args as { page?: string }).page,
+          intent: (args as { intent?: string }).intent,
+          days: (args as { days?: number }).days,
+          limit: (args as { limit?: number }).limit,
         });
         break;
       default:

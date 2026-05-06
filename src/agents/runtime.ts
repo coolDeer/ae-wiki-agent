@@ -15,6 +15,7 @@ import {
   getPage,
   getTableArtifact,
   listEntities,
+  listRecentComments,
   queryFacts,
   recentActivity,
   search,
@@ -1020,6 +1021,27 @@ function buildRuntimeTools(): RuntimeTool[] {
           kinds: Array.isArray(input.kinds)
             ? input.kinds.map((item) => String(item)) as Array<"event" | "signal" | "page">
             : undefined,
+          limit: asOptionalNumber(input.limit),
+        }),
+    },
+    {
+      name: "list_recent_comments",
+      description:
+        "Read recent human-written page_comments (web UI feedback). Use this BEFORE re-running ingest / enrich / rewriting narrative on a page — surfaces user corrections that should change generation behavior.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          page: { type: "string", description: "Optional: limit to a single page (slug or numeric id)" },
+          intent: { type: "string", description: "Optional: filter by metadata.intent (narrative_gap / fact_correction / triage_wrong / skill_feedback / general)" },
+          days: { type: "integer", description: "Lookback days (default 30)" },
+          limit: { type: "integer", description: "Max rows (default 50)" },
+        },
+      },
+      execute: async (input) =>
+        listRecentComments({
+          page: asOptionalString(input.page),
+          intent: asOptionalString(input.intent),
+          days: asOptionalNumber(input.days),
           limit: asOptionalNumber(input.limit),
         }),
     },

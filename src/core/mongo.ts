@@ -89,3 +89,12 @@ const RESEARCH_TYPE_NAMES: Record<number, string> = {
 export function researchTypeName(t: number): string {
   return RESEARCH_TYPE_NAMES[t] ?? `unknown_${t}`;
 }
+
+const RESEARCH_TYPE_NUMBERS: Record<string, number> = Object.fromEntries(
+  Object.entries(RESEARCH_TYPE_NAMES).map(([k, v]) => [v, Number(k)])
+);
+
+/** researchType 名称 → 数字 id；不存在返回 null（debug 抽样过滤用）。 */
+export function researchTypeNumber(name: string): number | null {
+  return RESEARCH_TYPE_NUMBERS[name] ?? null;
+}

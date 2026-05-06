@@ -12,7 +12,12 @@
 
 import { sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
-import { closeMongo, getResearchCollection, researchTypeName } from "~/core/mongo.ts";
+import {
+  closeMongo,
+  getResearchCollection,
+  researchTypeName,
+  researchTypeNumber,
+} from "~/core/mongo.ts";
 import { Actor } from "~/core/audit.ts";
 
 interface FetchReportsOptions {
@@ -24,6 +29,10 @@ interface FetchReportsOptions {
   date?: string;
   /** 显式跳过日期过滤，回到旧的"全量未同步"行为（补抓 / 历史 backfill 用）。 */
   all?: boolean;
+  /** 仅拉指定的 researchType 名称（如 ["meeting_minutes","twitter"]）。 */
+  types?: string[];
+  /** 每个 researchType 最多拉 N 条（debug / 抽样用，与 types 配合）。 */
+  perTypeLimit?: number;
 }
 
 interface FetchReportsResult {
@@ -85,8 +94,34 @@ export async function fetchReports(
   if (range) {
     filter.createTime = { $gte: range.start, $lt: range.end };
   }
+
+  // --types 过滤：把名称转成 mongo 里存的数字 id
+  let typeNumbers: number[] | null = null;
+  if (opts.types && opts.types.length > 0) {
+    typeNumbers = [];
+    for (const name of opts.types) {
+      const n = researchTypeNumber(name);
+      if (n == null) {
+        console.error(`[fetch-reports] 未知 researchType: ${name}（忽略）`);
+        continue;
+      }
+      typeNumbers.push(n);
+    }
+    if (typeNumbers.length === 0) {
+      throw new Error("--types 全部无效，无法继续");
+    }
+    filter.researchType = { $in: typeNumbers };
+    console.log(`[fetch-reports] researchType 过滤: ${opts.types.join(", ")}`);
+  }
+  if (opts.perTypeLimit) {
+    console.log(`[fetch-reports] 每 researchType 最多拉 ${opts.perTypeLimit} 条`);
+  }
+
   const cursor = coll.find(filter).sort({ createTime: -1 });
   if (opts.limit) cursor.limit(opts.limit);
+
+  // perTypeLimit 计数（按 researchType 名称分桶）
+  const perTypeCount = new Map<string, number>();
 
   for await (const doc of cursor) {
     result.scanned++;
@@ -94,6 +129,16 @@ export async function fetchReports(
     if (!doc.parsedMarkdownS3) {
       result.skippedNoMd++;
       continue;
+    }
+
+    // perTypeLimit 早退：达到上限后跳过该类型剩余文档
+    if (opts.perTypeLimit) {
+      const tname = researchTypeName(doc.researchType);
+      const seen = perTypeCount.get(tname) ?? 0;
+      if (seen >= opts.perTypeLimit) {
+        // 不计入任何 skipped 计数，仅是抽样早退；继续扫描其他类型
+        continue;
+      }
     }
 
     // 去重：靠 research_id partial unique
@@ -104,6 +149,12 @@ export async function fetchReports(
       .limit(1);
     if (existing.length > 0) {
       result.skippedExisting++;
+      // 已存在的也计入 perTypeLimit 配额——debug 抽样语义是"每类型 N 条样本可玩"，
+      // 已落库的样本就够了，不应该越过它继续抓更多
+      if (opts.perTypeLimit) {
+        const tname = researchTypeName(doc.researchType);
+        perTypeCount.set(tname, (perTypeCount.get(tname) ?? 0) + 1);
+      }
       continue;
     }
 
@@ -139,6 +190,9 @@ export async function fetchReports(
       }
 
       result.inserted++;
+      if (opts.perTypeLimit) {
+        perTypeCount.set(type, (perTypeCount.get(type) ?? 0) + 1);
+      }
       console.log(`✓ ${type}/${doc.title}`);
     } catch (e) {
       result.failed++;

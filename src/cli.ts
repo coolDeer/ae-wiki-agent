@@ -37,7 +37,10 @@ function jsonStringify(value: unknown): string {
 function printHelp(): void {
   console.log(`Usage:
   ae-wiki fetch-reports [YYYY-MM-DD] [--date YYYY-MM-DD] [--all] [--limit N] [--dry-run]
+                       [--types T1,T2,...] [--per-type N]
                                           # 默认拉昨天（按 createTime，本地时区）；--all 回到旧的全量模式
+                                          # --types：仅拉指定 researchType（debug / 抽样）
+                                          # --per-type：每个 researchType 最多 N 条（与 --types 配合）
 
   # —— Triage 流程（推荐）：peek → pass | commit → write → finalize ——
   ae-wiki ingest:peek                     # 列下一份候选 raw 的预览（不写库）
@@ -157,11 +160,15 @@ async function main(): Promise<void> {
         console.error(`fetch-reports 的位置参数必须是 YYYY-MM-DD（收到 "${date}"）`);
         process.exit(1);
       }
+      const typesArg = getArg("--types");
+      const perTypeArg = getArg("--per-type");
       const result = await fetchReports({
         limit: limit ? parseInt(limit, 10) : undefined,
         dryRun: getFlag("--dry-run"),
         date,
         all: getFlag("--all"),
+        types: typesArg ? typesArg.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
+        perTypeLimit: perTypeArg ? parseInt(perTypeArg, 10) : undefined,
       });
       console.log("\n[fetch-reports] 完成:", result);
       break;

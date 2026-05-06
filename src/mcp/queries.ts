@@ -698,6 +698,80 @@ export async function recentActivity(
 }
 
 // ============================================================================
+// 7.5 list_recent_comments — 最近 page_comments（人工反馈）
+// ============================================================================
+// agent / skill 用：把人工评论拉出来当 ground truth / 反馈信号。
+// 默认按时间倒序，可按 page slug、intent、days 过滤。
+
+export interface ListRecentCommentsArgs {
+  /** 限定某个 page（slug 或 page id 数字字符串）；省略 = 全部 */
+  page?: string;
+  /** 限定 intent（如 'narrative_gap' / 'fact_correction'）；省略 = 全部 */
+  intent?: string;
+  /** 默认 30 天内 */
+  days?: number;
+  /** 默认 50 条 */
+  limit?: number;
+}
+
+export async function listRecentComments(
+  args: ListRecentCommentsArgs = {}
+): Promise<unknown> {
+  const days = args.days ?? 30;
+  const limit = args.limit ?? 50;
+
+  // page 参数支持 slug 或数字 id
+  let pageFilter = drizzleSql``;
+  if (args.page) {
+    if (/^\d+$/.test(args.page)) {
+      pageFilter = drizzleSql`AND pc.page_id = ${BigInt(args.page)}`;
+    } else {
+      pageFilter = drizzleSql`AND p.slug = ${args.page}`;
+    }
+  }
+
+  const intentFilter = args.intent
+    ? drizzleSql`AND pc.metadata->>'intent' = ${args.intent}`
+    : drizzleSql``;
+
+  const rows = await db.execute(drizzleSql`
+    SELECT pc.id::text                 AS id,
+           pc.page_id::text            AS page_id,
+           p.slug                      AS page_slug,
+           p.type                      AS page_type,
+           p.title                     AS page_title,
+           pc.author,
+           pc.content,
+           pc.metadata,
+           pc.create_time::text        AS create_time
+    FROM page_comments pc
+    JOIN pages p ON p.id = pc.page_id
+    WHERE pc.deleted = 0
+      AND p.deleted = 0
+      AND pc.create_time > NOW() - (${days}::int * INTERVAL '1 day')
+      ${pageFilter}
+      ${intentFilter}
+    ORDER BY pc.create_time DESC
+    LIMIT ${limit}
+  `);
+
+  return rows.map((r) => {
+    const row = r as Record<string, unknown>;
+    return {
+      id: String(row.id),
+      page_id: String(row.page_id),
+      page_slug: String(row.page_slug ?? ""),
+      page_type: String(row.page_type ?? ""),
+      page_title: String(row.page_title ?? ""),
+      author: String(row.author ?? ""),
+      content: String(row.content ?? ""),
+      metadata: (row.metadata ?? {}) as Record<string, unknown>,
+      create_time: String(row.create_time),
+    };
+  });
+}
+
+// ============================================================================
 // 8. entity_pulse — entity 级 PM dashboard：typed-edge 分布 + 最近来源 + facts 概览
 // ============================================================================
 
