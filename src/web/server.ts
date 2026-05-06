@@ -102,6 +102,42 @@ export async function startWebServer(opts: ServeOpts = {}): Promise<void> {
           return html(await viewSearch(q, type, pageReq, { mode, debug }));
         }
 
+        // Page comments — add (POST /pages/:id/comments)
+        const commentAddMatch = path.match(/^\/pages\/([^/]+)\/comments$/);
+        if (commentAddMatch && req.method === "POST") {
+          const pageIdent = decodeURIComponent(commentAddMatch[1] ?? "");
+          const form = await req.formData();
+          const author = String(form.get("author") ?? "").trim().slice(0, 64);
+          const content = String(form.get("content") ?? "").trim();
+          const sectionRaw = String(form.get("section") ?? "").trim().slice(0, 200);
+          const intentRaw = String(form.get("intent") ?? "").trim().slice(0, 64);
+          if (!content) {
+            return jsonErr(400, "content is required");
+          }
+          if (content.length > 8000) {
+            return jsonErr(400, "content too long (>8000 chars)");
+          }
+          const { addPageComment, resolvePageId } = await import("./comments.ts");
+          const pageId = await resolvePageId(pageIdent);
+          if (!pageId) return jsonErr(404, "page not found");
+          const metadata: Record<string, string> = {};
+          if (sectionRaw) metadata.section = sectionRaw;
+          if (intentRaw) metadata.intent = intentRaw;
+          await addPageComment({ pageId, author, content, metadata });
+          return Response.redirect(`/pages/${pageIdent}#comments`, 303);
+        }
+
+        // Page comments — soft delete (POST /comments/:id/delete)
+        const commentDelMatch = path.match(/^\/comments\/(\d+)\/delete$/);
+        if (commentDelMatch && req.method === "POST") {
+          const commentId = BigInt(commentDelMatch[1] ?? "0");
+          const form = await req.formData();
+          const redirectTo = String(form.get("redirect") ?? "/").trim() || "/";
+          const { deletePageComment } = await import("./comments.ts");
+          await deletePageComment(commentId);
+          return Response.redirect(redirectTo, 303);
+        }
+
         // Pages
         const pageMatch = path.match(/^\/pages\/(.+)$/);
         if (pageMatch && req.method === "GET") {

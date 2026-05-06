@@ -23,6 +23,7 @@ import {
 // thesis CLI is read directly via SQL in viewTheses to support pagination.
 
 import { getSessionTurns, type ChatTurn } from "./chat.ts";
+import { listPageComments, type PageCommentRow } from "./comments.ts";
 
 import {
   confidenceTag,
@@ -646,6 +647,8 @@ export async function viewPage(identifier: string): Promise<string> {
     ORDER BY te.event_date DESC LIMIT 30
   `);
 
+  const comments = await listPageComments(BigInt(page.id));
+
   const meta = page.frontmatter ?? {};
   const isEntity = ["company", "industry", "concept"].includes(page.type);
 
@@ -860,8 +863,79 @@ ${inLinks.length > 0
 }
 
 ${page.type === "thesis" ? await renderThesisAdmin(BigInt(page.id), page.content ?? "") : ""}
+
+${renderCommentsSection(page.slug, comments)}
 `;
   return layout({ title: page.title, body });
+}
+
+/**
+ * 评论区：列出已有评论 + 新增表单。
+ *
+ * 用 page.slug 作为 form action 的 path 段——server.ts 那边的 resolvePageId 也支持
+ * id / slug 两种 identifier，保持页面层路由一致（/pages/:identifier 上下文）。
+ */
+function renderCommentsSection(pageSlug: string, comments: PageCommentRow[]): string {
+  const slugSeg = encodeURIComponent(pageSlug);
+  const list =
+    comments.length === 0
+      ? `<div class="muted" style="margin: 8px 0;">No comments yet.</div>`
+      : `<ul class="plain comments-list" style="margin: 0; padding: 0;">
+          ${comments
+            .map((c) => {
+              const meta = c.metadata ?? {};
+              const section = typeof meta.section === "string" ? meta.section : "";
+              const intent = typeof meta.intent === "string" ? meta.intent : "";
+              const tags = [
+                section ? `<span class="tag">section: ${escape(section)}</span>` : "",
+                intent ? `<span class="tag">intent: ${escape(intent)}</span>` : "",
+              ]
+                .filter(Boolean)
+                .join(" ");
+              return `<li class="comment" style="margin: 12px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-soft, #fafaf9);">
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
+                  <div>
+                    <strong>${escape(c.author)}</strong>
+                    <span class="muted" style="margin-left: 8px; font-size: 12px;">${escape(c.create_time.slice(0, 19).replace("T", " "))}</span>
+                    ${tags ? `<span style="margin-left: 8px;">${tags}</span>` : ""}
+                  </div>
+                  <form method="post" action="/comments/${escape(c.id)}/delete" style="margin: 0;" onsubmit="return confirm('删除这条评论？');">
+                    <input type="hidden" name="redirect" value="/pages/${slugSeg}#comments" />
+                    <button type="submit" class="btn-inline danger" style="font-size: 12px; padding: 2px 8px;">delete</button>
+                  </form>
+                </div>
+                <div class="comment-body" style="white-space: pre-wrap; font-size: 14px; line-height: 1.6;">${escape(c.content)}</div>
+              </li>`;
+            })
+            .join("")}
+        </ul>`;
+
+  return `
+<h2 id="comments">Comments (${comments.length})</h2>
+<p class="muted" style="font-size: 12px; margin-top: -4px;">
+  人工反馈通道。后续 skill / agent 会读这里的评论调整 fact 抽取 / narrative 写法。
+</p>
+${list}
+<form method="post" action="/pages/${slugSeg}/comments" class="comment-form" style="margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 4px;">
+  <div class="form-row" style="display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">
+    <input type="text" name="author" placeholder="Your name (optional)" maxlength="64" style="flex: 1; min-width: 200px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg);" />
+    <input type="text" name="section" placeholder="Section (optional, e.g. Bull Case)" maxlength="200" style="flex: 1; min-width: 200px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg);" />
+    <select name="intent" style="padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg);">
+      <option value="">Intent (optional)</option>
+      <option value="skill_feedback">skill_feedback</option>
+      <option value="fact_correction">fact_correction</option>
+      <option value="narrative_gap">narrative_gap</option>
+      <option value="triage_wrong">triage_wrong</option>
+      <option value="general">general</option>
+    </select>
+  </div>
+  <textarea name="content" rows="4" required maxlength="8000" placeholder="Leave a comment (up to 8000 chars)" style="width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid var(--border); border-radius: 4px; font-family: inherit; font-size: 14px; background: var(--bg); color: var(--fg);"></textarea>
+  <div class="form-row form-actions" style="margin-top: 8px;">
+    <button type="submit">Post comment</button>
+    <span class="muted form-hint" style="margin-left: 12px; font-size: 12px;">Saved to page_comments, readable by agents / skills</span>
+  </div>
+</form>
+`;
 }
 
 /**
