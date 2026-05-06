@@ -122,7 +122,7 @@ function printHelp(): void {
                                           # 跨 source 看同一 metric 的观测分布 + drift（rising/falling/stable + outliers）
 
   # —— Web UI ——
-  ae-wiki web [--port 3000]               # 启动只读 web UI（home / search / page / theses / entities / outputs / queue）
+  ae-wiki web [--port 9083]               # 启动只读 web UI（home / search / page / theses / entities / outputs / queue）
 
   # —— 维护任务（也可作为 minion job 跑：lint_run / facts_expire） ——
   ae-wiki lint:run [--stale-days N] [--raw-age-days N] [--fact-age-days N] [--sample N]
@@ -809,7 +809,7 @@ async function main(): Promise<void> {
 
     case "web": {
       const portStr = getArg("--port");
-      const port = portStr ? parseInt(portStr, 10) : 3000;
+      const port = portStr ? parseInt(portStr, 10) : 9083;
       const { connectWithRetry } = await import("./core/db.ts");
       await connectWithRetry();
       const { startWebServer } = await import("./web/server.ts");
