@@ -36,6 +36,35 @@ skills/
 
 **约定**：修改 skill 时优先修改 `skills/<name>/SKILL.md`，然后再同步到 `.claude/commands/<name>.md` 和 `~/.codex/skills/<name>/`。Codex 与 Claude 的入口内容应保持一致。
 
+## 同步到 Codex
+
+先在仓库内生成一份可检查的 Codex skill 安装目录：
+
+```bash
+cd /Users/levin/project/agent/ae-wiki-agent
+bun scripts/sync-codex-skills.ts --clean
+```
+
+默认输出到 `generated/codex-skills/`。
+
+如果要只生成某几个 skill：
+
+```bash
+bun scripts/sync-codex-skills.ts --only ae-research-ingest,ae-enrich --clean
+```
+
+如果要安装到本机 Codex 自动发现目录：
+
+```bash
+bun scripts/sync-codex-skills.ts --install --clean
+```
+
+同步逻辑：
+
+- 复制 `skills/<name>/SKILL.md`
+- 若存在 `skills/<name>/agents/openai.yaml`，原样复制
+- 若缺失 `openai.yaml`，根据 frontmatter 自动生成最小可用元数据
+
 ## 如何新增一个 skill
 
 1. 在 `skills/<skill-name>/SKILL.md` 写规范，frontmatter 至少包含 `name` 和 `description`

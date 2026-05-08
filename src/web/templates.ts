@@ -316,6 +316,20 @@ a.btn, a.btn:hover { text-decoration: none; }
   font-family: inherit; line-height: 1.4;
 }
 .btn-inline:hover { border-color: var(--accent); color: var(--accent); }
+dialog.facts-modal {
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--fg);
+  padding: 0; max-width: 900px; width: 90vw; max-height: 80vh;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+}
+dialog.facts-modal::backdrop { background: rgba(0,0,0,0.45); }
+.facts-modal-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; background: var(--bg); z-index: 1;
+}
+.facts-modal-header h3 { margin: 0; font-size: 14px; }
+.facts-modal-body { overflow-y: auto; padding: 0 16px 16px; max-height: calc(80vh - 52px); }
 .flash {
   padding: 10px 14px; margin: 12px 0;
   border-radius: 6px; border: 1px solid var(--accent);

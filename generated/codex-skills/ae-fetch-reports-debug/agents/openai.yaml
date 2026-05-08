@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fetch Reports Debug"
+  short_description: "按 researchType 抽样拉取测试样本到 raw_files"
+  default_prompt: "Use $ae-fetch-reports-debug to sample reports by researchType for ingest pipeline debugging."

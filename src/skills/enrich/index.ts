@@ -16,6 +16,83 @@ import { db, schema } from "~/core/db.ts";
 import { withAudit, withCreateAudit, Actor } from "~/core/audit.ts";
 import type { PageType } from "~/core/schema/pages.ts";
 
+/**
+ * 检查候选 aliases 是否与其它 page 的 title / slug name-part / aliases 冲突。
+ *
+ * 防的事故：把 `新易盛`（Eoptolink, 300502.SZ）当成 `companies/innolight`
+ * 的 alias 写进去——这两家是常并称的同业竞品，不是同一家。研报里 `A/B`、
+ * `A 和 B` 的并称在中文行业里 99% 是竞品，不是别名。
+ *
+ * 命中规则（case-insensitive，跨所有 active page，限当前 sourceId 内）：
+ *   - title 完全匹配
+ *   - slug 的 namePart（`split_part(slug,'/',2)`）完全匹配
+ *   - aliases 数组里某元素完全匹配
+ *
+ * 自身 page 不算冲突。
+ */
+async function findAliasConflicts(
+  pageId: bigint,
+  candidates: string[],
+  sourceId: string
+): Promise<
+  Array<{
+    alias: string;
+    conflictPageId: bigint;
+    conflictSlug: string;
+    conflictTitle: string;
+    matchedOn: "title" | "slug-name" | "alias";
+  }>
+> {
+  if (candidates.length === 0) return [];
+  const trimmed = candidates.map((s) => s.trim()).filter((s) => s.length > 0);
+  if (trimmed.length === 0) return [];
+
+  // drizzle 不会自动把 JS array 序列化成 PG 数组字面量；用 ARRAY[...] 显式构造。
+  const arrayLiteral = drizzleSql`ARRAY[${drizzleSql.join(
+    trimmed.map((s) => drizzleSql`${s}`),
+    drizzleSql`, `
+  )}]::text[]`;
+
+  const rows = (await db.execute(drizzleSql`
+    SELECT
+      a.alias AS alias,
+      p.id::text AS page_id,
+      p.slug AS slug,
+      p.title AS title,
+      CASE
+        WHEN lower(p.title) = lower(a.alias) THEN 'title'
+        WHEN lower(split_part(p.slug, '/', 2)) = lower(a.alias) THEN 'slug-name'
+        ELSE 'alias'
+      END AS matched_on
+    FROM unnest(${arrayLiteral}) AS a(alias)
+    JOIN pages p ON p.deleted = 0
+                AND p.source_id = ${sourceId}
+                AND p.id <> ${pageId}
+                AND (
+                  lower(p.title) = lower(a.alias)
+                  OR lower(split_part(p.slug, '/', 2)) = lower(a.alias)
+                  OR EXISTS (
+                    SELECT 1 FROM unnest(p.aliases) AS pa
+                    WHERE lower(pa) = lower(a.alias)
+                  )
+                )
+  `)) as Array<{
+    alias: string;
+    page_id: string;
+    slug: string;
+    title: string;
+    matched_on: "title" | "slug-name" | "alias";
+  }>;
+
+  return rows.map((r) => ({
+    alias: r.alias,
+    conflictPageId: BigInt(r.page_id),
+    conflictSlug: r.slug,
+    conflictTitle: r.title,
+    matchedOn: r.matched_on,
+  }));
+}
+
 export interface RedlinkContext {
   pageId: bigint;
   slug: string;
@@ -216,6 +293,12 @@ export interface EnrichSaveOpts {
   append?: boolean;
   /** append 模式下可选：关联 source slug，作为 update 块标题的 (per [[X]]) 标注 */
   appendSourceSlug?: string;
+  /**
+   * 默认 false。新加的 alias 如果跟其它 page 的 title / slug name-part / aliases
+   * 撞了（case-insensitive），enrichSave 抛错。极少数合法场景（合并过渡期、
+   * 缩写双归属）才传 true 强制写入。
+   */
+  allowAliasConflict?: boolean;
 }
 
 /** Case-insensitive trim dedupe，保留首次出现顺序。*/
@@ -262,15 +345,19 @@ export async function enrichSave(
   hasher.update(narrative);
   const contentHash = hasher.digest("hex");
 
-  // 拿现有 frontmatter + aliases 做 merge
+  // 拿现有 frontmatter + aliases + sourceId 做 merge / 冲突检查
   const [existing] = await db
     .select({
       frontmatter: schema.pages.frontmatter,
       aliases: schema.pages.aliases,
+      sourceId: schema.pages.sourceId,
     })
     .from(schema.pages)
     .where(eq(schema.pages.id, pageId))
     .limit(1);
+  if (!existing) {
+    throw new Error(`enrich:save page #${pageId} 不存在或已删除`);
+  }
 
   const mergedFrontmatter = {
     ...(existing?.frontmatter as Record<string, unknown> ?? {}),
@@ -299,6 +386,33 @@ export async function enrichSave(
         : opts.aliasesRemove
           ? "remove"
           : "merge";
+  }
+
+  // Alias 冲突检查：仅检查"本次新增"的 alias（diff vs 现有），避免老脏数据反复触发。
+  // 命中规则：跨同 source_id 的 active page，title / slug name-part / aliases 任一匹配。
+  if (nextAliases !== undefined && !opts.allowAliasConflict) {
+    const existingArr = (existing.aliases ?? []) as string[];
+    const existingSet = new Set(existingArr.map((a) => a.trim().toLowerCase()));
+    const newlyAdded = nextAliases.filter(
+      (a) => !existingSet.has(a.trim().toLowerCase())
+    );
+    const conflicts = await findAliasConflicts(
+      pageId,
+      newlyAdded,
+      existing.sourceId
+    );
+    if (conflicts.length > 0) {
+      const lines = conflicts.map(
+        (c) =>
+          `  - "${c.alias}" 已属于 page #${c.conflictPageId} (${c.conflictSlug}, title="${c.conflictTitle}", matchedOn=${c.matchedOn})`
+      );
+      throw new Error(
+        `enrich:save 拒绝写入：以下 alias 与已有 page 冲突，强烈疑似把竞品当成别名（参考事故：把 "新易盛/Eoptolink" 误归到 companies/innolight 的 aliases）：\n` +
+          lines.join("\n") +
+          `\n\n如果确属合法的双归属（合并过渡期 / 历史缩写撞名），加 --allow-alias-conflict 强制写入；` +
+          `否则核对实体身份（搜该 alias 在另一家 page 上的 backlinks），用 --aliases-remove 撤回这次的错加。`
+      );
+    }
   }
 
   // 构造 update set —— 只更新提供的字段。append 模式下 content / contentHash

@@ -89,6 +89,7 @@ function printHelp(): void {
                        [--aliases-replace A,B,C]       # 显式完全覆盖（与 --aliases / --aliases-remove 互斥）
                        [--append [--append-source slug]] # 增量追加 dated update（已 enriched 的 entity 复 enrich 用）
                        [--aliases-remove X,Y]          # 从现有 aliases 删除指定项（可与 --aliases 组合）
+                       [--allow-alias-conflict]        # 默认禁止：新 alias 与其它 page 撞 title/slug/alias 时报错
                                                 # 从 stdin 读 narrative 落库 + 更新元数据
   ae-wiki enrich:retype <page_id> --new-type company|industry|concept|thesis [--new-slug X] [--reason "..."]
                                                 # 红链 type 错了（companies/Trainium → concepts/Trainium）
@@ -162,6 +163,7 @@ async function main(): Promise<void> {
       }
       const typesArg = getArg("--types");
       const perTypeArg = getArg("--per-type");
+      const researchIdsArg = getArg("--research-ids");
       const result = await fetchReports({
         limit: limit ? parseInt(limit, 10) : undefined,
         dryRun: getFlag("--dry-run"),
@@ -169,6 +171,7 @@ async function main(): Promise<void> {
         all: getFlag("--all"),
         types: typesArg ? typesArg.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
         perTypeLimit: perTypeArg ? parseInt(perTypeArg, 10) : undefined,
+        researchIds: researchIdsArg ? researchIdsArg.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
       });
       console.log("\n[fetch-reports] 完成:", result);
       break;
@@ -712,6 +715,7 @@ async function main(): Promise<void> {
           aliases: parseList(getArg("--aliases")),
           aliasesReplace: parseList(getArg("--aliases-replace")),
           aliasesRemove: parseList(getArg("--aliases-remove")),
+          allowAliasConflict: args.includes("--allow-alias-conflict"),
           confidence,
           append: args.includes("--append"),
           appendSourceSlug: getArg("--append-source"),

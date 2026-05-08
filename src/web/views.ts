@@ -779,37 +779,59 @@ export async function viewPage(identifier: string): Promise<string> {
           <h3>Facts written by this source (${ownFacts.length})</h3>
           ${ownFacts.length === 0
             ? `<div class="empty">no facts</div>`
-            : `<table><thead><tr><th>Entity</th><th>Metric</th><th>Period</th><th>Value</th></tr></thead><tbody>
-                ${ownFacts
-                  .slice(0, 12)
-                  .map(
-                    (f) => `<tr>
-                      <td><a href="/pages/${encodeURIComponent(String(f.entity_slug ?? ""))}">${escape(f.entity_title ?? f.entity_slug ?? "")}</a></td>
-                      <td>${escape(f.metric ?? "")}</td>
-                      <td class="muted">${escape(f.period ?? "")}</td>
-                      <td>${formatFactValue(f)}</td>
-                    </tr>`
-                  )
-                  .join("")}
-              </tbody></table>${ownFacts.length > 12 ? `<p class="muted">… +${ownFacts.length - 12} more</p>` : ""}`}
+            : (() => {
+                const ownFactRow = (f: typeof ownFacts[number]) => `<tr>
+                  <td><a href="/pages/${encodeURIComponent(String(f.entity_slug ?? ""))}">${escape(String(f.entity_title ?? f.entity_slug ?? ""))}</a></td>
+                  <td>${escape(String(f.metric ?? ""))}</td>
+                  <td class="muted">${escape(String(f.period ?? ""))}</td>
+                  <td>${formatFactValue(f)}</td>
+                </tr>`;
+                const thead = `<thead><tr><th>Entity</th><th>Metric</th><th>Period</th><th>Value</th></tr></thead>`;
+                return `<table>${thead}<tbody>${ownFacts.slice(0, 12).map(ownFactRow).join("")}</tbody></table>
+                ${ownFacts.length > 12 ? `
+                  <p style="margin:8px 0 0;">
+                    <button class="btn-inline" onclick="document.getElementById('dlg-own-facts').showModal()">Show all ${ownFacts.length} facts →</button>
+                  </p>
+                  <dialog class="facts-modal" id="dlg-own-facts">
+                    <div class="facts-modal-header">
+                      <h3>All facts written by this source (${ownFacts.length})</h3>
+                      <button class="btn-inline" onclick="document.getElementById('dlg-own-facts').close()">✕ close</button>
+                    </div>
+                    <div class="facts-modal-body">
+                      <table>${thead}<tbody>${ownFacts.map(ownFactRow).join("")}</tbody></table>
+                    </div>
+                  </dialog>` : ""}`;
+              })()
+          }
         </div>`
       : `<div class="card">
           <h3>Latest facts about this entity (${facts.length})</h3>
           ${facts.length === 0
             ? `<div class="empty">no facts</div>`
-            : `<table><thead><tr><th>Metric</th><th>Period</th><th>Value</th><th>Source</th></tr></thead><tbody>
-                ${facts
-                  .slice(0, 15)
-                  .map(
-                    (f) => `<tr>
-                      <td>${escape(f.metric)}</td>
-                      <td class="muted">${escape(f.period ?? "")}</td>
-                      <td>${escape(String(f.value ?? ""))}${f.unit ? ` <span class="muted">${escape(f.unit)}</span>` : ""}</td>
-                      <td>${f.source_slug ? `<a href="/pages/${encodeURIComponent(f.source_slug)}">${escape(f.source_slug.split("/").pop() ?? "")}</a>` : ""}</td>
-                    </tr>`
-                  )
-                  .join("")}
-              </tbody></table>${facts.length > 15 ? `<p class="muted">… +${facts.length - 15} more</p>` : ""}`}
+            : (() => {
+                const factRow = (f: typeof facts[number]) => `<tr>
+                  <td>${escape(f.metric)}</td>
+                  <td class="muted">${escape(f.period ?? "")}</td>
+                  <td>${escape(String(f.value ?? ""))}${f.unit ? ` <span class="muted">${escape(f.unit)}</span>` : ""}</td>
+                  <td>${f.source_slug ? `<a href="/pages/${encodeURIComponent(f.source_slug)}">${escape(f.source_slug.split("/").pop() ?? "")}</a>` : ""}</td>
+                </tr>`;
+                const thead = `<thead><tr><th>Metric</th><th>Period</th><th>Value</th><th>Source</th></tr></thead>`;
+                return `<table>${thead}<tbody>${facts.slice(0, 15).map(factRow).join("")}</tbody></table>
+                ${facts.length > 15 ? `
+                  <p style="margin:8px 0 0;">
+                    <button class="btn-inline" onclick="document.getElementById('dlg-facts').showModal()">Show all ${facts.length} facts →</button>
+                  </p>
+                  <dialog class="facts-modal" id="dlg-facts">
+                    <div class="facts-modal-header">
+                      <h3>All facts (${facts.length})</h3>
+                      <button class="btn-inline" onclick="document.getElementById('dlg-facts').close()">✕ close</button>
+                    </div>
+                    <div class="facts-modal-body">
+                      <table>${thead}<tbody>${facts.map(factRow).join("")}</tbody></table>
+                    </div>
+                  </dialog>` : ""}`;
+              })()
+          }
         </div>`
   }
 </div>

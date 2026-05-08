@@ -33,6 +33,8 @@ interface FetchReportsOptions {
   types?: string[];
   /** 每个 researchType 最多拉 N 条（debug / 抽样用，与 types 配合）。 */
   perTypeLimit?: number;
+  /** 指定一批 researchId，只拉这些报告（精准补抓用）。传入时自动跳过日期过滤。 */
+  researchIds?: string[];
 }
 
 interface FetchReportsResult {
@@ -66,7 +68,10 @@ function resolveDateRange(opts: FetchReportsOptions): { start: Date; end: Date }
 export async function fetchReports(
   opts: FetchReportsOptions = {}
 ): Promise<FetchReportsResult> {
-  const range = resolveDateRange(opts);
+  // researchIds 精准模式：自动跳过日期过滤
+  const range = opts.researchIds && opts.researchIds.length > 0
+    ? null
+    : resolveDateRange(opts);
   const result: FetchReportsResult = {
     scanned: 0,
     inserted: 0,
@@ -78,7 +83,9 @@ export async function fetchReports(
       : null,
   };
 
-  if (range) {
+  if (opts.researchIds && opts.researchIds.length > 0) {
+    console.log(`[fetch-reports] 精准模式：researchIds × ${opts.researchIds.length}`);
+  } else if (range) {
     console.log(
       `[fetch-reports] 过滤 createTime ∈ [${range.start.toISOString()}, ${range.end.toISOString()})`
     );
@@ -93,6 +100,11 @@ export async function fetchReports(
   };
   if (range) {
     filter.createTime = { $gte: range.start, $lt: range.end };
+  }
+
+  // --research-ids 精准过滤
+  if (opts.researchIds && opts.researchIds.length > 0) {
+    filter.researchId = { $in: opts.researchIds };
   }
 
   // --types 过滤：把名称转成 mongo 里存的数字 id
