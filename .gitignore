@@ -8,6 +8,7 @@ drizzle/meta/
 .turbo/
 .runtime/
 
+/logs/
 /demo/
 /raw/
 

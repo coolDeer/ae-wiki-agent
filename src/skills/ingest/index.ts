@@ -229,8 +229,13 @@ export async function ingestWriteNarrative(
   pageId: bigint,
   narrative: string
 ): Promise<void> {
+  const { formatPageReviewReport, persistPageReview, reviewNarrativeForPage } =
+    await import("../review/index.ts");
+  const review = await reviewNarrativeForPage(pageId, narrative);
   await stage3WriteNarrative(pageId, narrative, Actor.agentClaude);
+  await persistPageReview(review, Actor.agentClaude);
   console.log(`[ingest:write] page #${pageId} narrative ${narrative.length} chars`);
+  console.log(formatPageReviewReport(review));
 }
 
 /**
@@ -467,12 +472,26 @@ const FINALIZE_STAGES: Array<{
 export interface FinalizeOptions {
   /** 从此 stage 起强制重跑（覆盖已完成跳过逻辑）。N >= 此值的 stage 都重跑。 */
   fromStage?: number;
+  /** 紧急兜底：跳过 deterministic page review gate。默认 false。 */
+  skipReview?: boolean;
 }
 
 export async function ingestFinalize(
   pageId: bigint,
   opts: FinalizeOptions = {}
 ): Promise<void> {
+  if (!opts.skipReview) {
+    const { ensurePageReviewPass, formatPageReviewReport } = await import(
+      "../review/index.ts"
+    );
+    const review = await ensurePageReviewPass(pageId, {
+      actor: Actor.systemIngest,
+    });
+    if (review) {
+      console.log(formatPageReviewReport(review));
+    }
+  }
+
   // 反查 raw_file（通过 events.ingest_start 关联）
   const linked = await db
     .select({ id: schema.rawFiles.id, markdownUrl: schema.rawFiles.markdownUrl })

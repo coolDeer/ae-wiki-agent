@@ -1,7 +1,7 @@
 /**
  * lint skill — 知识库健康检查
  *
- * 跑 5 类只读 SQL 检查，输出报告并写一条 events(action='lint_run')
+ * 跑多类健康检查，输出报告并写一条 events(action='lint_run')
  * 供后续审计 / 仪表盘消费。被 `lint_run` minion job 与 CLI `ae-wiki lint:run`
  * 共用。
  */
@@ -10,6 +10,9 @@ import { sql } from "drizzle-orm";
 
 import { Actor, withCreateAudit } from "~/core/audit.ts";
 import { db, schema } from "~/core/db.ts";
+import { findAliasConflicts } from "../alias-conflicts/index.ts";
+import { reviewOutputBacklog } from "../output-review/index.ts";
+import { listReviewBacklog } from "../review/index.ts";
 
 interface LintCheck {
   name: string;
@@ -179,6 +182,36 @@ export async function runLint(opts: LintOptions = {}): Promise<LintReport> {
     count: expiredFactCountRow[0]?.n ?? 0,
     sampleIds: expiredFactRows.slice(0, sampleSize).map((r) => r.id),
     description: `latest fact (valid_to IS NULL) 的 period_end 已过 ${factAgeDays} 天，应跑 facts:expire`,
+  });
+
+  const reviewBacklog = await listReviewBacklog({
+    status: "fail",
+    limit: sampleSize,
+  });
+  checks.push({
+    name: "page_review_failures",
+    count: reviewBacklog.totalMatching,
+    sampleIds: reviewBacklog.rows.map((r) => r.pageId),
+    description: "最近一次 deterministic page review 未通过的页面，finalize 前应先修 narrative",
+  });
+
+  const aliasConflicts = await findAliasConflicts({ limit: sampleSize });
+  checks.push({
+    name: "alias_conflicts",
+    count: aliasConflicts.totalAliasesInConflict,
+    sampleIds: aliasConflicts.rows.flatMap((r) => r.pages.map((p) => p.pageId)).slice(0, sampleSize),
+    description: "多个 active page 共享同一 alias / title / slug-name，需做实体治理",
+  });
+
+  const outputBacklog = await reviewOutputBacklog({ limit: sampleSize });
+  checks.push({
+    name: "daily_output_failures",
+    count: outputBacklog.summary.fail,
+    sampleIds: outputBacklog.rows
+      .filter((row) => row.status === "fail")
+      .map((row) => row.filename)
+      .slice(0, sampleSize),
+    description: "wiki/output 下 daily-review / daily-summarize 未通过 deterministic output review",
   });
 
   const totalIssues = checks.reduce((sum, c) => sum + c.count, 0);

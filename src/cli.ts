@@ -48,11 +48,12 @@ function printHelp(): void {
                                           # peek 后判定无关：标 raw_file skip（不建 page）
   ae-wiki ingest:commit <raw_file_id>     # peek 后判定值得（核心投资素材）：建 page (type=source)
   ae-wiki ingest:brief <raw_file_id>      # peek 后判定为前沿动态（弱相关）：建 page (type=brief)
-  ae-wiki ingest:write <page_id> [--file <path>]  # 从 --file 或 stdin 读 narrative，落 pages.content + page_versions
+  ae-wiki ingest:write <page_id> [--file <path>]  # 从 --file 或 stdin 读 narrative，落 pages.content + page_versions，并跑 deterministic review
   ae-wiki ingest:append <page_id> [--source <slug>] [--file <path>]
                                           # 增量追加 dated update block（enrich 重复触发用，保留观点演化）
                                           # 现有 content 为空时退化为 write 模式
-  ae-wiki ingest:finalize <page_id>       # 跑 Stage 4-8 收尾
+  ae-wiki ingest:finalize <page_id> [--skip-review]
+                                          # 先过 page review gate，再跑 Stage 4-8；--skip-review 仅紧急兜底
 
   # —— 兜底 / 升级 ——
   ae-wiki ingest:skip <page_id> --reason "..."
@@ -98,6 +99,8 @@ function printHelp(): void {
                        [--type T] [--limit N=30] [--dry-run] [--json]
                                                 # 找完整度低 + backlink 多 + 新增 backlink 多的 page 重 enqueue
                                                 # 解决"NVIDIA 永久 conf=low"问题
+  ae-wiki enrich:backlog [--type T] [--limit N] [--json] [--include-in-flight]
+                                                # enrich pipeline 待处理队列：low confidence / low completeness / backlink growth
 
   ae-wiki thesis:list [--status S] [--direction D]                   # 列论点
   ae-wiki thesis:show <page_id>                                      # 单论点诊断（含 facts/signals）
@@ -112,9 +115,20 @@ function printHelp(): void {
   ae-wiki thesis:close <page_id> --reason validated|invalidated|stop_loss|manual
                        [--price-close X] [--date-closed YYYY-MM-DD]
                        [--note "retrospective text"]                 # 归档
+  ae-wiki thesis:backlog [--status S] [--stale-days N] [--signal-days N] [--limit N] [--json]
+                                                # thesis upkeep 队列：过久未更新 / unresolved conditions / recent signals
 
   ae-wiki facts:re-extract <page_id>      # 重跑 Stage 5（针对单页）
+  ae-wiki facts:coverage [--type source|brief|all] [--limit N] [--json]
+                                          # 找看起来应有 fact、但结构化层覆盖偏弱的 source / brief 页
+  ae-wiki output:review <filename> [--json]
+                                          # 跑 deterministic output review，检查 wiki/output 下 daily-review / daily-summarize 的结构与引用
+  ae-wiki output:backlog [--subtype daily-review|daily-summarize|all] [--limit N] [--json]
+                                          # 查看 output 质量 backlog，优先修 fail 的 daily outputs
   ae-wiki links:re-extract <page_id>      # 重跑 Stage 4（针对单页）
+  ae-wiki page:review <page_id> [--json]  # 跑 deterministic page review，检查 schema / wikilink / provenance / blocks
+  ae-wiki page:review-backlog [--status fail|pass|all] [--limit N] [--json]
+                                          # 查看最近 page review 结果，优先清理 fail backlog
 
   # —— PM dashboard / consensus drift ——
   ae-wiki entity:pulse <slug|id> [--recent N] [--facts N]
@@ -127,13 +141,19 @@ function printHelp(): void {
 
   # —— 维护任务（也可作为 minion job 跑：lint_run / facts_expire） ——
   ae-wiki lint:run [--stale-days N] [--raw-age-days N] [--fact-age-days N] [--sample N]
-                                          # 跑 5 项健康检查 + 写 events(action='lint_run')
+                                          # 跑健康检查（orphans / stale thesis / red links / pending raw / expired facts / review failures / alias conflicts）
   ae-wiki orphans [--type T] [--confidence low|medium|high] [--min-age-days N] [--limit N] [--json]
                                           # 列出无入站 link 的实体页（red-link explosion 诊断）
                                           # 默认 type ∈ {company,industry,concept,thesis}，--json 输出结构化数据
   ae-wiki duplicates [--type T] [--min-sim 0.7] [--limit N] [--json]
                                           # 找潜在重复实体（trgm > 阈值 + 同 type）
                                           # 离线 lint，不写 events；agent / 人工 review 后用 enrich:retype 合并
+  ae-wiki alias-conflicts [--type T] [--limit N] [--json]
+                                          # 找多个 active page 共用同一 alias / title / slug-name 的情况
+  ae-wiki page:merge-candidates [--type T] [--min-sim 0.7] [--limit N] [--json] [--include-human-review]
+                                          # 汇总 duplicates + alias-conflicts；默认过滤高风险项，--include-human-review 可把人工复核候选也带上
+  ae-wiki page:merge <canonical_page_id> <duplicate_page_id> [--reason "..."] [--dry-run] [--skip-narrative-fusion]
+                                          # 把 duplicate entity page 合并进 canonical；必要时只迁结构化引用，不自动融合 narrative
   ae-wiki facts:expire [--age N]          # 把 period_end 已过 N 天 (默认 90) 的 latest fact 标 valid_to
 
   ae-wiki --help
@@ -352,7 +372,10 @@ async function main(): Promise<void> {
         fromStage = n;
       }
       const { ingestFinalize } = await import("./skills/ingest/index.ts");
-      await ingestFinalize(BigInt(pageIdStr), fromStage ? { fromStage } : {});
+      await ingestFinalize(BigInt(pageIdStr), {
+        ...(fromStage ? { fromStage } : {}),
+        skipReview: getFlag("--skip-review"),
+      });
       break;
     }
 
@@ -682,6 +705,32 @@ async function main(): Promise<void> {
       break;
     }
 
+    case "thesis:backlog": {
+      const { formatThesisBacklog, getThesisBacklog } = await import(
+        "./skills/thesis/backlog.ts"
+      );
+      const statusArg = getArg("--status");
+      const status =
+        statusArg === "active" ||
+        statusArg === "monitoring" ||
+        statusArg === "closed" ||
+        statusArg === "invalidated"
+          ? statusArg
+          : undefined;
+      const staleDaysStr = getArg("--stale-days");
+      const signalDaysStr = getArg("--signal-days");
+      const limitStr = getArg("--limit");
+      const report = await getThesisBacklog({
+        status,
+        staleDays: staleDaysStr ? parseInt(staleDaysStr, 10) : undefined,
+        signalDays: signalDaysStr ? parseInt(signalDaysStr, 10) : undefined,
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+      });
+      if (getFlag("--json")) console.log(jsonStringify(report));
+      else console.log(formatThesisBacklog(report));
+      break;
+    }
+
     case "enrich:save": {
       const pageIdStr = args[0];
       if (!pageIdStr) {
@@ -793,6 +842,21 @@ async function main(): Promise<void> {
       break;
     }
 
+    case "enrich:backlog": {
+      const { formatEnrichBacklog, getEnrichBacklog } = await import(
+        "./skills/enrich/backlog.ts"
+      );
+      const limitStr = getArg("--limit");
+      const report = await getEnrichBacklog({
+        type: getArg("--type"),
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+        includeInFlight: getFlag("--include-in-flight"),
+      });
+      if (getFlag("--json")) console.log(jsonStringify(report));
+      else console.log(formatEnrichBacklog(report));
+      break;
+    }
+
     case "facts:re-extract": {
       const pageIdStr = args[0];
       if (!pageIdStr) {
@@ -808,6 +872,61 @@ async function main(): Promise<void> {
         contentListJson: undefined,
         actor: Actor.systemIngest,
       });
+      break;
+    }
+
+    case "facts:coverage": {
+      const { formatFactsCoverage, getFactsCoverageBacklog } = await import(
+        "./skills/facts/coverage.ts"
+      );
+      const typeArg = getArg("--type");
+      const type =
+        typeArg === "source" || typeArg === "brief" || typeArg === "all"
+          ? typeArg
+          : undefined;
+      const limitStr = getArg("--limit");
+      const report = await getFactsCoverageBacklog({
+        type,
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+      });
+      if (getFlag("--json")) console.log(jsonStringify(report));
+      else console.log(formatFactsCoverage(report));
+      break;
+    }
+
+    case "output:review": {
+      const filename = args[0];
+      if (!filename) {
+        console.error("output:review 需要 filename，例如 daily-review-2026-04-28.md");
+        process.exit(1);
+      }
+      const { formatOutputReview, reviewOutputFile } = await import(
+        "./skills/output-review/index.ts"
+      );
+      const report = await reviewOutputFile(filename);
+      if (getFlag("--json")) console.log(jsonStringify(report));
+      else console.log(formatOutputReview(report));
+      break;
+    }
+
+    case "output:backlog": {
+      const subtypeArg = getArg("--subtype");
+      const subtype =
+        subtypeArg === "daily-review" ||
+        subtypeArg === "daily-summarize" ||
+        subtypeArg === "all"
+          ? subtypeArg
+          : undefined;
+      const limitStr = getArg("--limit");
+      const { formatOutputBacklog, reviewOutputBacklog } = await import(
+        "./skills/output-review/index.ts"
+      );
+      const report = await reviewOutputBacklog({
+        subtype,
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+      });
+      if (getFlag("--json")) console.log(jsonStringify(report));
+      else console.log(formatOutputBacklog(report));
       break;
     }
 
@@ -894,6 +1013,70 @@ async function main(): Promise<void> {
       break;
     }
 
+    case "alias-conflicts": {
+      const { findAliasConflicts, formatAliasConflictReport } = await import(
+        "./skills/alias-conflicts/index.ts"
+      );
+      const limitStr = getArg("--limit");
+      const asJson = args.includes("--json");
+      try {
+        const report = await findAliasConflicts({
+          type: getArg("--type"),
+          limit: limitStr ? parseInt(limitStr, 10) : undefined,
+        });
+        if (asJson) {
+          console.log(jsonStringify(report));
+        } else {
+          console.log(formatAliasConflictReport(report));
+        }
+      } catch (e) {
+        console.error(`[alias-conflicts] ${(e as Error).message}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case "page:merge": {
+      const canonicalPageIdStr = args[0];
+      const duplicatePageIdStr = args[1];
+      if (!canonicalPageIdStr || !duplicatePageIdStr) {
+        console.error("page:merge 需要 canonical_page_id 和 duplicate_page_id");
+        console.error(
+          '示例: bun src/cli.ts page:merge 1713 1743 --reason "merge duplicate industry page" --dry-run'
+        );
+        process.exit(1);
+      }
+      const { mergePages } = await import("./skills/page-merge/index.ts");
+      const report = await mergePages(BigInt(canonicalPageIdStr), BigInt(duplicatePageIdStr), {
+        reason: getArg("--reason"),
+        actor: getArg("--actor") ?? "agent:claude",
+        dryRun: getFlag("--dry-run"),
+        skipNarrativeFusion: getFlag("--skip-narrative-fusion"),
+      });
+      console.log(jsonStringify(report));
+      break;
+    }
+
+    case "page:merge-candidates": {
+      const { findMergeCandidates, formatMergeCandidates } = await import(
+        "./skills/merge-candidates/index.ts"
+      );
+      const minSimStr = getArg("--min-sim");
+      const limitStr = getArg("--limit");
+      const report = await findMergeCandidates({
+        type: getArg("--type"),
+        minSim: minSimStr ? parseFloat(minSimStr) : undefined,
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+        includeHumanReview: getFlag("--include-human-review"),
+      });
+      if (getFlag("--json")) {
+        console.log(jsonStringify(report));
+      } else {
+        console.log(formatMergeCandidates(report));
+      }
+      break;
+    }
+
     case "facts:expire": {
       const { expireFacts } = await import("./skills/facts/expire.ts");
       const age = getArg("--age");
@@ -931,6 +1114,46 @@ async function main(): Promise<void> {
               : " → 无相似建议，建议改纯文本";
           console.log(`     [[${u.slug}]] (${u.inferredType})${hint}`);
         }
+      }
+      break;
+    }
+
+    case "page:review": {
+      const pageIdStr = args[0];
+      if (!pageIdStr) {
+        console.error("page:review 需要 page_id");
+        process.exit(1);
+      }
+      const { formatPageReviewReport, reviewStoredPage } = await import(
+        "./skills/review/index.ts"
+      );
+      const report = await reviewStoredPage(BigInt(pageIdStr));
+      if (getFlag("--json")) {
+        console.log(jsonStringify(report));
+      } else {
+        console.log(formatPageReviewReport(report));
+      }
+      process.exit(report.status === "fail" ? 2 : 0);
+    }
+
+    case "page:review-backlog": {
+      const { formatReviewBacklogReport, listReviewBacklog } = await import(
+        "./skills/review/index.ts"
+      );
+      const statusArg = getArg("--status");
+      const status =
+        statusArg === "fail" || statusArg === "pass" || statusArg === "all"
+          ? statusArg
+          : undefined;
+      const limitStr = getArg("--limit");
+      const report = await listReviewBacklog({
+        status,
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+      });
+      if (getFlag("--json")) {
+        console.log(jsonStringify(report));
+      } else {
+        console.log(formatReviewBacklogReport(report));
       }
       break;
     }

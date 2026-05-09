@@ -484,6 +484,11 @@ export async function enrichSave(
       .where(eq(schema.pages.id, pageId));
   }
 
+  const { formatPageReviewReport, persistPageReview, reviewStoredPage } =
+    await import("../review/index.ts");
+  const review = await reviewStoredPage(pageId);
+  await persistPageReview(review, actor);
+
   // 写 event
   await db.insert(schema.events).values({
     actor,
@@ -513,6 +518,7 @@ export async function enrichSave(
   console.log(
     `[enrich:save] page #${pageId} narrative ${narrative.length} chars, confidence=${opts.confidence ?? "medium"}${aliasLog}${scoreLog}`
   );
+  console.log(formatPageReviewReport(review));
 }
 
 /**
