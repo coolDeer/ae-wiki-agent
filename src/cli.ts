@@ -86,6 +86,7 @@ function printHelp(): void {
   ae-wiki enrich:list [--type T] [--limit N]    # 列出待 enrich 的红链 entity
   ae-wiki enrich:next [--type T] [--skip N]     # 取下一个红链 + backlink 上下文
   ae-wiki enrich:save <page_id> [--display-name X] [--ticker X] [--sector Y] [--confidence high|medium]
+                       # entity 页 display_name 为空时 --display-name 必填，由 enrich skill 生成
                        [--aliases A,B,C]               # 默认：merge 进现有 aliases（case-insensitive 去重）
                        [--aliases-replace A,B,C]       # 显式完全覆盖（与 --aliases / --aliases-remove 互斥）
                        [--append [--append-source slug]] # 增量追加 dated update（已 enriched 的 entity 复 enrich 用）
@@ -117,6 +118,12 @@ function printHelp(): void {
                        [--note "retrospective text"]                 # 归档
   ae-wiki thesis:backlog [--status S] [--stale-days N] [--signal-days N] [--limit N] [--json]
                                                 # thesis upkeep 队列：过久未更新 / unresolved conditions / recent signals
+  ae-wiki entity:stale [--type T] [--stale-days N] [--limit N] [--json]
+                                                # compiled entity page 落后于新 high-value evidence（typed source / facts / timeline / signals）的积压队列
+  ae-wiki entity:update-candidates [--type T] [--limit N] [--json]
+                                                # 按优先级列出值得 refresh 的 entity；普通 mention backlink 不单独触发
+  ae-wiki entity:refresh <slug|id> [--dry-run] [--source-limit N]
+                                                # 保守追加 entity update block，只消费 high-value evidence 写进 ## Updates
 
   ae-wiki facts:re-extract <page_id>      # 重跑 Stage 5（针对单页）
   ae-wiki facts:coverage [--type source|brief|all] [--limit N] [--json]
@@ -731,6 +738,52 @@ async function main(): Promise<void> {
       break;
     }
 
+    case "entity:stale": {
+      const { formatEntityStaleReport, getEntityStaleReport } = await import(
+        "./skills/entity-refresh/index.ts"
+      );
+      const staleDaysStr = getArg("--stale-days");
+      const limitStr = getArg("--limit");
+      const report = await getEntityStaleReport({
+        type: getArg("--type"),
+        staleDays: staleDaysStr ? parseInt(staleDaysStr, 10) : undefined,
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+      });
+      if (getFlag("--json")) console.log(jsonStringify(report));
+      else console.log(formatEntityStaleReport(report));
+      break;
+    }
+
+    case "entity:update-candidates": {
+      const { formatEntityUpdateCandidates, getEntityUpdateCandidates } = await import(
+        "./skills/entity-refresh/index.ts"
+      );
+      const limitStr = getArg("--limit");
+      const report = await getEntityUpdateCandidates({
+        type: getArg("--type"),
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+      });
+      if (getFlag("--json")) console.log(jsonStringify(report));
+      else console.log(formatEntityUpdateCandidates(report));
+      break;
+    }
+
+    case "entity:refresh": {
+      const ident = args[0];
+      if (!ident) {
+        console.error("entity:refresh 需要 entity slug 或 page id");
+        process.exit(1);
+      }
+      const { refreshEntityPage } = await import("./skills/entity-refresh/index.ts");
+      const sourceLimitStr = getArg("--source-limit");
+      const report = await refreshEntityPage(ident, {
+        dryRun: getFlag("--dry-run"),
+        sourceLimit: sourceLimitStr ? parseInt(sourceLimitStr, 10) : undefined,
+      });
+      console.log(jsonStringify(report));
+      break;
+    }
+
     case "enrich:save": {
       const pageIdStr = args[0];
       if (!pageIdStr) {
@@ -865,10 +918,28 @@ async function main(): Promise<void> {
       }
       const { stage5Facts } = await import("./skills/ingest/stage-5-facts.ts");
       const { Actor } = await import("./core/audit.ts");
+      const { fetchRawMarkdown } = await import("./core/raw-loader.ts");
+      const { db, schema } = await import("./core/db.ts");
+      const { sql: drizzleSql } = await import("drizzle-orm");
+      const linked = await db
+        .select()
+        .from(schema.rawFiles)
+        .where(
+          drizzleSql`EXISTS (
+            SELECT 1 FROM events e
+            WHERE e.action = 'ingest_start'
+              AND e.entity_type = 'page'
+              AND e.entity_id = ${BigInt(pageIdStr)}
+              AND (e.payload->>'rawFileId')::bigint = ${schema.rawFiles.id}
+          )`
+        )
+        .limit(1);
+      const rawFile = linked[0] ?? null;
+      const rawMarkdown = rawFile ? await fetchRawMarkdown(rawFile) : "";
       await stage5Facts({
         pageId: BigInt(pageIdStr),
-        rawFileId: 0n,
-        rawMarkdown: "",
+        rawFileId: rawFile?.id ?? 0n,
+        rawMarkdown,
         contentListJson: undefined,
         actor: Actor.systemIngest,
       });

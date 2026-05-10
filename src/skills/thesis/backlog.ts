@@ -40,6 +40,18 @@ export interface ThesisBacklogReport {
   rows: ThesisBacklogRow[];
 }
 
+export interface RawThesisBacklogRow {
+  page_id: string;
+  slug: string;
+  title: string;
+  status: string;
+  conviction: string | null;
+  target_slug: string | null;
+  days_since_update: number;
+  unresolved_conditions: number;
+  recent_signals: number;
+}
+
 export async function getThesisBacklog(opts: {
   status?: "active" | "monitoring" | "closed" | "invalidated";
   staleDays?: number;
@@ -96,31 +108,7 @@ export async function getThesisBacklog(opts: {
     recent_signals: number;
   }>;
 
-  const mapped = rows.map((row) => {
-    const recommendedAction =
-      row.days_since_update >= staleDays ||
-      row.unresolved_conditions > 0 ||
-      row.recent_signals > 0
-        ? "review_now"
-        : "monitor";
-    const priority =
-      Math.max(row.days_since_update - staleDays, 0) +
-      row.unresolved_conditions * 3 +
-      row.recent_signals * 2;
-    return {
-      pageId: row.page_id,
-      slug: row.slug,
-      title: row.title,
-      status: row.status,
-      conviction: row.conviction,
-      targetSlug: row.target_slug,
-      daysSinceUpdate: row.days_since_update,
-      unresolvedConditions: row.unresolved_conditions,
-      recentSignals: row.recent_signals,
-      priority,
-      recommendedAction,
-    } satisfies ThesisBacklogRow;
-  });
+  const mapped = rows.map((row) => mapThesisBacklogRow(row, staleDays));
 
   return {
     generatedAt: new Date().toISOString(),
@@ -135,6 +123,35 @@ export async function getThesisBacklog(opts: {
       monitor: mapped.filter((row) => row.recommendedAction === "monitor").length,
     },
     rows: mapped,
+  };
+}
+
+export function mapThesisBacklogRow(
+  row: RawThesisBacklogRow,
+  staleDays: number
+): ThesisBacklogRow {
+  const recommendedAction =
+    row.days_since_update >= staleDays ||
+    row.unresolved_conditions > 0 ||
+    row.recent_signals > 0
+      ? "review_now"
+      : "monitor";
+  const priority =
+    Math.max(row.days_since_update - staleDays, 0) +
+    row.unresolved_conditions * 3 +
+    row.recent_signals * 2;
+  return {
+    pageId: row.page_id,
+    slug: row.slug,
+    title: row.title,
+    status: row.status,
+    conviction: row.conviction,
+    targetSlug: row.target_slug,
+    daysSinceUpdate: row.days_since_update,
+    unresolvedConditions: row.unresolved_conditions,
+    recentSignals: row.recent_signals,
+    priority,
+    recommendedAction,
   };
 }
 

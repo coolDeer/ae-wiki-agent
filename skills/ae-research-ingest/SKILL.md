@@ -157,46 +157,74 @@ cd ae-wiki-agent && bun src/cli.ts ingest:commit <rawFileId>
 
 返回 `{pageId, markdownUrl, ...}`，type='source'，slug 前缀 `sources/`。
 
-### Source narrative 模板（7 段必填）
+### Source narrative 模板（投资研究编译版）
 
 **Write the final narrative in English.** Keep ticker symbols, accounting terms, and product names in their standard English forms. Chinese may appear only inside direct quotes, aliases, or source titles when necessary.
 
-**Add a YAML frontmatter block at the top of every source narrative.** At minimum, include `tags` and `view_side`.
+**Add a YAML frontmatter block at the top of every source narrative.** At minimum, include `tags`, `view_side`, `time_horizon`, and `primary_entities`.
 
 ```markdown
 ---
 tags: [semiconductor, memory]
 view_side: neutral
+time_horizon: near_term | medium_term | long_term | mixed
+primary_entities:
+  - companies/<slug>
+  - industries/<slug>
 ---
 
 ## Source Overview
-（一段话总结：主题 / 调研对象 / 关键时点）
+One paragraph: what this source is, who / what it covers, and why it matters now.
 
-## Key Takeaways
-（3-7 条编号列表，每条引用具体数据。覆盖维度：
-  1. 核心数据和变化（价格、产能、增速等定量信息）
-  2. 关键判断与观点（即使没有具体数字）
-  3. 行业参与者的行为模式（结构性观察容易被忽略，但对判断行业拐点至关重要）
-  4. 与市场共识不同的观点（expectation gap）
-  5. 时效性信号（前瞻指引、超预期 / 低于预期））
+## Entities Covered
+- Companies: [[companies/<slug>|Name]]
+- Industries: [[industries/<slug>|Name]]
+- Concepts: [[concepts/<slug>|Name]]
+- Related thesis: [[theses/<slug>|Name]] or None.
 
-## Important Data Points
-（表格优先：指标 | 数据 | 备注 | 来源）
+## Factual Claims And Data
+Use a table whenever possible.
 
-## Notable Quotes / Views
-（blockquote 保留原文。优先收录：管理层表态、专家对结构性问题的判断、反直觉观点）
+| Entity | Metric / Claim | Period | Value | Unit | Source Quote | Why It Matters |
+| --- | --- | --- | --- | --- | --- | --- |
+| [[companies/<slug>|Name]] | revenue | FY2027E | 123 | usd_m | "..." | Explains estimate revision / margin risk / demand inflection. |
 
-## Structural Observations
-（非数字型的长期判断 —— 竞争对手行为模式 / 行业参与者心态变化 / 长期趋势的早期信号。
-**此章节不得省略**，没有则写"None."）
+If the source has no useful numeric data, list the hard non-numeric facts as bullet points with source quotes.
+
+## Core Views
+- View:
+  Evidence:
+  Affected entities:
+  Confidence: high | medium | low
+- View:
+  Evidence:
+  Affected entities:
+  Confidence: high | medium | low
+
+## Investment Mechanism
+Explain the causal chain from source evidence to investment impact:
+source data -> business driver -> revenue / margin / multiple / risk -> affected company or industry.
+
+## Expectation Gap
+- Consensus / prior view:
+- New evidence:
+- Investment implication:
+
+## Investment Implications
+| Direction | Entity | Setup | Catalyst | Risk / Invalidation |
+| --- | --- | --- | --- | --- |
+| long / short / monitor / avoid | [[companies/<slug>|Name]] | ... | ... | ... |
 
 ## Relation To Existing Knowledge
 ### New Information
 ### Confirms Existing View
 ### Contradictions / Revisions
-（写之前先用 search 工具查 wiki 里已有的相关公司/行业页，建立交叉引用）
+（写之前先用 search 工具查 wiki 里已有的相关 source / company / industry 页，建立交叉引用。至少引用 2 个具体已存在页面，优先包含一个 prior source 和一个 company / industry；不要只写泛泛的"confirms prior wiki coverage"。）
 
-## Follow-ups
+## Follow-up Research Tasks
+- Task:
+  Priority: high | medium | low
+  Needed source or data:
 ```
 
 #### 结构化附录：`facts` 走 comment block，`timeline` 走独立尾段
@@ -246,13 +274,15 @@ view_side: neutral
 - `facts`：
 只写原文**明确给出的**数字、口径、估值、指引，不要把你的推断塞进 fact。
 - `timeline`：
-只写**明确的离散事件**，例如业绩披露、指引更新、评级调整、产品发布、已发生的会议/管理层表态。
+只写**明确日期的离散事件**，例如业绩披露、指引更新、评级调整、产品发布、已发生的会议/管理层表态。
+- 禁止把 `2026E` / `2H26` / `this year` / `current` 这类期间硬映射成 `YYYY-01-01` 或 `YYYY-07-01`。
+- 没有精确 `YYYY-MM-DD` 原文日期时，相关内容只能写进 `## Factual Claims And Data`、`## Core Views` 或 `## Follow-up Research Tasks`，不要写 timeline。
 - 如果只有结构性判断、没有明确事件日期：
-写进 `## 结构性观察`，**不要**硬编 timeline。
+写进 `## Core Views` 或 `## Investment Mechanism`，**不要**硬编 timeline。
 - 如果没有可抽取 fact：
-`facts` 块可以省略，但对深度 source 来说通常说明提炼还不够，先回头检查一遍原文。
+`facts` 块可以省略，但对深度 source 来说通常说明提炼还不够，先回头检查一遍原文。省略后 `page:review` 会给 warning，不会阻止 finalize。
 - 如果没有明确 timeline 事件：
-`<!-- timeline -->` 整段都省略。
+`<!-- timeline -->` 整段都省略。省略后 `page:review` 不应阻止 finalize；如果写了 timeline block，YAML 必须能被 Stage 7 解析。
 
 ---
 
@@ -356,7 +386,7 @@ mcp__ae-wiki__search({ query: "H200 channel check", type: "source", keyword_only
 
 ### 3. Aspirational thesis 只能用纯文本
 
-写 `## Follow-ups` 段时构想"未来想 open 的论点"——**不要**写成 `[[theses/X]]` wikilink（即便 stage-4 现在会拒绝建，也不要让坏习惯进 narrative）。改写成：
+写 `## Follow-up Research Tasks` 段时构想"未来想 open 的论点"——**不要**写成 `[[theses/X]]` wikilink（即便 stage-4 现在会拒绝建，也不要让坏习惯进 narrative）。改写成：
 
 ```markdown
 - Build thesis: AWS-AI-reacceleration — long AMZN with conviction triggers on (a) ...
@@ -416,6 +446,8 @@ narrative 内不能这样：
 
 显示用大写写 `[[companies/catl|CATL]]`（slug 仍 lowercase，display 自由）。`pages.title` 列存品牌原写法（"CATL"），slug 是机器友好的标识。
 
+**中国公司中文名必须进入 aliases**：只要 source 里能确认某个中国公司的中文官方名 / 常用中文名，就必须在后续 enrich 时写进 `--aliases`。在 source narrative 中首次提到中国公司时，优先写成 `[[companies/muxi|沐曦]]` 这类带中文 display 的 wikilink；Stage 4 会把安全的中文 display label 自动预填进红链 aliases。不要把 `中际旭创/新易盛` 这种并称整段当 alias。
+
 **ticker 的归宿**：
 - enrich:save 时通过 `--ticker 300750.SZ` 写到 `pages.ticker` 列
 - 多重上市的多 ticker 都填到 `pages.aliases`（`["300750.SZ", "Contemporary Amperex Technology", "宁德时代"]`）
@@ -429,7 +461,7 @@ narrative 内不能这样：
 **不要写 `[[persons/X]]`**——这个 type 已被废弃。CEO / CFO / 高管 / 创始人的信息应当：
 
 - 写在所属公司的 `[[companies/X]]` narrative 或 frontmatter.management 字段里
-- 高管引言放在 source 页的 `## Notable Quotes / Views`，引用时用 `Andy Jassy（[[companies/Amazon]] CEO）`
+- 高管引言放在 source 页的 `## Core Views` 或 `## Factual Claims And Data` 的 `Source Quote` 字段，引用时用 `Andy Jassy（[[companies/Amazon]] CEO）`
 - 匿名专家（"北美广告专家A"）只出现在 source 正文，不需要建实体页
 
 ### 8. 出错怎么办
@@ -786,7 +818,7 @@ bun src/cli.ts ingest:finalize <pageId>
 
 - 这篇素材的归类对吗：`commit / brief / pass`
 - 首次提到的重要实体是否加了 wikilink
-- source 页是否真的写出了 `## 结构性观察`，而不只是数字摘录
+- source 页是否真的写出了 `## Core Views` / `## Investment Mechanism`，而不只是数字摘录
 - `facts` 是否只包含原文明示信息
 - `timeline` 是否只包含有明确日期的离散事件
 - brief 是否足够短，没有硬凑成 source

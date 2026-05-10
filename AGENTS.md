@@ -154,7 +154,7 @@ bun src/cli.ts ingest:finalize <pageId>         # 跑 Stage 4-8 派生
 # Enrich 红链
 bun src/cli.ts enrich:list [--type T] [--limit N]
 bun src/cli.ts enrich:next [--type T] [--skip N]
-bun src/cli.ts enrich:save <pageId> [--ticker X --sector Y --aliases A,B --confidence high|medium]
+bun src/cli.ts enrich:save <pageId> [--display-name X --ticker X --sector Y --aliases A,B --confidence high|medium]
 
 # Thesis 状态机
 bun src/cli.ts thesis:list [--status active]
@@ -220,20 +220,24 @@ bun x tsc --noEmit
 
 ```markdown
 ## Source Overview
-## Key Takeaways       # 编号列表，覆盖 5 维度
-                    # 1. 核心数据和变化
-                    # 2. 关键判断与观点
-                    # 3. 行业参与者的行为模式（结构性观察容易被忽略，但对判断行业拐点至关重要）
-                    # 4. 与市场共识不同的观点（expectation gap）
-                    # 5. 时效性信号（前瞻指引、超预期 / 低于预期）
-## Important Data Points # 表格优先
-## Notable Quotes / Views # blockquote 保留原文
-                    # 优先：管理层表态、专家对结构性问题的判断、反直觉观点
-## Structural Observations # 非数字判断（不得省略，没有则写"none"）
-                    # 竞争对手行为模式 / 行业参与者心态变化 / 长期趋势的早期信号
+## Entities Covered
+                    # 显式列 companies / industries / concepts / related thesis；
+                    # 正文首次提及必须用 wikilink，便于 Stage 4 建图
+## Factual Claims And Data
+                    # 表格优先：Entity | Metric / Claim | Period | Value | Unit | Source Quote | Why It Matters
+                    # 数字和非数字硬事实都可写，但必须带 source quote / why it matters
+## Core Views
+                    # 抽取报告核心观点：View / Evidence / Affected entities / Confidence
+## Investment Mechanism
+                    # source evidence -> business driver -> revenue / margin / multiple / risk
+## Expectation Gap
+                    # prior / consensus view vs new evidence vs investment implication
+## Investment Implications
+                    # Direction | Entity | Setup | Catalyst | Risk / Invalidation
 ## Relation To Existing Knowledge
-   ### New Information / Confirms Existing View / Contradictions Or Revisions
-## Follow-ups
+   ### New Information / Confirms Existing View / Contradictions / Revisions
+                    # 必须引用至少 2 个已存在 source / company / industry 页做具体对比
+## Follow-up Research Tasks
 
 <!-- facts
 - entity: companies/<slug>
@@ -244,15 +248,15 @@ bun x tsc --noEmit
   source_quote: "..."
 -->
 
-<!-- timeline
+<!-- timeline -->
+
 - entity: companies/<slug>
   date: YYYY-MM-DD
   event_type: earnings | guidance | rating_change | product_launch | news | other
   summary: <一句话>
--->
 ```
 
-> **关于 source 编译质量**：source 页是后续所有 wiki 操作的基础（实体页更新、日报、论点跟踪都基于 source，不会回读 raw）。提取容易偏向抓数字而漏掉结构性观点——后者往往才是判断拐点的关键。每次 ingest 前先问自己：这份报告里有没有"非数字但很重要"的判断？不确定时宁可多写。
+> **关于 source 编译质量**：source 页是后续所有 wiki 操作的基础（实体页更新、日报、论点跟踪都基于 source，不会回读 raw）。目标不是写摘要，而是把报告编译成：事实与数据、核心观点、投资机制、反共识点、潜在投资方向。没有明确 YYYY-MM-DD 日期事件时必须省略 timeline block，不要把 2026E / 2H26 硬映射成 YYYY-01-01 / YYYY-07-01；没有可抽取 fact 时可以省略 facts block，但通常应先回头检查原文。
 
 ### 2. Company
 
@@ -432,7 +436,7 @@ frontmatter 中 `tags` 使用 YAML 列表，小写英文，多词用短横线：
 aecapllc API 不定期出新 `researchTypeName`：
 
 - **正文不再落盘**：mongo 同步只入 `raw_files` 表（`markdown_url` 存 S3 直链），ingest 阶段按需 HTTP 拉
-- **Source 页 slug 用缩写前缀**：`ace-` / `cb-` / `mm-` / `sb-` / `vk-` / `sub-` / `twitter-`
+- **Source / brief 页 slug 规则**：`sources/<research_type>-<research_id>` / `briefs/<research_type>-<research_id>`，使用完整 `raw_files.research_id`，不再追加日期；`research_type` 保留 API 原值并做 URL-safe 清洗。
 - **frontmatter `research_type` 保留 API 原值**，`source_type` 走 schema enum 最近映射：
   - `chat_brilliant` / `meeting_minutes` → `transcript`
   - `acecamp_article` / `scuttleblurb` / `substack` → `article` 或 `newsletter`
@@ -477,6 +481,7 @@ ingest:finalize     → 重新 fetch markdown_url，跑 Stage 4 链接 / 5 facts
 
 - 公司：英文全名 / 中文名 / 别称 / ticker（多国上市的多个 ticker 都填）
 - 例：`companies/Tencent.aliases = ['腾讯','腾讯控股','Tencent Holdings','700.HK','TCEHY']`
+- 中国公司硬规则：只要能确认中文官方名或常用中文名，必须写入 `aliases`；source narrative 首次提及时优先用带中文 display 的 wikilink（如 `[[companies/muxi|沐曦]]`），Stage 4 会把安全中文 display label 预填进红链 aliases。
 
 aliases 已自动并入 `pages.tsv`（与 title 同权重 A），任何别名都能被 keyword 搜索命中。
 
@@ -772,6 +777,7 @@ const rows = await sql`SELECT * FROM pages WHERE id = ${1}`;
 | **0 单测 / E2E** | 重构会导致回归 | ⭐⭐⭐ |
 | Stage 5 Tier C LLM 兜底未实现 | 决策已固化（跳过 B，直接 C，见 `stage-5-facts.ts` 头注）；LLM 调用代码待写 | ⭐⭐ |
 | `enrich_entity` worker 未实现 | 红链补全靠 agent 手动跑 enrich:save | ⭐⭐ |
+| `entity:refresh` 尚未接入批量/夜间维护流程 | 已有 `entity:stale` / `entity:update-candidates` / `entity:refresh`，但仍需补 `entity:refresh-batch` 或 minion/nightly 自动消费低风险候选 | ⭐⭐ |
 | chunker 是段级 | 长 markdown 切分质量差 | ⭐ |
 | MCP server 5 工具尚未全实现 | search 已有，list_entities/recent_activity 待补 | ⭐ |
 | Embedding 默认关 | 搜索是纯 keyword，召回受限 | ⭐ |

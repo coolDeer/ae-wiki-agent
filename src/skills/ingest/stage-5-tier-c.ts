@@ -18,7 +18,7 @@ import OpenAI from "openai";
 import { getEnv } from "~/core/env.ts";
 import { recordUsage } from "~/core/llm-usage.ts";
 
-interface TierCFact {
+export interface TierCFact {
   entity: string;
   metric: string;
   period?: string;
@@ -27,7 +27,7 @@ interface TierCFact {
   source_quote: string;
 }
 
-interface CandidateOut {
+export interface TierCValidatedFact {
   entity: string;
   metric: string;
   period?: string;
@@ -50,12 +50,12 @@ const SYSTEM_PROMPT = [
   '7. SKIP any fact whose (entity, metric, period) tuple appears in the "already_extracted" list.',
   "8. If the narrative does not contain new structured numerical facts, return an empty list.",
   "9. Return at most 12 facts.",
-  '10. The "value" field MUST be a NUMBER (or a numeric-looking string like "1.5"). Do NOT extract narrative quotes / opinions / qualitative views as facts. NEVER use metric names like "quote", "comment", "view", "note", "summary", "opinion".',
+  '10. The "value" field MUST be a NUMBER or a qualified numeric string such as ">60%", "<10%", "~20%", "300+", or "10-13". Do NOT extract narrative quotes / opinions / qualitative views as facts. NEVER use metric names like "quote", "comment", "view", "note", "summary", "opinion".',
   "",
   'Return JSON only: {"facts": [...]}',
 ].join("\n");
 
-function extractWikilinkSlugs(text: string): string[] {
+export function extractWikilinkSlugs(text: string): string[] {
   const matches = Array.from(
     text.matchAll(/\[\[((?:companies|industries|concepts)\/[^\]|]+)(?:\|[^\]]+)?\]\]/g)
   );
@@ -110,7 +110,7 @@ function normalizeWhitespace(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
-function validateSourceQuote(quote: string, content: string): boolean {
+export function validateSourceQuote(quote: string, content: string): boolean {
   if (!quote || typeof quote !== "string") return false;
   const trimmed = quote.trim();
   if (trimmed.length < 4) return false;
@@ -122,6 +122,17 @@ function validateSourceQuote(quote: string, content: string): boolean {
 function looksLikeSlug(entity: unknown): boolean {
   if (typeof entity !== "string") return false;
   return /^(companies|industries|concepts)\/[^/\s][^/]*$/.test(entity.trim());
+}
+
+export function isStructuredFactValue(value: unknown): boolean {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (/^[<>≤≥~≈]?\s*\d[\d,]*(?:\.\d+)?\s*%?$/.test(trimmed)) return true;
+  if (/^\d[\d,]*(?:\.\d+)?\s*\+$/.test(trimmed)) return true;
+  if (/^\d[\d,]*(?:\.\d+)?\s*[-–—]\s*\d[\d,]*(?:\.\d+)?$/.test(trimmed)) return true;
+  return false;
 }
 
 async function callLLM(
@@ -220,7 +231,7 @@ async function callLLM(
 export async function extractTierC(
   content: string,
   alreadyExtracted: Set<string>
-): Promise<CandidateOut[]> {
+): Promise<TierCValidatedFact[]> {
   const env = getEnv();
   if (env.STAGE5_TIER_C_DISABLED) {
     console.log("  [stage5:tierC] disabled by env");
@@ -252,62 +263,89 @@ export async function extractTierC(
     return [];
   }
 
-  const kept: CandidateOut[] = [];
-  let droppedSchema = 0;
-  let droppedHallucinated = 0;
-  let droppedDup = 0;
+  const { kept, stats } = validateTierCFacts(raw, {
+    content,
+    alreadyExtracted,
+    allowedEntities,
+  });
 
-  const NON_NUMERIC_METRICS = new Set([
-    "quote",
-    "comment",
-    "view",
-    "note",
-    "summary",
-    "opinion",
-  ]);
+  console.log(
+    `  [stage5:tierC] proposed=${raw.length} kept=${kept.length} dropped_schema=${stats.droppedSchema} dropped_entity=${stats.droppedEntity} dropped_hallucinated=${stats.droppedHallucinated} dropped_dup=${stats.droppedDup}`
+  );
+  return kept;
+}
+
+const NON_NUMERIC_METRICS = new Set([
+  "quote",
+  "comment",
+  "view",
+  "note",
+  "summary",
+  "opinion",
+]);
+
+export function validateTierCFacts(
+  raw: TierCFact[],
+  opts: {
+    content: string;
+    alreadyExtracted: Set<string>;
+    allowedEntities: string[];
+  }
+): {
+  kept: TierCValidatedFact[];
+  stats: {
+    droppedSchema: number;
+    droppedEntity: number;
+    droppedHallucinated: number;
+    droppedDup: number;
+  };
+} {
+  const allowedEntitySet = new Set(opts.allowedEntities);
+  const kept: TierCValidatedFact[] = [];
+  const stats = {
+    droppedSchema: 0,
+    droppedEntity: 0,
+    droppedHallucinated: 0,
+    droppedDup: 0,
+  };
 
   for (const f of raw) {
     if (!looksLikeSlug(f.entity)) {
-      droppedSchema++;
+      stats.droppedSchema++;
+      continue;
+    }
+    const entity = f.entity.trim();
+    if (!allowedEntitySet.has(entity)) {
+      stats.droppedEntity++;
       continue;
     }
     if (typeof f.metric !== "string" || f.metric.trim().length === 0) {
-      droppedSchema++;
+      stats.droppedSchema++;
       continue;
     }
-    if (NON_NUMERIC_METRICS.has(f.metric.trim().toLowerCase())) {
-      droppedSchema++;
+    const metric = f.metric.trim();
+    if (NON_NUMERIC_METRICS.has(metric.toLowerCase())) {
+      stats.droppedSchema++;
       continue;
     }
-    if (
-      f.value === null ||
-      f.value === undefined ||
-      (typeof f.value !== "number" && typeof f.value !== "string")
-    ) {
-      droppedSchema++;
+    if (!isStructuredFactValue(f.value)) {
+      stats.droppedSchema++;
       continue;
     }
-    // Reject narrative-style "facts" — value 必须是数字或可解析数字串
-    if (typeof f.value === "string") {
-      const numeric = parseFloat(f.value.replace(/,/g, ""));
-      if (!Number.isFinite(numeric)) {
-        droppedSchema++;
-        continue;
-      }
-    }
-    if (!validateSourceQuote(f.source_quote, content)) {
-      droppedHallucinated++;
+    if (!validateSourceQuote(f.source_quote, opts.content)) {
+      stats.droppedHallucinated++;
       continue;
     }
-    const key = `${f.entity.trim()}|${f.metric.trim()}|${(f.period ?? "").trim()}`;
-    if (alreadyExtracted.has(key)) {
-      droppedDup++;
+    const period = f.period?.trim() || undefined;
+    const key = `${entity}|${metric}|${period ?? ""}`;
+    if (opts.alreadyExtracted.has(key)) {
+      stats.droppedDup++;
       continue;
     }
     kept.push({
-      entity: f.entity.trim(),
-      metric: f.metric.trim(),
-      period: f.period?.trim() || undefined,
+      entity,
+      metric,
+      period,
       value: f.value,
       unit: f.unit?.trim() || undefined,
       source_quote: f.source_quote.trim(),
@@ -315,8 +353,5 @@ export async function extractTierC(
     });
   }
 
-  console.log(
-    `  [stage5:tierC] proposed=${raw.length} kept=${kept.length} dropped_schema=${droppedSchema} dropped_hallucinated=${droppedHallucinated} dropped_dup=${droppedDup}`
-  );
-  return kept;
+  return { kept, stats };
 }

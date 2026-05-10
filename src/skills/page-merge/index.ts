@@ -23,7 +23,7 @@ import {
   type PageReviewReport,
 } from "../review/index.ts";
 
-interface PageRow {
+export interface PageRow {
   id: bigint;
   sourceId: string;
   slug: string;
@@ -255,7 +255,7 @@ async function countRows(table: typeof schema.links | typeof schema.facts | type
   return rows[0]?.n ?? 0;
 }
 
-function buildMergedAliases(canonical: PageRow, duplicate: PageRow): string[] {
+export function buildMergedAliases(canonical: PageRow, duplicate: PageRow): string[] {
   const parts = [
     ...(canonical.aliases ?? []),
     ...(duplicate.aliases ?? []),
@@ -613,7 +613,7 @@ async function writeMergeEvents(
   ]);
 }
 
-function dedupeCaseInsensitive(items: string[]): string[] {
+export function dedupeCaseInsensitive(items: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const item of items) {
@@ -634,7 +634,7 @@ function asRecord(value: unknown): Record<string, unknown> {
   return {};
 }
 
-function buildNarrativeMergeDelta(canonical: PageRow, duplicate: PageRow): string {
+export function buildNarrativeMergeDelta(canonical: PageRow, duplicate: PageRow): string {
   const canonicalText = normalizeComparableText(canonical.content);
   const duplicateBody = stripUpdatesSection(duplicate.content).trim();
   if (!duplicateBody) return "";

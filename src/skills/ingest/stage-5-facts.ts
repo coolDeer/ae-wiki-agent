@@ -77,7 +77,7 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
   let unchanged = 0;
 
   for (const f of candidates) {
-    const normalized = await normalize(f, ctx, f.extractedBy);
+    const normalized = await normalize(f, ctx, f.extractedBy, page.content);
     if (!normalized) {
       skipped++;
       continue;
@@ -91,6 +91,7 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
         valueNumeric: schema.facts.valueNumeric,
         valueText: schema.facts.valueText,
         unit: schema.facts.unit,
+        metadata: schema.facts.metadata,
       })
       .from(schema.facts)
       .where(
@@ -105,6 +106,20 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
       .limit(1);
 
     if (current && factValueEquals(current, normalized)) {
+      const patchedMetadata = maybeBackfillFactEvidenceMetadata(
+        current.metadata as Record<string, unknown> | null,
+        normalized
+      );
+      if (patchedMetadata) {
+        await db
+          .update(schema.facts)
+          .set({
+            metadata: patchedMetadata,
+            updateBy: ctx.actor,
+            updateTime: new Date(),
+          })
+          .where(eq(schema.facts.id, current.id));
+      }
       unchanged++;
       continue;
     }
@@ -136,6 +151,7 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
           metadata: {
             extracted_by: normalized.extracted_by,
             source_quote: normalized.source_quote,
+            evidence_context: normalized.evidence_context,
             ...(normalized.table_id
               ? {
                   table_id: normalized.table_id,
@@ -224,7 +240,8 @@ function candidateKey(fact: CandidateFact): string {
 async function normalize(
   f: YamlFact,
   ctx: IngestContext,
-  extractedBy: ExtractedBy
+  extractedBy: ExtractedBy,
+  content: string
 ): Promise<NormalizedFact | null> {
   if (!f.entity || typeof f.entity !== "string") return null;
 
@@ -237,29 +254,8 @@ async function normalize(
 
   if (!f.metric || typeof f.metric !== "string") return null;
 
-  let valueNumeric: string | null = null;
-  let valueText: string | null = null;
-  if (typeof f.value === "number" && Number.isFinite(f.value)) {
-    let v = f.value;
-    // pct 自动归一：metric 以 _margin/_rate/_pct 结尾，或 unit='pct'，且 v>1.5
-    if (
-      (f.metric.endsWith("_margin") ||
-        f.metric.endsWith("_rate") ||
-        f.metric.endsWith("_pct") ||
-        f.unit === "pct") &&
-      v > 1.5
-    ) {
-      v = v / 100;
-    }
-    valueNumeric = v.toString();
-  } else if (typeof f.value === "string") {
-    const parsed = parseFloat(f.value.replace(/,/g, ""));
-    if (Number.isFinite(parsed)) {
-      valueNumeric = parsed.toString();
-    } else {
-      valueText = f.value;
-    }
-  } else {
+  const parsedValue = parseFactValue(f.value, f.metric, f.unit);
+  if (!parsedValue) {
     return null;
   }
 
@@ -267,11 +263,12 @@ async function normalize(
     entity_page_id: entityPageId,
     metric: f.metric,
     period: f.period ?? null,
-    value_numeric: valueNumeric,
-    value_text: valueText,
+    value_numeric: parsedValue.valueNumeric,
+    value_text: parsedValue.valueText,
     unit: f.unit ?? null,
     confidence: (f.confidence ?? 1.0).toString(),
     source_quote: f.source_quote ?? null,
+    evidence_context: buildEvidenceContextFromSources(ctx.rawMarkdown, content, f.source_quote ?? null),
     extracted_by: extractedBy,
     table_id: f.table_id ?? null,
     row_index: typeof f.row_index === "number" ? f.row_index : null,
@@ -281,4 +278,179 @@ async function normalize(
     cell_ref: f.cell_ref ?? null,
     header_path: Array.isArray(f.header_path) ? f.header_path : null,
   };
+}
+
+function maybeBackfillFactEvidenceMetadata(
+  current: Record<string, unknown> | null,
+  candidate: NormalizedFact
+): Record<string, unknown> | null {
+  const metadata = current ?? {};
+  const patch: Record<string, unknown> = { ...metadata };
+  let changed = false;
+
+  if (candidate.source_quote && typeof patch.source_quote !== "string") {
+    patch.source_quote = candidate.source_quote;
+    changed = true;
+  }
+  if (
+    candidate.evidence_context &&
+    (typeof patch.evidence_context !== "string" ||
+      patch.evidence_context.length < candidate.evidence_context.length ||
+      looksLikeGeneratedFactBlockContext(patch.evidence_context) ||
+      looksLikeCompiledNarrativeContext(patch.evidence_context))
+  ) {
+    patch.evidence_context = candidate.evidence_context;
+    changed = true;
+  }
+
+  return changed ? patch : null;
+}
+
+function looksLikeGeneratedFactBlockContext(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    (value.includes("source_quote:") || value.includes("<!-- facts") || value.includes("- entity:"))
+  );
+}
+
+function looksLikeCompiledNarrativeContext(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    (value.includes("[[") ||
+      value.includes("Factual Claims And Data") ||
+      value.includes("Why It Matters") ||
+      value.includes("## Core Views"))
+  );
+}
+
+function buildEvidenceContextFromSources(
+  rawMarkdown: string,
+  narrative: string,
+  sourceQuote: string | null | undefined
+): string | null {
+  const rawContext = buildEvidenceContext(rawMarkdown, sourceQuote);
+  if (rawMarkdown.trim()) return rawContext;
+  return buildEvidenceContext(narrative, sourceQuote);
+}
+
+export function buildEvidenceContext(
+  content: string,
+  sourceQuote: string | null | undefined,
+  windowChars = 280
+): string | null {
+  if (!sourceQuote) return null;
+  const quote = sourceQuote.trim();
+  if (!quote) return null;
+
+  const visibleContent = stripDerivedFactBlocks(content);
+  const variants = sourceQuoteVariants(quote);
+
+  for (const variant of variants) {
+    const directIdx = visibleContent.indexOf(variant);
+    if (directIdx >= 0) {
+      return trimContext(visibleContent, directIdx, directIdx + variant.length, windowChars);
+    }
+  }
+
+  const normalized = normalizeWithMap(visibleContent);
+  for (const variant of variants) {
+    const normalizedQuote = variant.replace(/\s+/g, " ").trim();
+    const normalizedIdx = normalized.text.indexOf(normalizedQuote);
+    if (normalizedIdx < 0) continue;
+    const start = normalized.map[normalizedIdx] ?? 0;
+    const end =
+      normalized.map[Math.min(normalizedIdx + normalizedQuote.length - 1, normalized.map.length - 1)] ??
+      start + variant.length;
+    return trimContext(visibleContent, start, end + 1, windowChars);
+  }
+
+  return quote;
+}
+
+function stripDerivedFactBlocks(content: string): string {
+  return content.replace(/<!--\s*facts\b[\s\S]*?-->/gi, "");
+}
+
+function sourceQuoteVariants(quote: string): string[] {
+  const variants = [
+    quote,
+    quote.replace(/（[^）]*）/g, ""),
+    quote.replace(/\([^)]*\)/g, ""),
+  ]
+    .map((s) => s.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  return Array.from(new Set(variants));
+}
+
+function trimContext(content: string, quoteStart: number, quoteEnd: number, windowChars: number): string {
+  const start = Math.max(0, quoteStart - windowChars);
+  const end = Math.min(content.length, quoteEnd + windowChars);
+  const raw = content.slice(start, end).replace(/\s+/g, " ").trim();
+  const prefix = start > 0 ? "..." : "";
+  const suffix = end < content.length ? "..." : "";
+  return `${prefix}${raw}${suffix}`;
+}
+
+function normalizeWithMap(input: string): { text: string; map: number[] } {
+  let text = "";
+  const map: number[] = [];
+  let inSpace = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i]!;
+    if (/\s/.test(ch)) {
+      if (!inSpace) {
+        text += " ";
+        map.push(i);
+        inSpace = true;
+      }
+      continue;
+    }
+    text += ch;
+    map.push(i);
+    inSpace = false;
+  }
+  return { text, map };
+}
+
+export function parseFactValue(
+  rawValue: unknown,
+  metric: string,
+  unit?: string
+): { valueNumeric: string | null; valueText: string | null } | null {
+  if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
+    let value = rawValue;
+    if (shouldNormalizePct(metric, unit, value)) {
+      value = value / 100;
+    }
+    return { valueNumeric: value.toString(), valueText: null };
+  }
+
+  if (typeof rawValue !== "string") return null;
+  const value = rawValue.trim();
+  if (!value) return null;
+
+  // Preserve qualified values because the qualifier carries investment meaning:
+  // >60%, <10%, ~20%, 300+, 100000+, 10-13万, etc.
+  if (/[<>≤≥~≈+]|(?:\d)\s*[-–—]\s*(?:\d)/.test(value)) {
+    return { valueNumeric: null, valueText: value };
+  }
+
+  const normalized = value.replace(/,/g, "");
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) {
+    return { valueNumeric: null, valueText: value };
+  }
+
+  const numeric = shouldNormalizePct(metric, unit, parsed) ? parsed / 100 : parsed;
+  return { valueNumeric: numeric.toString(), valueText: null };
+}
+
+function shouldNormalizePct(metric: string, unit: string | undefined, value: number): boolean {
+  return (
+    (metric.endsWith("_margin") ||
+      metric.endsWith("_rate") ||
+      metric.endsWith("_pct") ||
+      unit === "pct") &&
+    value > 1.5
+  );
 }

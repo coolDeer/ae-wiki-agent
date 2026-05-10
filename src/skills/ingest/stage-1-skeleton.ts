@@ -24,6 +24,26 @@ const TYPE_TO_SLUG_DIR: Partial<Record<PageType, string>> = {
   brief: "briefs",
 };
 
+export function buildRawFilePageSlug(opts: {
+  slugDir: string;
+  researchType: string | null;
+  researchId: string | null;
+  rawFileId: bigint;
+}): string {
+  const typePart = normalizeSlugPart(opts.researchType ?? "unknown");
+  const idPart = normalizeSlugPart(opts.researchId ?? opts.rawFileId.toString());
+  return `${opts.slugDir}/${typePart}-${idPart}`;
+}
+
+function normalizeSlugPart(value: string): string {
+  return value
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/[\/\\:*?"<>|#%]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "") || "unknown";
+}
+
 export async function stage1CreateSkeleton(
   ctx: IngestContext,
   rawFile: typeof schema.rawFiles.$inferSelect,
@@ -32,10 +52,14 @@ export async function stage1CreateSkeleton(
   const type: PageType = options.type ?? "source";
   const slugDir = options.slugDir ?? TYPE_TO_SLUG_DIR[type] ?? `${type}s`;
 
-  // 生成 slug：<slugDir>/<研究类型缩写>-<研究 ID 短>-<日期短>
-  const datePart = rawFile.createTime.toISOString().slice(2, 10).replace(/-/g, "");
-  const idPart = rawFile.researchId?.slice(-6) ?? rawFile.id.toString();
-  const slug = `${slugDir}/${rawFile.researchType ?? "unknown"}-${idPart}-${datePart}`;
+  // 生成 slug：<slugDir>/<research_type>-<full_research_id>
+  // research_id 已由 raw_files partial unique 保证唯一；不再追加日期，避免 URL 随日期噪声变长。
+  const slug = buildRawFilePageSlug({
+    slugDir,
+    researchType: rawFile.researchType,
+    researchId: rawFile.researchId,
+    rawFileId: rawFile.id,
+  });
 
   // 从 mongo_doc 多拉几个 frontmatter 字段（白名单字段，agent 不要重写）：
   //   - publish_date ← createTime（上游入库时间，approximate publish date）

@@ -6,7 +6,7 @@
 
 import { eq, and, sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
-import { withCreateAudit } from "~/core/audit.ts";
+import { withAudit, withCreateAudit } from "~/core/audit.ts";
 import type { PageType } from "~/core/schema/pages.ts";
 
 const SLUG_TO_TYPE: Record<string, PageType> = {
@@ -86,7 +86,7 @@ export async function resolveOrCreatePage(
     : drizzleSql``;
 
   const found = await db.execute(drizzleSql`
-    SELECT id, slug
+    SELECT id, slug, aliases
     FROM pages
     WHERE deleted = 0
       AND source_id = ${sourceId}
@@ -108,12 +108,19 @@ export async function resolveOrCreatePage(
     LIMIT 1
   `);
 
-  const existing = (found as unknown as Array<{ id: string; slug: string }>)[0];
+  const existing = (found as unknown as Array<{ id: string; slug: string; aliases: string[] | null }>)[0];
   if (existing) {
     if (existing.slug !== slug) {
       console.log(
         `  [resolve] 别名/大小写命中：${slug} → 已有 ${existing.slug} (#${existing.id})`
       );
+    }
+    const mergedAliases = mergeAliases(existing.aliases ?? [], options.initialAliases ?? []);
+    if (mergedAliases.length > (existing.aliases ?? []).length) {
+      await db
+        .update(schema.pages)
+        .set(withAudit({ aliases: mergedAliases }, options.actor))
+        .where(eq(schema.pages.id, BigInt(existing.id)));
     }
     return BigInt(existing.id);
   }
@@ -128,10 +135,11 @@ export async function resolveOrCreatePage(
 
   // 3. 自动建
   //    aliases 默认带上 namePart（保证下次同名不同 case 的 wikilink 能 alias 命中）
-  const initialAliases = options.initialAliases ?? (namePart ? [namePart] : []);
-  const aliases = initialAliases
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  const initialAliases = [
+    ...(namePart ? [namePart] : []),
+    ...(options.initialAliases ?? []),
+  ];
+  const aliases = mergeAliases([], initialAliases);
 
   const [created] = await db
     .insert(schema.pages)
@@ -181,6 +189,20 @@ export async function resolveOrCreatePage(
     )
     .limit(1);
   return recheck[0]?.id ?? null;
+}
+
+function mergeAliases(existing: string[], candidates: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of [...existing, ...candidates]) {
+    const alias = raw.trim();
+    if (!alias) continue;
+    const key = alias.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(alias);
+  }
+  return out;
 }
 
 async function enqueueEnrichEntity(

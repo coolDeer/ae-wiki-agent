@@ -130,6 +130,10 @@ const PROFILE_BY_SUBTYPE: Record<OutputSubtype, ReviewProfile> = {
 export async function reviewOutputFile(filename: string): Promise<OutputReviewReport> {
   const filePath = resolveOutputFile(filename);
   const content = await fs.readFile(filePath, "utf8");
+  return reviewOutputContent(filename, content);
+}
+
+export function reviewOutputContent(filename: string, content: string): OutputReviewReport {
   const parsed = matter(content);
   const data = asRecord(parsed.data);
   const subtype = inferSubtype(filename, data);

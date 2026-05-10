@@ -136,7 +136,7 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
   let linksWritten = 0;
   const unresolved: UnresolvedWikilink[] = [];
 
-  for (const [slug, occurrences] of refsMap) {
+  for (const [slug, ref] of refsMap) {
     if (slug === page.slug) continue;
     const inferredType = slugToType(slug);
     if (!inferredType) continue;
@@ -147,6 +147,7 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
         actor: ctx.actor,
         autoCreate: true,
         sourcePageId: ctx.pageId,
+        initialAliases: ref.aliases,
       });
     } else {
       targetId = await resolveOrCreatePage(slug, {
@@ -171,7 +172,7 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
 
     // 同 (slug, link_type) 共用一行（schema uq_links 含 link_type）。
     // 不同 type 写多行，让 typed-edge graph 长出来。
-    const occByType = groupOccurrencesByLinkType(occurrences);
+    const occByType = groupOccurrencesByLinkType(ref.occurrences);
     let firstWrite = true;
     for (const [linkType, occs] of occByType) {
       const ctxText = buildContext(page.content, occs[0]!);
@@ -366,10 +367,32 @@ interface RefOccurrence {
   linkType: string;
 }
 
-function extractRefs(content: string): Map<string, RefOccurrence[]> {
-  const refs = new Map<string, RefOccurrence[]>();
+interface ExtractedRef {
+  occurrences: RefOccurrence[];
+  aliases: string[];
+}
 
-  const addRef = (slug: string, occ: RefOccurrence): void => {
+export function candidateAliasFromLinkLabel(label: string | undefined): string | null {
+  if (!label) return null;
+  const stripped = stripTypedDisplayPrefix(label).replace(/\s+/g, " ").trim();
+  if (!stripped) return null;
+  if (!/[\u3400-\u9fff]/.test(stripped)) return null;
+  if (stripped.length > 40) return null;
+  if (/[\[\]]/.test(stripped)) return null;
+  if (/[\/／、,，;&；]|(?:\s+and\s+)|(?:\s+or\s+)/i.test(stripped)) return null;
+  return stripped;
+}
+
+function stripTypedDisplayPrefix(display: string): string {
+  const m = display.match(TYPE_PREFIX_RE);
+  if (!m || !m[1] || !VALID_LINK_TYPES.has(m[1])) return display;
+  return display.slice(m[0].length);
+}
+
+function extractRefs(content: string): Map<string, ExtractedRef> {
+  const refs = new Map<string, ExtractedRef>();
+
+  const addRef = (slug: string, occ: RefOccurrence, alias: string | null = null): void => {
     const namePart = slug.split("/").slice(1).join("/");
     if (FORBIDDEN_SLUG_CHARS_RE.test(namePart)) {
       console.log(`  [stage4] 丢弃非法 slug: ${slug}（含 * ? < > | : \\ " 等占位字符）`);
@@ -381,9 +404,12 @@ function extractRefs(content: string): Map<string, RefOccurrence[]> {
       );
       return;
     }
-    const arr = refs.get(slug) ?? [];
-    arr.push(occ);
-    refs.set(slug, arr);
+    const ref = refs.get(slug) ?? { occurrences: [], aliases: [] };
+    ref.occurrences.push(occ);
+    if (alias && !ref.aliases.some((a) => a.toLowerCase() === alias.toLowerCase())) {
+      ref.aliases.push(alias);
+    }
+    refs.set(slug, ref);
   };
 
   const normalize = (s: string): string => s.replace(/\s+/g, " ").trim();
@@ -397,10 +423,11 @@ function extractRefs(content: string): Map<string, RefOccurrence[]> {
     if (!slug.split("/")[1]) continue;
     const start = m.index ?? 0;
     const end = start + m[0].length;
-    addRef(slug, { start, end, linkType: parseLinkType(display) });
+    addRef(slug, { start, end, linkType: parseLinkType(display) }, candidateAliasFromLinkLabel(display));
   }
 
   for (const m of content.matchAll(MD_LINK_RE)) {
+    const label = m[1];
     const full = m[2];
     if (!full) continue;
     const cleaned = full.replace(/^(?:\.\.\/)+/, "").replace(/\.md$/, "");
@@ -411,7 +438,7 @@ function extractRefs(content: string): Map<string, RefOccurrence[]> {
     const slug = `${dir}/${normalize(tail)}`;
     const start = m.index ?? 0;
     const end = start + m[0].length;
-    addRef(slug, { start, end, linkType: "mention" });
+    addRef(slug, { start, end, linkType: "mention" }, candidateAliasFromLinkLabel(label));
   }
 
   return refs;

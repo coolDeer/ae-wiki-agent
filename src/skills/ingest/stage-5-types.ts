@@ -39,6 +39,7 @@ export interface NormalizedFact {
   unit: string | null;
   confidence: string;
   source_quote: string | null;
+  evidence_context: string | null;
   extracted_by: ExtractedBy;
   table_id: string | null;
   row_index: number | null;

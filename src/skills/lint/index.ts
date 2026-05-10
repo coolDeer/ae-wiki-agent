@@ -11,6 +11,7 @@ import { sql } from "drizzle-orm";
 import { Actor, withCreateAudit } from "~/core/audit.ts";
 import { db, schema } from "~/core/db.ts";
 import { findAliasConflicts } from "../alias-conflicts/index.ts";
+import { getEntityStaleReport } from "../entity-refresh/index.ts";
 import { reviewOutputBacklog } from "../output-review/index.ts";
 import { listReviewBacklog } from "../review/index.ts";
 
@@ -212,6 +213,14 @@ export async function runLint(opts: LintOptions = {}): Promise<LintReport> {
       .map((row) => row.filename)
       .slice(0, sampleSize),
     description: "wiki/output 下 daily-review / daily-summarize 未通过 deterministic output review",
+  });
+
+  const staleEntities = await getEntityStaleReport({ staleDays: 1, limit: sampleSize });
+  checks.push({
+    name: "stale_entity_pages",
+    count: staleEntities.summary.totalMatching,
+    sampleIds: staleEntities.rows.map((row) => row.pageId).slice(0, sampleSize),
+    description: "entity page 的 compiled narrative 落后于新 source / facts / timeline / signals",
   });
 
   const totalIssues = checks.reduce((sum, c) => sum + c.count, 0);

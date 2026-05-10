@@ -316,6 +316,22 @@ function dedupeCaseInsensitive(items: string[]): string[] {
   return out;
 }
 
+export function normalizeDisplayName(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return value.replace(/\s+/g, " ").trim();
+}
+
+export function isEntityPageType(type: string): boolean {
+  return type === "company" || type === "industry" || type === "concept";
+}
+
+export function requiresDisplayNameForEnrich(page: {
+  type: string;
+  displayName: string | null;
+}): boolean {
+  return isEntityPageType(page.type) && !page.displayName;
+}
+
 /**
  * 保存 enrich 后的 narrative。
  *   - 写 page_versions 快照（reason='enrich'）
@@ -351,6 +367,9 @@ export async function enrichSave(
       frontmatter: schema.pages.frontmatter,
       aliases: schema.pages.aliases,
       sourceId: schema.pages.sourceId,
+      slug: schema.pages.slug,
+      type: schema.pages.type,
+      displayName: schema.pages.displayName,
     })
     .from(schema.pages)
     .where(eq(schema.pages.id, pageId))
@@ -363,6 +382,17 @@ export async function enrichSave(
     ...(existing?.frontmatter as Record<string, unknown> ?? {}),
     ...(opts.frontmatterMerge ?? {}),
   };
+
+  const nextDisplayName = normalizeDisplayName(opts.displayName);
+  if (opts.displayName !== undefined && !nextDisplayName) {
+    throw new Error("enrich:save --display-name 不能为空");
+  }
+  if (requiresDisplayNameForEnrich(existing) && !nextDisplayName) {
+    throw new Error(
+      `enrich:save 需要 --display-name：${existing.slug} 是 ${existing.type} entity，` +
+        "enrich skill 必须生成 canonical display name 并写入 pages.display_name。"
+    );
+  }
 
   // 计算最终 aliases（仅在 agent 显式传了任何 aliases-* 选项时才更新；否则不动）
   let nextAliases: string[] | undefined;
@@ -421,7 +451,7 @@ export async function enrichSave(
     confidence: opts.confidence ?? "medium",
     frontmatter: mergedFrontmatter,
   };
-  if (opts.displayName !== undefined) updateSet.displayName = opts.displayName;
+  if (nextDisplayName !== undefined) updateSet.displayName = nextDisplayName;
   if (opts.ticker !== undefined) updateSet.ticker = opts.ticker;
   if (opts.sector !== undefined) updateSet.sector = opts.sector;
   if (opts.subSector !== undefined) updateSet.subSector = opts.subSector;

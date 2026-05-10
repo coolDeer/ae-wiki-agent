@@ -40,6 +40,16 @@ export interface FactsCoverageReport {
   rows: FactsCoverageRow[];
 }
 
+export interface RawFactsCoverageRow {
+  page_id: string;
+  slug: string;
+  type: string;
+  title: string;
+  content: string;
+  facts_count: number;
+  table_count: number;
+}
+
 export async function getFactsCoverageBacklog(opts: {
   type?: "source" | "brief" | "all";
   limit?: number;
@@ -99,37 +109,7 @@ export async function getFactsCoverageBacklog(opts: {
   }>;
 
   const mapped = rows
-    .map((row) => {
-      const hasFactsBlock = /<!--\s*facts\b/i.test(row.content);
-      const contentChars = stripMarkdown(row.content).length;
-      const numericTokenCount = (row.content.match(/\b\d[\d.,%xmbnk]*\b/gi) ?? []).length;
-      const coverageRisk =
-        row.table_count > 0 && row.facts_count === 0
-          ? "high"
-          : row.facts_count <= 1
-            ? "medium"
-            : null;
-      if (!coverageRisk) return null;
-      const reason =
-        row.table_count > 0 && row.facts_count === 0
-          ? `has ${row.table_count} table artifacts but no extracted facts`
-          : hasFactsBlock && row.facts_count === 0
-            ? "facts block exists but no facts landed in facts table"
-            : `only ${row.facts_count} facts extracted despite data-like page`;
-      return {
-        pageId: row.page_id,
-        slug: row.slug,
-        type: row.type,
-        title: row.title,
-        factsCount: row.facts_count,
-        hasFactsBlock,
-        tableCount: row.table_count,
-        contentChars,
-        numericTokenCount,
-        coverageRisk,
-        reason,
-      } satisfies FactsCoverageRow;
-    })
+    .map(analyzeFactsCoverageRow)
     .filter((row): row is FactsCoverageRow => row !== null);
 
   return {
@@ -140,6 +120,38 @@ export async function getFactsCoverageBacklog(opts: {
       mediumRisk: mapped.filter((row) => row.coverageRisk === "medium").length,
     },
     rows: mapped,
+  };
+}
+
+export function analyzeFactsCoverageRow(row: RawFactsCoverageRow): FactsCoverageRow | null {
+  const hasFactsBlock = /<!--\s*facts\b/i.test(row.content);
+  const contentChars = stripMarkdown(row.content).length;
+  const numericTokenCount = (row.content.match(/\b\d[\d.,%xmbnk]*\b/gi) ?? []).length;
+  const coverageRisk =
+    row.table_count > 0 && row.facts_count === 0
+      ? "high"
+      : row.facts_count <= 1
+        ? "medium"
+        : null;
+  if (!coverageRisk) return null;
+  const reason =
+    row.table_count > 0 && row.facts_count === 0
+      ? `has ${row.table_count} table artifacts but no extracted facts`
+      : hasFactsBlock && row.facts_count === 0
+        ? "facts block exists but no facts landed in facts table"
+        : `only ${row.facts_count} facts extracted despite data-like page`;
+  return {
+    pageId: row.page_id,
+    slug: row.slug,
+    type: row.type,
+    title: row.title,
+    factsCount: row.facts_count,
+    hasFactsBlock,
+    tableCount: row.table_count,
+    contentChars,
+    numericTokenCount,
+    coverageRisk,
+    reason,
   };
 }
 

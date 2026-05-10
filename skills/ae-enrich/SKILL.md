@@ -187,6 +187,7 @@ cd ae-wiki-agent && bun src/cli.ts enrich:save <pageId> --append --append-source
 
 | flag | 说明 |
 |---|---|
+| `--display-name X` | **必填（company / industry / concept）**：由 enrich skill 生成并写入 `pages.display_name` 的 canonical UI 名称，如 `Cambricon` / `Huawei` / `China AI Accelerators` |
 | `--ticker X` | 把 ticker 字段填上（如 `2931.T` / `600519.SH`） |
 | `--exchange X` | 交易所（`TSE` / `SSE` / `NYSE` ...） |
 | `--sector X` | 行业（与 wiki/industry/ 对齐） |
@@ -200,6 +201,7 @@ cd ae-wiki-agent && bun src/cli.ts enrich:save <pageId> --append --append-source
 
 默认行为：
 - `confidence` 默认从 `'low'` bump 到 `'medium'`
+- entity 页如果当前 `display_name` 为空且命令没有传 `--display-name`，`enrich:save` 会拒绝写入；display name 必须由 enrich skill 显式生成
 - 写一份 page_versions 快照（reason='enrich' / 'enrich:append'）
 - 写一条 events 记录
 
@@ -209,7 +211,15 @@ cd ae-wiki-agent && bun src/cli.ts enrich:save <pageId> --append --append-source
 
 ### Aliases 必填规则（重要）
 
+`display_name` 和 `aliases` 分工不同：
+
+- `display_name`：页面和链接列表默认显示的 canonical 名称，只放一个最适合 UI 的名字；必须由 enrich skill 判断后通过 `--display-name` 写入。
+- `aliases`：所有等价检索名 / 中文名 / ticker / 官方全称，用于搜索和去重。
+- 不要把 source 中的上下文称呼误当 canonical display name，例如 `Huawei Ascend` 可以是某篇 source 的 link label，但 company page `companies/huawei` 的 `display_name` 应是 `Huawei`。
+
 `pages.aliases TEXT[]` 是 stage-4 红链 dedupe 的核心。**enrich 必须填全所有等价名**，否则下次 ingest 写 narrative 用了不同形式（中文名 / 缩写 / 子公司带名 / 多重上市 ticker）就会建出 dup stub（典型事故：`companies/Coherent` 跟 `companies/II-VI Coherent` 因为 aliases 没填全成了两个 page）。
+
+**中国公司硬规则**：凡是中国公司、且能从 source / 招股书 / 公司官网确认中文官方名或常用中文名，`--aliases` 必须包含中文名。最低要求：`英文品牌名 / 官方英文名 / 中文名 / ticker` 四类里能确认多少填多少，例如 `Muxi,MetaX,沐曦,沐曦集成电路（上海）股份有限公司`。缺中文 alias 会导致检索和去重混淆，尤其是国产半导体、光模块、新能源链条。
 
 ### ⚠️ 反模式：把竞品并称当成 alias（事故复盘）
 
@@ -344,6 +354,7 @@ bun src/cli.ts enrich:save 100 \
      ...
 
   4. bun src/cli.ts enrich:save 13 \
+       --display-name "Euglena" \
        --ticker 2931.T --exchange TSE \
        --sector biotechnology --sub-sector microalgae \
        --country JP \

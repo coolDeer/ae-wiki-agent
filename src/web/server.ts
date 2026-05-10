@@ -102,8 +102,8 @@ export async function startWebServer(opts: ServeOpts = {}): Promise<void> {
           return html(await viewSearch(q, type, pageReq, { mode, debug }));
         }
 
-        // Page comments — add (POST /pages/:id/comments)
-        const commentAddMatch = path.match(/^\/pages\/([^/]+)\/comments$/);
+        // Page comments — add (POST /pages/:id-or-slug/comments). Slug may contain /.
+        const commentAddMatch = path.match(/^\/pages\/(.+)\/comments$/);
         if (commentAddMatch && req.method === "POST") {
           const pageIdent = decodeURIComponent(commentAddMatch[1] ?? "");
           const form = await req.formData();
@@ -124,7 +124,7 @@ export async function startWebServer(opts: ServeOpts = {}): Promise<void> {
           if (sectionRaw) metadata.section = sectionRaw;
           if (intentRaw) metadata.intent = intentRaw;
           await addPageComment({ pageId, author, content, metadata });
-          return Response.redirect(`/pages/${pageIdent}#comments`, 303);
+          return Response.redirect(`/pages/${pageIdent.split("/").map((part) => encodeURIComponent(part)).join("/")}#comments`, 303);
         }
 
         // Page comments — soft delete (POST /comments/:id/delete)

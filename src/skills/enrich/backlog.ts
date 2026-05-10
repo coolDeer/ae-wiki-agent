@@ -45,6 +45,19 @@ export interface EnrichBacklogReport {
   rows: EnrichBacklogRow[];
 }
 
+export interface RawEnrichBacklogRow {
+  page_id: string;
+  slug: string;
+  type: string;
+  title: string;
+  confidence: string;
+  completeness_score: string;
+  backlinks: number;
+  last_enrich_at: string | Date | null;
+  new_backlinks_since_enrich: number;
+  in_flight: boolean;
+}
+
 export async function getEnrichBacklog(opts: {
   type?: string;
   limit?: number;
@@ -137,37 +150,7 @@ export async function getEnrichBacklog(opts: {
     in_flight: boolean;
   }>;
 
-  const mapped = rows.map((row) => {
-    const completenessScore = parseFloat(row.completeness_score);
-    const recommendedAction =
-      row.confidence === "low" && row.backlinks >= 2
-        ? "enrich_now"
-        : row.new_backlinks_since_enrich >= 2 || (row.backlinks >= 3 && completenessScore < 0.5)
-          ? "retrigger"
-          : "monitor";
-    const priority =
-      (row.confidence === "low" ? 3 : 1) +
-      Math.min(row.backlinks, 10) +
-      Math.max(0, Math.round((0.8 - completenessScore) * 10));
-
-    return {
-      pageId: row.page_id,
-      slug: row.slug,
-      type: row.type,
-      title: row.title,
-      confidence: row.confidence,
-      completenessScore,
-      backlinks: row.backlinks,
-      newBacklinksSinceEnrich: row.new_backlinks_since_enrich,
-      lastEnrichAt:
-        row.last_enrich_at instanceof Date
-          ? row.last_enrich_at.toISOString()
-          : row.last_enrich_at,
-      inFlight: row.in_flight,
-      priority,
-      recommendedAction,
-    } satisfies EnrichBacklogRow;
-  });
+  const mapped = rows.map(mapEnrichBacklogRow);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -182,6 +165,38 @@ export async function getEnrichBacklog(opts: {
       monitor: mapped.filter((row) => row.recommendedAction === "monitor").length,
     },
     rows: mapped,
+  };
+}
+
+export function mapEnrichBacklogRow(row: RawEnrichBacklogRow): EnrichBacklogRow {
+  const completenessScore = parseFloat(row.completeness_score);
+  const recommendedAction =
+    row.confidence === "low" && row.backlinks >= 2
+      ? "enrich_now"
+      : row.new_backlinks_since_enrich >= 2 || (row.backlinks >= 3 && completenessScore < 0.5)
+        ? "retrigger"
+        : "monitor";
+  const priority =
+    (row.confidence === "low" ? 3 : 1) +
+    Math.min(row.backlinks, 10) +
+    Math.max(0, Math.round((0.8 - completenessScore) * 10));
+
+  return {
+    pageId: row.page_id,
+    slug: row.slug,
+    type: row.type,
+    title: row.title,
+    confidence: row.confidence,
+    completenessScore,
+    backlinks: row.backlinks,
+    newBacklinksSinceEnrich: row.new_backlinks_since_enrich,
+    lastEnrichAt:
+      row.last_enrich_at instanceof Date
+        ? row.last_enrich_at.toISOString()
+        : row.last_enrich_at,
+    inFlight: row.in_flight,
+    priority,
+    recommendedAction,
   };
 }
 

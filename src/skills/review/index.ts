@@ -85,7 +85,7 @@ export interface ReviewBacklogReport {
   rows: ReviewBacklogRow[];
 }
 
-interface PageMeta {
+export interface PageMeta {
   id: bigint;
   slug: string;
   type: string;
@@ -104,11 +104,11 @@ interface SectionBlock {
 const PAGE_REVIEW_VERSION = 1;
 const SECTION_HEADING_RE = /^(#{2,3})\s+(.+?)\s*$/;
 const WIKILINK_RE = /\[\[[^[\]]+\]\]/g;
-const TIMELINE_MARKER_RE = /<!--\s*timeline\s*-->/i;
-const RELATION_SUBSECTIONS = [
-  "New Information",
-  "Confirms Existing View",
-  "Contradictions Or Revisions",
+const TIMELINE_MARKER_RE = /<!--\s*timeline(?:\s*-->)?/i;
+const RELATION_SUBSECTION_GROUPS = [
+  ["New Information"],
+  ["Confirms Existing View"],
+  ["Contradictions / Revisions", "Contradictions Or Revisions"],
 ] as const;
 
 const REVIEW_PROFILES: Partial<Record<string, ReviewProfile>> = {
@@ -117,16 +117,17 @@ const REVIEW_PROFILES: Partial<Record<string, ReviewProfile>> = {
     minWikiLinks: 2,
     requiredSections: [
       "Source Overview",
-      "Key Takeaways",
-      "Important Data Points",
-      "Notable Quotes / Views",
-      "Structural Observations",
+      "Entities Covered",
+      "Factual Claims And Data",
+      "Core Views",
+      "Investment Mechanism",
+      "Expectation Gap",
+      "Investment Implications",
       "Relation To Existing Knowledge",
-      "Follow-ups",
+      "Follow-up Research Tasks",
     ],
     requiredFrontmatterKeys: ["research_id", "research_type", "markdown_url"],
     requireFactsBlock: true,
-    requireTimelineMarker: true,
     requireRelationSubsections: true,
   },
   brief: {
@@ -385,7 +386,7 @@ export function formatPageReviewReport(report: PageReviewReport): string {
   return lines.join("\n");
 }
 
-function buildReviewReport(page: PageMeta, narrative: string): PageReviewReport {
+export function buildReviewReport(page: PageMeta, narrative: string): PageReviewReport {
   const profile = REVIEW_PROFILES[page.type];
   const parsed = matter(narrative);
   const mergedFrontmatter = {
@@ -398,6 +399,7 @@ function buildReviewReport(page: PageMeta, narrative: string): PageReviewReport 
   const wikiLinkCount = (compiledTruth.match(WIKILINK_RE) ?? []).length;
   const facts = extractTierA(compiledTruth);
   const timelineEntries = parseTimelineEntries(timeline);
+  const timelineApproxWarnings = findApproximateTimelineDates(timeline);
   const contentHash = sha256(narrative);
 
   const issues: ReviewIssue[] = [];
@@ -432,7 +434,11 @@ function buildReviewReport(page: PageMeta, narrative: string): PageReviewReport 
         continue;
       }
 
-      if (visibleText(section.body).length < 20) {
+      const isRelationContainer =
+        requiredSection === "Relation To Existing Knowledge" &&
+        profile.requireRelationSubsections &&
+        hasRelationSubsections(sections);
+      if (!isRelationContainer && visibleText(section.body).length < 20) {
         issues.push({
           severity: "warn",
           code: "thin_section",
@@ -472,10 +478,10 @@ function buildReviewReport(page: PageMeta, narrative: string): PageReviewReport 
     if (profile.requireFactsBlock) {
       if (!/<!--\s*facts\b/i.test(compiledTruth)) {
         issues.push({
-          severity: "error",
+          severity: "warn",
           code: "missing_facts_block",
           message: "Missing <!-- facts ... --> YAML block",
-          suggestion: "Append the facts YAML block even when there are only a few high-value datapoints.",
+          suggestion: "Append the facts YAML block when the source contains explicit metrics, estimates, valuation, or guidance.",
         });
       } else if (facts.length === 0) {
         issues.push({
@@ -487,12 +493,13 @@ function buildReviewReport(page: PageMeta, narrative: string): PageReviewReport 
       }
     }
 
-    if (profile.requireTimelineMarker) {
-      if (!TIMELINE_MARKER_RE.test(rawBody)) {
+    const hasTimelineMarker = TIMELINE_MARKER_RE.test(rawBody);
+    if (profile.requireTimelineMarker || hasTimelineMarker) {
+      if (!hasTimelineMarker) {
         issues.push({
           severity: "warn",
           code: "missing_timeline_marker",
-          message: "Missing <!-- timeline --> marker",
+          message: "Missing <!-- timeline ... --> block",
           suggestion: "Add a timeline block for dated events, even if the final list is short.",
         });
       } else if (timeline.trim().length > 0 && timelineEntries === 0) {
@@ -503,35 +510,46 @@ function buildReviewReport(page: PageMeta, narrative: string): PageReviewReport 
           suggestion: "Ensure timeline YAML is an array of {date, event_type, summary}.",
         });
       }
+      for (const warning of timelineApproxWarnings) {
+        issues.push(warning);
+      }
     }
 
     if (profile.requireRelationSubsections) {
-      const relationMissing = RELATION_SUBSECTIONS.every(
-        (sectionName) => !findSection(sections, sectionName)
-      );
+      const relationMissing = !hasRelationSubsections(sections);
       if (relationMissing) {
         issues.push({
           severity: "warn",
           code: "missing_relation_subsections",
-          message: 'Relation To Existing Knowledge is missing the expected subheads ("New Information", "Confirms Existing View", "Contradictions Or Revisions")',
+          message: 'Relation To Existing Knowledge is missing the expected subheads ("New Information", "Confirms Existing View", "Contradictions / Revisions")',
           suggestion: "Split the relation section into the three comparison buckets so downstream review can scan deltas faster.",
         });
+      } else {
+        const relationLinks = relationSubsectionWikiLinks(sections);
+        if (relationLinks.length === 0) {
+          issues.push({
+            severity: "warn",
+            code: "relation_missing_specific_links",
+            message: "Relation To Existing Knowledge has comparison buckets but no wikilinks to existing knowledge",
+            suggestion: "Reference at least two concrete prior source, company, or industry pages so the comparison is useful.",
+          });
+        } else if (relationLinks.length < 2) {
+          issues.push({
+            severity: "warn",
+            code: "relation_too_few_specific_links",
+            message: `Relation To Existing Knowledge only references ${relationLinks.length} existing wiki page(s)`,
+            suggestion: "Reference at least two concrete prior source, company, or industry pages so the comparison is useful.",
+          });
+        } else if (!relationLinks.some((link) => /^(sources|companies|industries)\//.test(link))) {
+          issues.push({
+            severity: "warn",
+            code: "relation_missing_comparable_page_links",
+            message: "Relation To Existing Knowledge links only to concepts, not comparable source/entity pages",
+            suggestion: "Include at least one prior source, company, or industry page in the relation comparison.",
+          });
+        }
       }
     }
-  }
-
-  const structuralObservations = findSection(sections, "Structural Observations");
-  if (
-    page.type === "source" &&
-    structuralObservations &&
-    visibleText(structuralObservations.body).toLowerCase() === "none"
-  ) {
-    issues.push({
-      severity: "warn",
-      code: "structural_observations_none",
-      message: 'Structural Observations is literally "none"',
-      suggestion: "Double-check whether the source contains participant behavior, competitive pattern, or early-cycle signals.",
-    });
   }
 
   return {
@@ -646,6 +664,25 @@ function findSection(sections: SectionBlock[], heading: string): SectionBlock | 
   return sections.find((section) => section.normalizedTitle === normalizedTarget) ?? null;
 }
 
+function hasRelationSubsections(sections: SectionBlock[]): boolean {
+  return RELATION_SUBSECTION_GROUPS.every(
+    (sectionNames) => sectionNames.some((sectionName) => findSection(sections, sectionName))
+  );
+}
+
+function relationSubsectionWikiLinks(sections: SectionBlock[]): string[] {
+  const links: string[] = [];
+  for (const sectionNames of RELATION_SUBSECTION_GROUPS) {
+    const section = sectionNames.map((name) => findSection(sections, name)).find(Boolean);
+    if (!section) continue;
+    for (const match of section.body.matchAll(/\[\[([^[\]|]+)(?:\|[^[\]]+)?\]\]/g)) {
+      const slug = match[1]?.trim();
+      if (slug) links.push(slug);
+    }
+  }
+  return Array.from(new Set(links));
+}
+
 function normalizeHeading(value: string): string {
   return value
     .replace(/[`*_]/g, "")
@@ -687,6 +724,38 @@ function parseTimelineEntries(timeline: string): number {
   } catch {
     return 0;
   }
+}
+
+function findApproximateTimelineDates(timeline: string): ReviewIssue[] {
+  if (!timeline.trim()) return [];
+  let parsed: unknown;
+  try {
+    parsed = YAML.parse(timeline);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+
+  const issues: ReviewIssue[] = [];
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const date = typeof record.date === "string" ? record.date : "";
+    const summary = typeof record.summary === "string" ? record.summary : "";
+    if (!isSuspiciousPlaceholderDate(date, summary)) continue;
+    issues.push({
+      severity: "warn",
+      code: "approximate_timeline_date",
+      message: `Timeline entry "${summary.slice(0, 80)}" appears to use placeholder date ${date}`,
+      suggestion: "Do not map 2026E / 2H26 / current into YYYY-01-01 or YYYY-07-01; omit timeline unless the source gives an exact date.",
+    });
+  }
+  return issues;
+}
+
+function isSuspiciousPlaceholderDate(date: string, summary: string): boolean {
+  if (!/^\d{4}-(01-01|07-01)$/.test(date)) return false;
+  return /\b(expected|planned|plan|ramp|ramping|begin|began|according|source|2h|h2|202\dE?)\b/i.test(summary);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

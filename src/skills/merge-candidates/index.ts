@@ -16,7 +16,7 @@ import {
 } from "../duplicates/index.ts";
 import { findAliasConflicts } from "../alias-conflicts/index.ts";
 
-interface PageMeta {
+export interface MergeCandidatePageMeta {
   id: string;
   sourceId: string;
   slug: string;
@@ -285,7 +285,7 @@ export function formatMergeCandidates(report: MergeCandidatesReport): string {
   return lines.join("\n");
 }
 
-async function loadPageMeta(pageIds: string[]): Promise<Map<string, PageMeta>> {
+async function loadPageMeta(pageIds: string[]): Promise<Map<string, MergeCandidatePageMeta>> {
   if (pageIds.length === 0) return new Map();
   const ids = pageIds.map((id) => BigInt(id));
   const rows = await db
@@ -314,7 +314,7 @@ async function loadPageMeta(pageIds: string[]): Promise<Map<string, PageMeta>> {
   `)) as Array<{ page_id: string; n: number }>;
   const backlinkMap = new Map(backlinkRows.map((row) => [row.page_id, row.n]));
 
-  const map = new Map<string, PageMeta>();
+  const map = new Map<string, MergeCandidatePageMeta>();
   for (const row of rows) {
     map.set(row.id.toString(), {
       id: row.id.toString(),
@@ -337,7 +337,10 @@ async function loadPageMeta(pageIds: string[]): Promise<Map<string, PageMeta>> {
   return map;
 }
 
-function chooseCanonical(a: PageMeta, b: PageMeta): [PageMeta, PageMeta] {
+export function chooseCanonical(
+  a: MergeCandidatePageMeta,
+  b: MergeCandidatePageMeta
+): [MergeCandidatePageMeta, MergeCandidatePageMeta] {
   const rankA = canonicalRank(a);
   const rankB = canonicalRank(b);
   if (rankA > rankB) return [a, b];
@@ -345,7 +348,7 @@ function chooseCanonical(a: PageMeta, b: PageMeta): [PageMeta, PageMeta] {
   return Number(a.id) < Number(b.id) ? [a, b] : [b, a];
 }
 
-function canonicalRank(page: PageMeta): number {
+function canonicalRank(page: MergeCandidatePageMeta): number {
   return (
     confidenceRank(page.confidence) * 100 +
     page.backlinks * 10 +
@@ -368,8 +371,8 @@ function confidenceRank(confidence: string): number {
 }
 
 function computePriority(
-  canonical: PageMeta,
-  duplicate: PageMeta,
+  canonical: MergeCandidatePageMeta,
+  duplicate: MergeCandidatePageMeta,
   evidence: PairEvidence[],
   narrativeAssessment: {
     mergeMode: MergeMode;
@@ -392,8 +395,8 @@ function computePriority(
 }
 
 function buildReasons(
-  canonical: PageMeta,
-  duplicate: PageMeta,
+  canonical: MergeCandidatePageMeta,
+  duplicate: MergeCandidatePageMeta,
   evidence: PairEvidence[]
 ): string[] {
   const reasons: string[] = [];
@@ -418,7 +421,10 @@ function buildReasons(
   return Array.from(new Set(reasons));
 }
 
-function aliasOverlapScore(a: PageMeta, b: PageMeta): number {
+export function aliasOverlapScore(
+  a: MergeCandidatePageMeta,
+  b: MergeCandidatePageMeta
+): number {
   const left = aliasSet(a);
   const right = aliasSet(b);
   let overlap = 0;
@@ -429,7 +435,10 @@ function aliasOverlapScore(a: PageMeta, b: PageMeta): number {
   return overlap / denom;
 }
 
-function narrativeOverlapScore(a: PageMeta, b: PageMeta): number {
+export function narrativeOverlapScore(
+  a: MergeCandidatePageMeta,
+  b: MergeCandidatePageMeta
+): number {
   const left = tokenSet(stripUpdatesSection(a.content));
   const right = tokenSet(stripUpdatesSection(b.content));
   if (left.size === 0 || right.size === 0) return 0;
@@ -440,9 +449,9 @@ function narrativeOverlapScore(a: PageMeta, b: PageMeta): number {
   return overlap / Math.max(Math.min(left.size, right.size), 1);
 }
 
-function classifyNarrativeRisk(
-  canonical: PageMeta,
-  duplicate: PageMeta,
+export function classifyNarrativeRisk(
+  canonical: MergeCandidatePageMeta,
+  duplicate: MergeCandidatePageMeta,
   overlapScore: number
 ): {
   mergeMode: MergeMode;
@@ -508,7 +517,11 @@ function classifyNarrativeRisk(
   };
 }
 
-function isLikelyDuplicateByNames(a: PageMeta, b: PageMeta, overlap: number): boolean {
+export function isLikelyDuplicateByNames(
+  a: MergeCandidatePageMeta,
+  b: MergeCandidatePageMeta,
+  overlap: number
+): boolean {
   if (overlap >= 0.3) return true;
   return normalizeEntityName(a.title) === normalizeEntityName(b.title);
 }
@@ -560,7 +573,7 @@ function normalizeEntityName(value: string): string {
     .trim();
 }
 
-function aliasSet(page: PageMeta): Set<string> {
+function aliasSet(page: MergeCandidatePageMeta): Set<string> {
   const values = [
     page.title,
     page.slug.split("/").slice(1).join("/"),
@@ -573,7 +586,7 @@ function aliasSet(page: PageMeta): Set<string> {
   );
 }
 
-function summarizePage(page: PageMeta): MergeCandidateRow["canonical"] {
+function summarizePage(page: MergeCandidatePageMeta): MergeCandidateRow["canonical"] {
   return {
     pageId: page.id,
     slug: page.slug,

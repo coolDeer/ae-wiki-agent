@@ -1059,7 +1059,7 @@ ON CONFLICT (id) DO NOTHING;
     │
     ├─→ ingest:commit <rf>     (核心投资素材)     → 走 source 路径
     │       ↓
-    │       Stage 1: 建 page 骨架 (type='source', slug='sources/<prefix>-<title>-<date>')
+    │       Stage 1: 建 page 骨架 (type='source', slug='sources/<research_type>-<research_id>')
     │             UPDATE raw_files SET triage_decision='commit', ingested_page_id=<pid>
     │       Stage 2: 切 content_chunks (recursive splitter) + 抽 raw_data(source='tables') 表格 artifact
     │       ↓
@@ -1079,7 +1079,7 @@ ON CONFLICT (id) DO NOTHING;
     │
     └─→ ingest:brief <rf>      (前沿动态弱相关)   → 走 brief 路径
             ↓
-            Stage 1: 建 page 骨架 (type='brief', slug='briefs/<prefix>-<title>-<date>')
+            Stage 1: 建 page 骨架 (type='brief', slug='briefs/<research_type>-<research_id>')
             Stage 2: 切 chunks（短素材通常 1 chunk，无表格）
             ↓
         agent 写 4 段精简 brief（TL;DR / Key Observations / Investment View / Links）
