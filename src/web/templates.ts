@@ -41,7 +41,10 @@ export function fmtSh(
 }
 
 /** 渲染 page.content（含 [[wikilink]] / <!-- facts/timeline -->） */
-export function renderMarkdown(content: string): string {
+export function renderMarkdown(
+  content: string,
+  opts: { evidenceContexts?: Record<string, string> } = {}
+): string {
   // 删 <!-- facts --> / <!-- timeline --> block，给视图单独显示
   const stripped = content
     .replace(/<!--\s*facts[\s\S]*?-->/g, "")
@@ -56,10 +59,86 @@ export function renderMarkdown(content: string): string {
     /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
     (_m, slug, text) => {
       const display = text || slug.split("/").pop() || slug;
-      return `<a href="/pages/${encodeURIComponent(slug)}" class="wikilink">${escape(display)}</a>`;
+      return `<a href="${pageHref(slug)}" class="wikilink">${escape(display)}</a>`;
     }
   );
-  return marked.parse(linked) as string;
+  return enhanceFactualClaimsQuotes(marked.parse(linked) as string, opts.evidenceContexts ?? {});
+}
+
+function enhanceFactualClaimsQuotes(html: string, evidenceContexts: Record<string, string>): string {
+  const startRe = /<h2[^>]*>\s*Factual Claims And Data\s*<\/h2>/i;
+  const start = html.search(startRe);
+  if (start < 0) return html;
+
+  const afterStart = html.slice(start).match(startRe);
+  if (!afterStart || afterStart.index === undefined) return html;
+  const sectionStartEnd = start + afterStart.index + afterStart[0].length;
+  const nextH2Rel = html.slice(sectionStartEnd).search(/<h2[^>]*>/i);
+  const sectionEnd = nextH2Rel >= 0 ? sectionStartEnd + nextH2Rel : html.length;
+
+  const before = html.slice(0, sectionStartEnd);
+  const section = html.slice(sectionStartEnd, sectionEnd);
+  const after = html.slice(sectionEnd);
+  return before + enhanceQuoteCellsInTables(section, evidenceContexts) + after;
+}
+
+function enhanceQuoteCellsInTables(sectionHtml: string, evidenceContexts: Record<string, string>): string {
+  return sectionHtml.replace(/<table>[\s\S]*?<\/table>/g, (table) => {
+    const headerMatch = table.match(/<thead>[\s\S]*?<\/thead>/i);
+    if (!headerMatch) return table;
+    const headers = Array.from(headerMatch[0].matchAll(/<th[^>]*>([\s\S]*?)<\/th>/gi)).map((m) =>
+      stripHtml(m[1] ?? "").trim().toLowerCase()
+    );
+    const quoteIdx = headers.findIndex((h) => h.includes("quote"));
+    if (quoteIdx < 0) return table;
+
+    return table.replace(/<tr>([\s\S]*?)<\/tr>/g, (row, inner) => {
+      if (row.includes("<th")) return row;
+      let idx = -1;
+      const replaced = inner.replace(/<td([^>]*)>([\s\S]*?)<\/td>/g, (cell: string, attrs: string, body: string) => {
+        idx++;
+        if (idx !== quoteIdx) return cell;
+        const quoteText = stripHtml(body).trim();
+        if (!quoteText) return cell;
+        return `<td${attrs}>${renderQuoteTip(quoteText, resolveEvidenceContext(quoteText, evidenceContexts) ?? quoteText)}</td>`;
+      });
+      return `<tr>${replaced}</tr>`;
+    });
+  });
+}
+
+function resolveEvidenceContext(
+  quoteText: string,
+  evidenceContexts: Record<string, string>
+): string | null {
+  const variants = [
+    quoteText,
+    quoteText.replace(/^["'“”]+|["'“”]+$/g, ""),
+  ]
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const variant of variants) {
+    if (evidenceContexts[variant]) return evidenceContexts[variant];
+  }
+  return null;
+}
+
+function renderQuoteTip(quote: string, context: string): string {
+  return `<span class="quote-short">${escape(truncateText(quote, 36))}</span> <span class="evidence-tip evidence-tip-inline" tabindex="0" aria-label="引用原文" title="引用原文">ⓘ<span class="evidence-tooltip">${escape(context)}</span></span>`;
+}
+
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]*>/g, "").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+}
+
+function truncateText(value: string, maxLen: number): string {
+  return value.length <= maxLen ? value : `${value.slice(0, maxLen - 1)}…`;
+}
+
+export function pageHref(slugOrId: string | number | bigint | null | undefined): string {
+  const raw = String(slugOrId ?? "").trim();
+  if (!raw) return "/pages/";
+  return `/pages/${raw.split("/").map((part) => encodeURIComponent(part)).join("/")}`;
 }
 
 const CSS = `
@@ -182,13 +261,114 @@ tr:last-child td { border-bottom: none; }
   background: var(--bg);
 }
 .card h3 { margin-top: 0; }
+.collapsible-card { padding: 0; overflow: hidden; }
+.collapsible-card summary {
+  list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 18px; font-weight: 600;
+}
+.collapsible-card summary::-webkit-details-marker { display: none; }
+.collapsible-card summary::before {
+  content: "▸"; color: var(--muted);
+  transition: transform 120ms ease;
+}
+.collapsible-card[open] summary { border-bottom: 1px solid var(--border); }
+.collapsible-card[open] summary::before { transform: rotate(90deg); }
+.collapsible-card > :not(summary) { margin-left: 18px; margin-right: 18px; }
+.collapsible-card > :last-child { margin-bottom: 16px; }
+.summary-title { text-align: left; }
+.summary-right {
+  margin-left: auto;
+  display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  justify-content: flex-end; font-weight: 400;
+}
+.card-title-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 8px;
+}
+.card-title-row h3 { margin: 0; }
+.card-note { margin: 4px 0 12px; font-size: 12px; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+.page-summary-stack { display: flex; flex-direction: column; gap: 16px; }
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 14px; font-size: 13px; }
+.kv-compact { grid-template-columns: 118px 1fr; gap: 5px 12px; }
 .kv .k { color: var(--muted); }
+.metadata-card h4 {
+  margin-top: 14px; margin-bottom: 6px; font-size: 11px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--muted);
+}
+.meta-stats {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px; margin: 10px 0 12px;
+}
+.meta-stats > div {
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; background: var(--bg-soft);
+}
+.meta-stats strong { display: block; font-size: 15px; color: var(--fg); }
+.meta-stats span { display: block; font-size: 11px; color: var(--muted); }
+.meta-chip {
+  display: inline-block; padding: 1px 7px; margin: 0 4px 4px 0;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg-soft); color: var(--fg); font-size: 12px;
+}
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.fact-summary {
+  display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 10px;
+  color: var(--muted); font-size: 12px;
+}
+.fact-summary span {
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 2px 8px; background: var(--bg-soft);
+}
+.facts-table {
+  table-layout: fixed;
+}
+.facts-table th,
+.facts-table td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.facts-table td:first-child { width: 28%; }
+.facts-table td:nth-child(2) { width: 22%; }
+.facts-table td:nth-child(3) { width: 18%; }
+.facts-table td:nth-child(4) { width: 32%; }
+.source-quote {
+  margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.45;
+  border-left: 2px solid var(--border); padding-left: 8px;
+}
+.evidence-tip {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin-left: 6px; border-radius: 50%;
+  border: 1px solid var(--border); color: var(--muted); background: var(--bg-soft);
+  font-size: 12px; cursor: help; vertical-align: middle;
+}
+.evidence-tip-inline {
+  width: 18px; height: 18px; padding: 0; border-radius: 50%;
+  font-size: 12px; color: var(--accent);
+}
+.quote-short { color: var(--muted); }
+.evidence-tooltip {
+  display: none; position: absolute; z-index: 20;
+  top: 24px; right: 0; width: min(560px, 70vw); max-height: 260px; overflow: auto;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--fg); box-shadow: 0 8px 28px rgba(0,0,0,0.16);
+  font-size: 12px; line-height: 1.5; text-align: left; white-space: pre-wrap;
+}
+.evidence-tip:hover .evidence-tooltip,
+.evidence-tip:focus .evidence-tooltip,
+.evidence-tip:focus-within .evidence-tooltip {
+  display: block;
+}
+.tag.evidence-tag, .tag.link-type-high { color: var(--positive); border-color: var(--positive); }
+.tag.link-type-mention { color: var(--muted); border-color: var(--border); }
 .empty { color: var(--muted); padding: 24px; text-align: center; font-style: italic; }
 .content {
   max-width: 760px; line-height: 1.7;
+}
+.content.page-content {
+  max-width: none;
 }
 .content code { background: var(--bg-soft); padding: 2px 5px; border-radius: 3px; font-size: 0.9em; }
 .content pre { background: var(--bg-soft); padding: 14px; border-radius: 6px; overflow-x: auto; }
@@ -321,6 +501,11 @@ dialog.facts-modal {
   background: var(--bg); color: var(--fg);
   padding: 0; max-width: 900px; width: 90vw; max-height: 80vh;
   box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+  margin: auto;
+}
+dialog.facts-modal[open] {
+  position: fixed;
+  inset: 0;
 }
 dialog.facts-modal::backdrop { background: rgba(0,0,0,0.45); }
 .facts-modal-header {
@@ -561,7 +746,7 @@ export function pageLink(p: {
     p.title ||
     p.slug.split("/").pop() ||
     p.slug;
-  return `<a href="/pages/${encodeURIComponent(p.slug)}">${escape(displayed)}</a>${t} <span class="muted score">${escape(p.slug)}</span>`;
+  return `<a href="${pageHref(p.slug)}">${escape(displayed)}</a>${t} <span class="muted score">${escape(p.slug)}</span>`;
 }
 
 /** 渲染可排序表头 — 点击切 ASC/DESC，URL 注入 sortField/sortOrder。 */

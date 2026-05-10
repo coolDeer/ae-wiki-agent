@@ -31,6 +31,7 @@ import {
   fmtSh,
   highlightSnippet,
   layout,
+  pageHref,
   pageTag,
   renderMarkdown,
   sortableHeader,
@@ -116,9 +117,10 @@ function escapeHtml(s) {
 
 function renderAssistantContent(text) {
   // 简易 markdown：保段落、粗体、斜体、code、wikilink → /pages/
+  const pageHref = (slug) => '/pages/' + String(slug).split('/').map(encodeURIComponent).join('/');
   const safe = escapeHtml(text)
     .replace(/\\\\\\\[\\\\\\\[([^\\\]\\\|]+)(?:\\\\\\\|([^\\\]]+))?\\\\\\\]\\\\\\\]/g, (_m, slug, label) =>
-      '<a class="wikilink" href="/pages/' + encodeURIComponent(slug) + '">' + (label||slug) + '</a>')
+      '<a class="wikilink" href="' + pageHref(slug) + '">' + (label||slug) + '</a>')
     .replace(/\\\*\\\*([^*]+)\\\*\\\*/g, '<strong>$1</strong>')
     .replace(/\\\`([^\\\`]+)\\\`/g, '<code>$1</code>');
   return '<div>' + safe.split(/\\n\\n+/).map(p => '<p>' + p.replace(/\\n/g, '<br>') + '</p>').join('') + '</div>';
@@ -275,7 +277,7 @@ ${todaysSourceBriefs.length === 0
       .map(
         (p) => `<li>
           <div class="row">
-            <div class="grow">${pageTag(p.type)} <a href="/pages/${encodeURIComponent(p.slug)}">${escape(p.title ?? p.slug)}</a></div>
+            <div class="grow">${pageTag(p.type)} <a href="${pageHref(p.slug)}">${escape(p.title ?? p.slug)}</a></div>
             <span class="muted score">${escape(fmtSh(p.ts as string, "date"))}</span>
           </div>
           <span class="muted score">${escape(p.slug)}</span>
@@ -306,7 +308,7 @@ function renderActivityRow(r: {
 }): string {
   const ts = `<span class="muted score">${escape(fmtSh(r.ts as string))}</span>`;
   if (r.kind === "page") {
-    return `<li>${ts} <span class="tag">page</span> <a href="/pages/${encodeURIComponent(r.slug ?? "")}">${escape(r.title ?? r.slug)}</a></li>`;
+    return `<li>${ts} <span class="tag">page</span> <a href="${pageHref(r.slug ?? "")}">${escape(r.title ?? r.slug)}</a></li>`;
   }
   if (r.kind === "signal") {
     return `<li>${ts} <span class="tag severity-${escape(r.severity ?? "info")}">signal</span> ${escape(r.title ?? "")}</li>`;
@@ -469,7 +471,7 @@ ${slice.length === 0
               : "";
           return `<tr>
             <td>
-              <a href="/pages/${encodeURIComponent(h.slug)}">${escape(h.title)}</a>
+              <a href="${pageHref(h.slug)}">${escape(h.title)}</a>
               <span class="hit-meta">${confidenceBadge}${timeBadge}</span>
               ${crumb}
               ${snippetHtml}
@@ -599,11 +601,12 @@ export async function viewPage(identifier: string): Promise<string> {
     id: string;
     metric: string;
     period: string | null;
-    value: number | string | null;
+    value_numeric: number | string | null;
+    value_text: string | null;
     unit: string | null;
     confidence: string | null;
-    source_slug: string | null;
-    metadata: { extracted_by?: string; source_quote?: string } | null;
+    source: { slug: string | null; title: string | null } | null;
+    metadata: { extracted_by?: string; source_quote?: string; evidence_context?: string } | null;
   }>;
 
   // 该 source 引出的 fact（自己作为 source_page_id）
@@ -612,18 +615,19 @@ export async function viewPage(identifier: string): Promise<string> {
            e.slug AS entity_slug,
            e.title AS entity_title,
            f.metric, f.period, f.value_numeric, f.value_text, f.unit,
+           f.confidence,
            f.metadata
     FROM facts f
     JOIN pages e ON e.id = f.entity_page_id
     WHERE f.source_page_id = ${BigInt(page.id)}
       AND f.deleted = 0
       AND f.valid_to IS NULL
-    ORDER BY f.metric, f.period NULLS LAST
-    LIMIT 50
+    ORDER BY e.title, f.metric, f.period NULLS LAST
+    LIMIT 200
   `);
 
   const inLinks = await db.execute(sql`
-    SELECT p.slug, p.title, p.type, l.link_type
+    SELECT p.slug, p.title, p.display_name, p.type, l.link_type
     FROM links l JOIN pages p ON p.id = l.from_page_id
     WHERE l.to_page_id = ${BigInt(page.id)}
       AND l.deleted = 0 AND p.deleted = 0
@@ -631,7 +635,7 @@ export async function viewPage(identifier: string): Promise<string> {
   `);
 
   const outLinks = await db.execute(sql`
-    SELECT p.slug, p.title, p.type, l.link_type
+    SELECT p.slug, p.title, p.display_name, p.type, l.link_type, l.context
     FROM links l JOIN pages p ON p.id = l.to_page_id
     WHERE l.from_page_id = ${BigInt(page.id)}
       AND l.deleted = 0 AND p.deleted = 0
@@ -639,7 +643,8 @@ export async function viewPage(identifier: string): Promise<string> {
   `);
 
   const timelineRows = await db.execute(sql`
-    SELECT te.event_date, te.event_type, te.summary, e.slug AS entity_slug, e.title AS entity_title
+    SELECT te.event_date, te.event_type, te.summary,
+           e.slug AS entity_slug, e.title AS entity_title, e.display_name AS entity_display_name
     FROM timeline_entries te
     LEFT JOIN pages e ON e.id = te.entity_page_id
     WHERE (te.source_page_id = ${BigInt(page.id)} OR te.entity_page_id = ${BigInt(page.id)})
@@ -746,6 +751,12 @@ export async function viewPage(identifier: string): Promise<string> {
     isSourceLike && markdownUrl
       ? ` · <a href="/source-view/${encodeURIComponent(page.id)}" target="_blank" rel="noopener" class="btn-inline">📄 查看原文</a>`
       : "";
+  const evidenceContexts = buildEvidenceContextMap(ownFacts as unknown as SourceFactRow[]);
+  const metadataCard = renderPageMetadataCard(page, meta);
+  const factsCard =
+    page.type === "source" || page.type === "brief"
+      ? renderSourceFactsCard(ownFacts as unknown as SourceFactRow[])
+      : renderEntityFactsCard(facts);
 
   const body = `
 <h2>
@@ -755,91 +766,15 @@ export async function viewPage(identifier: string): Promise<string> {
 </h2>
 <div class="muted score">${escape(page.slug)} · #${escape(page.id)}${inlineSourceBtn}</div>
 
-<div class="grid" style="margin-top: 16px;">
-  <div class="card">
-    <h3>Metadata</h3>
-    <div class="kv">
-      ${page.ticker ? `<div class="k">Ticker</div><div>${escape(page.ticker)}</div>` : ""}
-      ${page.sector ? `<div class="k">Sector</div><div>${escape(page.sector)}</div>` : ""}
-      ${page.aliases?.length ? `<div class="k">Aliases</div><div>${escape(page.aliases.join(", "))}</div>` : ""}
-      ${meta.research_type ? `<div class="k">Research type</div><div>${escape(String(meta.research_type))}</div>` : ""}
-      ${meta.publish_date ? `<div class="k">Publish date</div><div>${escape(String(meta.publish_date))}</div>` : ""}
-      ${meta.file_type ? `<div class="k">File type</div><div>${escape(String(meta.file_type))}</div>` : ""}
-      ${meta.url ? `<div class="k">URL</div><div><a href="${escape(String(meta.url))}" target="_blank" rel="noopener">${escape(String(meta.url).slice(0, 80))}</a></div>` : ""}
-      <div class="k">Created</div><div>${escape(fmtSh(page.create_time as string))}</div>
-      <div class="k">Updated</div><div>${escape(fmtSh(page.update_time as string))}</div>
-      <div class="k">Inbound links</div><div>${page.inbound_links_count}</div>
-      <div class="k">Outbound links</div><div>${page.outbound_links_count}</div>
-    </div>
-  </div>
-
-  ${
-    page.type === "source" || page.type === "brief"
-      ? `<div class="card">
-          <h3>Facts written by this source (${ownFacts.length})</h3>
-          ${ownFacts.length === 0
-            ? `<div class="empty">no facts</div>`
-            : (() => {
-                const ownFactRow = (f: typeof ownFacts[number]) => `<tr>
-                  <td><a href="/pages/${encodeURIComponent(String(f.entity_slug ?? ""))}">${escape(String(f.entity_title ?? f.entity_slug ?? ""))}</a></td>
-                  <td>${escape(String(f.metric ?? ""))}</td>
-                  <td class="muted">${escape(String(f.period ?? ""))}</td>
-                  <td>${formatFactValue(f)}</td>
-                </tr>`;
-                const thead = `<thead><tr><th>Entity</th><th>Metric</th><th>Period</th><th>Value</th></tr></thead>`;
-                return `<table>${thead}<tbody>${ownFacts.slice(0, 12).map(ownFactRow).join("")}</tbody></table>
-                ${ownFacts.length > 12 ? `
-                  <p style="margin:8px 0 0;">
-                    <button class="btn-inline" onclick="document.getElementById('dlg-own-facts').showModal()">Show all ${ownFacts.length} facts →</button>
-                  </p>
-                  <dialog class="facts-modal" id="dlg-own-facts">
-                    <div class="facts-modal-header">
-                      <h3>All facts written by this source (${ownFacts.length})</h3>
-                      <button class="btn-inline" onclick="document.getElementById('dlg-own-facts').close()">✕ close</button>
-                    </div>
-                    <div class="facts-modal-body">
-                      <table>${thead}<tbody>${ownFacts.map(ownFactRow).join("")}</tbody></table>
-                    </div>
-                  </dialog>` : ""}`;
-              })()
-          }
-        </div>`
-      : `<div class="card">
-          <h3>Latest facts about this entity (${facts.length})</h3>
-          ${facts.length === 0
-            ? `<div class="empty">no facts</div>`
-            : (() => {
-                const factRow = (f: typeof facts[number]) => `<tr>
-                  <td>${escape(f.metric)}</td>
-                  <td class="muted">${escape(f.period ?? "")}</td>
-                  <td>${escape(String(f.value ?? ""))}${f.unit ? ` <span class="muted">${escape(f.unit)}</span>` : ""}</td>
-                  <td>${f.source_slug ? `<a href="/pages/${encodeURIComponent(f.source_slug)}">${escape(f.source_slug.split("/").pop() ?? "")}</a>` : ""}</td>
-                </tr>`;
-                const thead = `<thead><tr><th>Metric</th><th>Period</th><th>Value</th><th>Source</th></tr></thead>`;
-                return `<table>${thead}<tbody>${facts.slice(0, 15).map(factRow).join("")}</tbody></table>
-                ${facts.length > 15 ? `
-                  <p style="margin:8px 0 0;">
-                    <button class="btn-inline" onclick="document.getElementById('dlg-facts').showModal()">Show all ${facts.length} facts →</button>
-                  </p>
-                  <dialog class="facts-modal" id="dlg-facts">
-                    <div class="facts-modal-header">
-                      <h3>All facts (${facts.length})</h3>
-                      <button class="btn-inline" onclick="document.getElementById('dlg-facts').close()">✕ close</button>
-                    </div>
-                    <div class="facts-modal-body">
-                      <table>${thead}<tbody>${facts.map(factRow).join("")}</tbody></table>
-                    </div>
-                  </dialog>` : ""}`;
-              })()
-          }
-        </div>`
-  }
+<div class="page-summary-stack" style="margin-top: 16px;">
+  ${metadataCard}
+  ${factsCard}
 </div>
 
 ${isEntity && entityDashboard ? renderEntityDashboard(page.slug, entityDashboard, topConsensusMetrics) : ""}
 
 ${page.content
-  ? `<h2>Content</h2><div class="content">${renderMarkdown(page.content)}</div>`
+  ? `<h2>Content</h2><div class="content page-content">${renderMarkdown(page.content, { evidenceContexts })}</div>`
   : isEntity
     ? `<div class="empty">red link — no narrative yet. <a href="/queue">enqueue enrich →</a></div>`
     : ""
@@ -853,7 +788,7 @@ ${timelineRows.length > 0
           (t) => `<tr>
             <td class="muted">${escape(String(t.event_date ?? ""))}</td>
             <td><span class="tag">${escape(String(t.event_type ?? ""))}</span></td>
-            <td>${t.entity_slug ? `<a href="/pages/${encodeURIComponent(String(t.entity_slug))}">${escape(String(t.entity_title ?? t.entity_slug))}</a>` : ""}</td>
+            <td>${t.entity_slug ? `<a href="${pageHref(String(t.entity_slug))}">${escape(pageDisplayName({ slug: String(t.entity_slug), title: String(t.entity_title ?? ""), display_name: String(t.entity_display_name ?? "") }))}</a>` : ""}</td>
             <td>${escape(String(t.summary ?? ""))}</td>
           </tr>`
         )
@@ -867,7 +802,7 @@ ${outLinks.length > 0
     <ul class="plain">${outLinks
       .map(
         (l) =>
-          `<li><a href="/pages/${encodeURIComponent(String(l.slug ?? ""))}">${escape(String(l.title ?? l.slug ?? ""))}</a> ${pageTag(String(l.type ?? ""))} ${l.link_type ? `<span class="muted">(${escape(String(l.link_type))})</span>` : ""}</li>`
+          `<li><a href="${pageHref(String(l.slug ?? ""))}">${escape(outboundLinkDisplayName(l))}</a> ${pageTag(String(l.type ?? ""))} ${linkTypeTag(String(l.link_type ?? "mention"))}</li>`
       )
       .join("")}</ul>`
   : ""
@@ -878,7 +813,7 @@ ${inLinks.length > 0
     <ul class="plain">${inLinks
       .map(
         (l) =>
-          `<li><a href="/pages/${encodeURIComponent(String(l.slug ?? ""))}">${escape(String(l.title ?? l.slug ?? ""))}</a> ${pageTag(String(l.type ?? ""))}</li>`
+          `<li><a href="${pageHref(String(l.slug ?? ""))}">${escape(pageDisplayName(l))}</a> ${pageTag(String(l.type ?? ""))} ${linkTypeTag(String(l.link_type ?? "mention"))}</li>`
       )
       .join("")}</ul>`
   : ""
@@ -891,6 +826,315 @@ ${renderCommentsSection(page.slug, comments)}
   return layout({ title: page.title, body });
 }
 
+type PageForMetadata = {
+  id: string;
+  slug: string;
+  type: string;
+  ticker: string | null;
+  sector: string | null;
+  confidence: string | null;
+  aliases: string[] | null;
+  create_time: string;
+  update_time: string;
+  inbound_links_count: number;
+  outbound_links_count: number;
+  tags: string[];
+};
+
+type SourceFactRow = {
+  id: string;
+  entity_slug: string | null;
+  entity_title: string | null;
+  metric: string | null;
+  period: string | null;
+  value_numeric: string | null;
+  value_text: string | null;
+  unit: string | null;
+  confidence: string | null;
+  metadata: { extracted_by?: string; source_quote?: string; evidence_context?: string } | null;
+};
+
+function renderPageMetadataCard(
+  page: PageForMetadata,
+  meta: Record<string, unknown>
+): string {
+  const sourceRows = [
+    meta.research_id ? metaRow("Research ID", String(meta.research_id), { mono: true }) : "",
+    meta.research_type ? metaRow("Research type", String(meta.research_type)) : "",
+    meta.source_type ? metaRow("Source type", String(meta.source_type)) : "",
+    meta.publish_date ? metaRow("Publish date", String(meta.publish_date)) : "",
+    meta.file_type ? metaRow("File type", String(meta.file_type)) : "",
+    meta.markdown_url ? metaRow("Markdown", String(meta.markdown_url), { href: String(meta.markdown_url) }) : "",
+    meta.url ? metaRow("URL", String(meta.url), { href: String(meta.url) }) : "",
+  ].filter(Boolean).join("");
+
+  const identityRows = [
+    page.ticker ? metaRow("Ticker", page.ticker, { mono: true }) : "",
+    page.sector ? metaRow("Sector", page.sector) : "",
+    page.aliases?.length
+      ? metaRow(
+          "Aliases",
+          page.aliases.map((a) => `<span class="meta-chip">${escape(a)}</span>`).join(" "),
+          { html: true }
+        )
+      : "",
+    page.tags?.length
+      ? metaRow(
+          "Tags",
+          page.tags.map((t) => `<span class="meta-chip">${escape(t)}</span>`).join(" "),
+          { html: true }
+        )
+      : "",
+  ].filter(Boolean).join("");
+
+  return `<details class="card metadata-card collapsible-card">
+    <summary>
+      <span class="summary-title">Metadata</span>
+      <span class="summary-right">
+        <span class="tag">${escape(page.type)}</span>
+        <span class="tag">${escape(page.slug)}</span>
+      </span>
+    </summary>
+    <div class="meta-stats">
+      <div><strong>${escape(String(page.inbound_links_count))}</strong><span>Inbound</span></div>
+      <div><strong>${escape(String(page.outbound_links_count))}</strong><span>Outbound</span></div>
+      <div><strong>${escape(page.confidence ?? "n/a")}</strong><span>Confidence</span></div>
+    </div>
+    ${identityRows ? `<h4>Identity</h4><div class="kv kv-compact">${identityRows}</div>` : ""}
+    ${sourceRows ? `<h4>Source Provenance</h4><div class="kv kv-compact">${sourceRows}</div>` : ""}
+    <h4>System</h4>
+    <div class="kv kv-compact">
+      ${metaRow("Created", fmtSh(page.create_time))}
+      ${metaRow("Updated", fmtSh(page.update_time))}
+      ${metaRow("Page ID", `#${page.id}`, { mono: true })}
+    </div>
+  </details>`;
+}
+
+function renderSourceFactsCard(facts: SourceFactRow[]): string {
+  const entityCount = new Set(facts.map((f) => f.entity_slug).filter(Boolean)).size;
+  const tierCounts = facts.reduce<Record<string, number>>((acc, f) => {
+    const tier = f.metadata?.extracted_by ?? "unknown";
+    acc[tier] = (acc[tier] ?? 0) + 1;
+    return acc;
+  }, {});
+  const summary = facts.length > 0
+    ? `<div class="fact-summary">
+        <span><strong>${facts.length}</strong> facts</span>
+        <span><strong>${entityCount}</strong> entities</span>
+        ${Object.entries(tierCounts).map(([tier, n]) => `<span>${escape(tier)}: <strong>${n}</strong></span>`).join("")}
+      </div>`
+    : "";
+
+  if (facts.length === 0) {
+    return `<details class="card facts-card collapsible-card">
+      <summary>
+        <span class="summary-title">Facts written by this source</span>
+        <span class="summary-right"><span class="tag">0 facts</span></span>
+      </summary>
+      <p class="muted card-note">Stage 5 did not land structured facts for this source.</p>
+      <div class="empty">no facts</div>
+    </details>`;
+  }
+
+  const thead = `<thead><tr><th>Entity</th><th>Fact</th><th>Value</th><th>Evidence</th></tr></thead>`;
+  const rows = facts.slice(0, 10).map(sourceFactRow).join("");
+  return `<details class="card facts-card collapsible-card">
+    <summary>
+      <span class="summary-title">Facts written by this source</span>
+      <span class="summary-right">
+        <span class="tag evidence-tag">high-value evidence</span>
+        <span class="tag">${facts.length} facts</span>
+        ${facts.length > 10 ? `<button type="button" class="btn-inline" onclick="event.preventDefault();event.stopPropagation();document.getElementById('dlg-own-facts').showModal()">Show all →</button>` : ""}
+      </span>
+    </summary>
+    <p class="muted card-note">Structured facts with this page as <code>source_page_id</code>. These now count as high-value evidence for entity refresh; plain mention links do not.</p>
+    ${summary}
+    <table class="facts-table">${thead}<tbody>${rows}</tbody></table>
+    ${facts.length > 10 ? `
+      <dialog class="facts-modal" id="dlg-own-facts">
+        <div class="facts-modal-header">
+          <h3>All facts written by this source (${facts.length})</h3>
+          <button class="btn-inline" onclick="document.getElementById('dlg-own-facts').close()">close</button>
+        </div>
+        <div class="facts-modal-body">
+          <table class="facts-table">${thead}<tbody>${facts.map(sourceFactRow).join("")}</tbody></table>
+        </div>
+      </dialog>` : ""}
+  </details>`;
+}
+
+function renderEntityFactsCard(
+  facts: Array<{
+    metric: string;
+    period: string | null;
+    value_numeric?: number | string | null;
+    value_text?: string | null;
+    unit: string | null;
+    source?: { slug: string | null; title: string | null } | null;
+  }>
+): string {
+  if (facts.length === 0) {
+    return `<details class="card facts-card collapsible-card">
+      <summary>
+        <span class="summary-title">Latest facts about this entity</span>
+        <span class="summary-right"><span class="tag">0 facts</span></span>
+      </summary>
+      <div class="empty">no facts</div>
+    </details>`;
+  }
+  const factRow = (f: typeof facts[number]) => `<tr>
+    <td><strong>${escape(f.metric)}</strong><div class="muted">${escape(f.period ?? "")}</div></td>
+    <td>${formatFactDisplayValue({ value: f.value_numeric ?? f.value_text ?? "", unit: f.unit })}</td>
+    <td>${f.source?.slug ? `<a href="${pageHref(f.source.slug)}">${escape(f.source.title ?? f.source.slug.split("/").pop() ?? "")}</a>` : ""}</td>
+  </tr>`;
+  const thead = `<thead><tr><th>Metric</th><th>Value</th><th>Source</th></tr></thead>`;
+  return `<details class="card facts-card collapsible-card">
+    <summary>
+      <span class="summary-title">Latest facts about this entity</span>
+      <span class="summary-right">
+        <span class="tag">${facts.length} facts</span>
+        ${facts.length > 15 ? `<button type="button" class="btn-inline" onclick="event.preventDefault();event.stopPropagation();document.getElementById('dlg-facts').showModal()">Show all →</button>` : ""}
+      </span>
+    </summary>
+    <table class="facts-table">${thead}<tbody>${facts.slice(0, 15).map(factRow).join("")}</tbody></table>
+    ${facts.length > 15 ? `
+      <dialog class="facts-modal" id="dlg-facts">
+        <div class="facts-modal-header">
+          <h3>All facts (${facts.length})</h3>
+          <button class="btn-inline" onclick="document.getElementById('dlg-facts').close()">close</button>
+        </div>
+        <div class="facts-modal-body">
+          <table class="facts-table">${thead}<tbody>${facts.map(factRow).join("")}</tbody></table>
+        </div>
+      </dialog>` : ""}
+  </details>`;
+}
+
+function sourceFactRow(f: SourceFactRow): string {
+  const quote = f.metadata?.source_quote ? String(f.metadata.source_quote) : "";
+  const extractedBy = f.metadata?.extracted_by ?? "unknown";
+  return `<tr>
+    <td>
+      <a href="${pageHref(String(f.entity_slug ?? ""))}">${escape(String(f.entity_title ?? f.entity_slug ?? ""))}</a>
+      <div class="muted mono">${escape(String(f.entity_slug ?? ""))}</div>
+    </td>
+    <td>
+      <strong>${escape(String(f.metric ?? ""))}</strong>
+      <div class="muted">${escape(String(f.period ?? ""))}</div>
+    </td>
+    <td>${formatFactValue(f)}${f.confidence ? `<div><span class="tag">conf ${escape(String(f.confidence))}</span></div>` : ""}</td>
+    <td>
+      <span class="tag">${escape(extractedBy)}</span>
+      ${quote ? `<div class="muted mono" style="margin-top:4px;">quote: ${escape(truncateMiddle(quote, 90))}</div>` : ""}
+    </td>
+  </tr>`;
+}
+
+function buildEvidenceContextMap(facts: SourceFactRow[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const fact of facts) {
+    const quote = fact.metadata?.source_quote;
+    const context = fact.metadata?.evidence_context;
+    if (typeof quote !== "string" || typeof context !== "string") continue;
+    if (!quote.trim() || !context.trim()) continue;
+    for (const variant of sourceQuoteDisplayVariants(quote)) {
+      out[variant] = context.trim();
+    }
+  }
+  return out;
+}
+
+function sourceQuoteDisplayVariants(quote: string): string[] {
+  const stripped = quote.replace(/^["'“”]+|["'“”]+$/g, "").trim();
+  const variants = [
+    quote.trim(),
+    stripped,
+    stripped.replace(/（[^）]*）/g, "").trim(),
+    stripped.replace(/\([^)]*\)/g, "").trim(),
+  ].filter(Boolean);
+  return Array.from(new Set(variants));
+}
+
+function metaRow(
+  label: string,
+  value: string,
+  opts: { href?: string; mono?: boolean; html?: boolean } = {}
+): string {
+  const display = opts.html
+    ? value
+    : opts.href
+      ? `<a href="${escape(opts.href)}" target="_blank" rel="noopener">${escape(truncateMiddle(value, 72))}</a>`
+      : `<span class="${opts.mono ? "mono" : ""}">${escape(value)}</span>`;
+  return `<div class="k">${escape(label)}</div><div>${display}</div>`;
+}
+
+function linkTypeTag(linkType: string): string {
+  const highValue = isHighValueLinkType(linkType);
+  return `<span class="tag link-type ${highValue ? "link-type-high" : "link-type-mention"}">${escape(linkType)}</span>`;
+}
+
+function isHighValueLinkType(linkType: string): boolean {
+  return linkType !== "mention";
+}
+
+function outboundLinkDisplayName(row: Record<string, unknown>): string {
+  const slug = String(row.slug ?? "");
+  const contextDisplay = displayFromLinkContext(slug, String(row.context ?? ""));
+  return contextDisplay || pageDisplayName(row);
+}
+
+function pageDisplayName(row: Record<string, unknown>): string {
+  const displayName = typeof row.display_name === "string" ? row.display_name.trim() : "";
+  if (displayName) return displayName;
+  const title = typeof row.title === "string" ? row.title.trim() : "";
+  const slug = String(row.slug ?? "");
+  const slugName = slug.split("/").pop() || slug;
+  if (title && title !== slug) return humanizeSlugName(title);
+  return humanizeSlugName(slugName);
+}
+
+function displayFromLinkContext(slug: string, context: string): string | null {
+  if (!slug || !context) return null;
+  const escapedSlug = escapeRegExp(slug);
+  const wikilinkRe = new RegExp(`\\[\\[${escapedSlug}(?:#[^\\]|]*)?(?:\\|([^\\]]+))?\\]\\]`);
+  const wikiMatch = context.match(wikilinkRe);
+  if (wikiMatch?.[1]) return stripTypedDisplayPrefix(wikiMatch[1]).trim() || null;
+
+  const mdLinkRe = new RegExp(`\\[([^\\]]+)\\]\\((?:\\.\\.\\/)*${escapedSlug}(?:\\.md)?\\)`);
+  const mdMatch = context.match(mdLinkRe);
+  if (mdMatch?.[1]) return mdMatch[1].trim() || null;
+  return null;
+}
+
+function stripTypedDisplayPrefix(display: string): string {
+  return display.replace(/^[a-z_]+\s*:\s*/, "");
+}
+
+function humanizeSlugName(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) return "";
+  if (normalized === normalized.toUpperCase() && /[A-Z]/.test(normalized)) return normalized;
+  return normalized
+    .split(/[-_ ]+/)
+    .filter(Boolean)
+    .map((part) => {
+      if (part.length <= 4 && part === part.toLowerCase()) return part.toUpperCase();
+      return part.charAt(0).toUpperCase() + part.slice(1);
+    })
+    .join(" ");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function truncateMiddle(value: string, maxLen: number): string {
+  if (value.length <= maxLen) return value;
+  const keep = Math.max(12, Math.floor((maxLen - 1) / 2));
+  return `${value.slice(0, keep)}…${value.slice(-keep)}`;
+}
+
 /**
  * 评论区：列出已有评论 + 新增表单。
  *
@@ -898,7 +1142,7 @@ ${renderCommentsSection(page.slug, comments)}
  * id / slug 两种 identifier，保持页面层路由一致（/pages/:identifier 上下文）。
  */
 function renderCommentsSection(pageSlug: string, comments: PageCommentRow[]): string {
-  const slugSeg = encodeURIComponent(pageSlug);
+  const slugUrl = pageHref(pageSlug);
   const list =
     comments.length === 0
       ? `<div class="muted" style="margin: 8px 0;">No comments yet.</div>`
@@ -922,7 +1166,7 @@ function renderCommentsSection(pageSlug: string, comments: PageCommentRow[]): st
                     ${tags ? `<span style="margin-left: 8px;">${tags}</span>` : ""}
                   </div>
                   <form method="post" action="/comments/${escape(c.id)}/delete" style="margin: 0;" onsubmit="return confirm('删除这条评论？');">
-                    <input type="hidden" name="redirect" value="/pages/${slugSeg}#comments" />
+                    <input type="hidden" name="redirect" value="${slugUrl}#comments" />
                     <button type="submit" class="btn-inline danger" style="font-size: 12px; padding: 2px 8px;">delete</button>
                   </form>
                 </div>
@@ -938,7 +1182,7 @@ function renderCommentsSection(pageSlug: string, comments: PageCommentRow[]): st
   人工反馈通道。后续 skill / agent 会读这里的评论调整 fact 抽取 / narrative 写法。
 </p>
 ${list}
-<form method="post" action="/pages/${slugSeg}/comments" class="comment-form" style="margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 4px;">
+<form method="post" action="${slugUrl}/comments" class="comment-form" style="margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 4px;">
   <div class="form-row" style="display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">
     <input type="text" name="author" placeholder="Your name (optional)" maxlength="64" style="flex: 1; min-width: 200px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg);" />
     <input type="text" name="section" placeholder="Section (optional, e.g. Bull Case)" maxlength="200" style="flex: 1; min-width: 200px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg);" />
@@ -1167,9 +1411,9 @@ export async function viewConsensus(
               (o) => `<tr>
                 <td class="muted">${escape(o.valid_from ?? "")}</td>
                 <td>${escape(o.period ?? "")}</td>
-                <td>${o.source_slug ? `<a href="/pages/${encodeURIComponent(o.source_slug)}">${escape(o.source_title ?? o.source_slug)}</a>` : "-"}</td>
-                <td><strong>${escape(String(o.value ?? ""))}</strong></td>
-                <td class="muted">${escape(o.unit ?? "")}</td>
+                <td>${o.source_slug ? `<a href="${pageHref(o.source_slug)}">${escape(o.source_title ?? o.source_slug)}</a>` : "-"}</td>
+                <td><strong>${formatFactDisplayValue({ value: o.value, unit: o.unit })}</strong></td>
+                <td class="muted">${escape(formatFactUnit(o.unit))}</td>
               </tr>`
             )
             .join("")}
@@ -1198,7 +1442,7 @@ export async function viewConsensus(
               ${(drift.outliers ?? [])
                 .map(
                   (o) =>
-                    `<li><a href="/pages/${encodeURIComponent(o.source_slug)}">${escape(o.source_slug)}</a> · ${escape(o.period)} · <strong>${o.value}</strong> · σ=${o.deviation_pct.toFixed(2)}</li>`
+                    `<li><a href="${pageHref(o.source_slug)}">${escape(o.source_slug)}</a> · ${escape(o.period)} · <strong>${o.value}</strong> · σ=${o.deviation_pct.toFixed(2)}</li>`
                 )
                 .join("")}
              </ul>`
@@ -1207,7 +1451,7 @@ export async function viewConsensus(
 
   const body = `
 <div class="muted score" style="margin-bottom:8px;">
-  <a href="/pages/${encodeURIComponent(entity.slug)}">← ${escape(entity.title ?? entity.slug)}</a>
+  <a href="${pageHref(entity.slug)}">← ${escape(entity.title ?? entity.slug)}</a>
 </div>
 <h2>Consensus drift: ${escape(entity.title ?? entity.slug)} / <code>${escape(metric)}</code></h2>
 ${period ? `<p class="muted">filter: period = ${escape(period)}</p>` : ""}
@@ -1260,7 +1504,7 @@ export async function viewSourceRaw(pageId: bigint): Promise<string | null> {
 
   const body = `
 <div class="muted score" style="margin-bottom:8px;">
-  <a href="/pages/${encodeURIComponent(p.slug)}">← 回到 ${escape(p.slug)}</a>
+  <a href="${pageHref(p.slug)}">← 回到 ${escape(p.slug)}</a>
 </div>
 <h2>${escape(p.title ?? "原文")}</h2>
 <div class="content">${renderMarkdown(markdown)}</div>
@@ -1431,8 +1675,38 @@ function formatFactValue(f: {
   value_text?: string | null;
   unit?: string | null;
 }): string {
-  const v = f.value_numeric ?? f.value_text ?? "";
-  return `${escape(String(v))}${f.unit ? ` <span class="muted">${escape(String(f.unit))}</span>` : ""}`;
+  return formatFactDisplayValue({
+    value: f.value_numeric ?? f.value_text ?? "",
+    unit: f.unit ?? null,
+  });
+}
+
+function formatFactDisplayValue(f: {
+  value?: number | string | null;
+  unit?: string | null;
+}): string {
+  const unit = f.unit ?? null;
+  const value = f.value ?? "";
+  if (unit === "pct") {
+    return `${escape(formatPctValue(value))}<span class="muted">%</span>`;
+  }
+  return `${escape(String(value))}${unit ? ` <span class="muted">${escape(unit)}</span>` : ""}`;
+}
+
+function formatFactUnit(unit: string | null | undefined): string {
+  return unit === "pct" ? "%" : String(unit ?? "");
+}
+
+function formatPctValue(value: number | string | null | undefined): string {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "string" && /[<>≤≥~≈+]|(?:\d)\s*[-–—]\s*(?:\d)/.test(value)) {
+    return value.replace(/\s*%$/, "");
+  }
+  const numeric = typeof value === "number" ? value : Number(String(value).replace(/,/g, ""));
+  if (!Number.isFinite(numeric)) return String(value).replace(/\s*%$/, "");
+  const pct = Math.abs(numeric) <= 1.5 ? numeric * 100 : numeric;
+  if (Number.isInteger(pct)) return String(pct);
+  return pct.toFixed(2).replace(/\.?0+$/, "");
 }
 
 // ============================================================================
@@ -1616,7 +1890,7 @@ ${rows.length === 0
         .map(
           (r) => `<tr>
             <td><a href="/pages/${escape(String(r.page_id))}">${escape(String(r.title ?? ""))}</a></td>
-            <td>${r.target_slug ? `<a href="/pages/${encodeURIComponent(String(r.target_slug))}">${escape(String(r.target_slug))}</a>` : ""}</td>
+            <td>${r.target_slug ? `<a href="${pageHref(String(r.target_slug))}">${escape(String(r.target_slug))}</a>` : ""}</td>
             <td>${escape(String(r.direction ?? ""))}</td>
             <td>${escape(String(r.conviction ?? ""))}</td>
             <td><span class="tag">${escape(String(r.status ?? ""))}</span></td>
@@ -1747,7 +2021,7 @@ ${rows.length === 0
       ${rows
         .map(
           (r) => `<tr>
-            <td><a href="/pages/${encodeURIComponent(String(r.slug ?? ""))}">${escape(String(r.title ?? ""))}</a> <span class="muted score">${escape(String(r.slug ?? ""))}</span></td>
+            <td><a href="${pageHref(String(r.slug ?? ""))}">${escape(String(r.title ?? ""))}</a> <span class="muted score">${escape(String(r.slug ?? ""))}</span></td>
             <td>${pageTag(String(r.type ?? ""))}</td>
             <td>${escape(String(r.ticker ?? ""))}</td>
             <td>${escape(String(r.sector ?? ""))}</td>
