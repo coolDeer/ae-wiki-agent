@@ -13,6 +13,7 @@ import { Actor, withCreateAudit } from "~/core/audit.ts";
 import { db, schema } from "~/core/db.ts";
 import { embedBatch } from "~/core/embedding.ts";
 import { getEnv } from "~/core/env.ts";
+import { deriveFactSignal } from "~/core/extractors/signals.ts";
 import { addJob, completeJob, failJob } from "~/core/minions/queue.ts";
 import { enrichLoadContext } from "~/skills/enrich/index.ts";
 
@@ -191,11 +192,9 @@ async function runDetectSignals(
     if (priorAvg === 0) continue;
 
     const delta = (newVal - priorAvg) / Math.abs(priorAvg);
-    const absDelta = Math.abs(delta);
-    if (absDelta < 0.1) continue;
-
-    const severity = absDelta >= 0.2 ? "warning" : "info";
-    const signalType = priorVals.length >= 2 ? "consensus_drift" : "fact_outlier";
+    const derived = deriveFactSignal(delta, priorVals.length);
+    if (!derived) continue;
+    const { severity, signalType } = derived;
 
     await db.insert(schema.signals).values(
       withCreateAudit(

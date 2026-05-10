@@ -549,7 +549,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_type       ON content_chunks (chunk_type);
 
 -- 3.3 links
 CREATE UNIQUE INDEX IF NOT EXISTS uq_links
-  ON links (from_page_id, to_page_id, link_type, link_source, origin_page_id)
+  ON links (from_page_id, to_page_id, link_type, link_source, origin_page_id, origin_field)
   NULLS NOT DISTINCT
   WHERE deleted = 0;
 CREATE INDEX IF NOT EXISTS idx_links_from        ON links (from_page_id);
@@ -576,6 +576,12 @@ CREATE INDEX IF NOT EXISTS idx_theses_direction  ON theses (direction);
 
 -- 3.7 signals
 CREATE INDEX IF NOT EXISTS idx_signals_unresolved ON signals (detected_at DESC) WHERE NOT resolved;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_signals_thesis_source_type
+  ON signals (signal_type, entity_page_id, thesis_page_id, source_page_id)
+  WHERE deleted = 0
+    AND entity_page_id IS NOT NULL
+    AND thesis_page_id IS NOT NULL
+    AND source_page_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_signals_entity     ON signals (entity_page_id, detected_at DESC);
 CREATE INDEX IF NOT EXISTS idx_signals_thesis     ON signals (thesis_page_id) WHERE thesis_page_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_signals_severity   ON signals (severity, detected_at DESC) WHERE NOT resolved;

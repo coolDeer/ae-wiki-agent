@@ -16,6 +16,16 @@
 
 import { and, eq } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
+import {
+  findFactHeaderIndex,
+  inferUnitFromCurrencyAndScale,
+  matchFactsSpec,
+  normalizeFactHeader,
+  normalizeFactPeriod,
+  normalizeFactUnit,
+  parseMetricCellWithSpec,
+  type FactsExtractorSpec,
+} from "~/core/extractors/facts.ts";
 import { isTableBundle, type TableArtifact } from "~/core/v2-tables.ts";
 import type { YamlFact } from "./stage-5-types.ts";
 
@@ -25,15 +35,16 @@ import type { YamlFact } from "./stage-5-types.ts";
 
 export async function extractTierBFromTables(
   pageId: bigint,
-  content: string
+  content: string,
+  spec: FactsExtractorSpec = matchFactsSpec("source")
 ): Promise<YamlFact[]> {
   const pageEntity = inferSingleEntitySlug(content);
   const facts: YamlFact[] = [];
   const tableSources = await loadTableSources(pageId);
 
   for (const table of tableSources) {
-    facts.push(...extractExplicitFacts(table, pageEntity));
-    facts.push(...extractMatrixFacts(table, pageEntity));
+    facts.push(...extractExplicitFacts(table, pageEntity, spec));
+    facts.push(...extractMatrixFacts(table, pageEntity, spec));
   }
 
   return dedupeYamlFacts(facts);
@@ -84,38 +95,17 @@ function fromArtifactTable(table: TableArtifact): TableLike {
 // Explicit table（headers 显式标 metric/value/...）
 // =============================================================================
 
-// Header 别名（normalize 后的小写 / CJK 形态）。中文 header 是中文 source 表格主流。
-const ENTITY_ALIASES = [
-  "entity", "company", "target", "subject", "ticker", "slug",
-  "公司", "公司名称", "股票", "股票代码", "标的", "名称",
-];
-const METRIC_ALIASES = [
-  "metric", "item", "kpi",
-  "指标", "项目", "科目", "内容",
-];
-const PERIOD_ALIASES = [
-  "period", "quarter", "timeframe", "date", "fiscal_period",
-  "期间", "季度", "财年", "日期",
-];
-const VALUE_ALIASES = [
-  "value", "data", "figure", "amount", "result", "number",
-  "数值", "数据", "金额", "数字",
-];
-const UNIT_ALIASES = [
-  "unit", "currency", "multiple",
-  "单位", "货币",
-];
-
 function extractExplicitFacts(
   table: TableLike,
-  pageEntity: string | null
+  pageEntity: string | null,
+  spec: FactsExtractorSpec
 ): YamlFact[] {
-  const headers = table.headers.map(normalizeHeader);
-  const entityIdx = findHeaderIndex(headers, ENTITY_ALIASES);
-  const metricIdx = findHeaderIndex(headers, METRIC_ALIASES);
-  const periodIdx = findHeaderIndex(headers, PERIOD_ALIASES);
-  const valueIdx = findHeaderIndex(headers, VALUE_ALIASES);
-  const unitIdx = findHeaderIndex(headers, UNIT_ALIASES);
+  const headers = table.headers.map(normalizeFactHeader);
+  const entityIdx = findFactHeaderIndex(headers, "entity", spec);
+  const metricIdx = findFactHeaderIndex(headers, "metric", spec);
+  const periodIdx = findFactHeaderIndex(headers, "period", spec);
+  const valueIdx = findFactHeaderIndex(headers, "value", spec);
+  const unitIdx = findFactHeaderIndex(headers, "unit", spec);
 
   if (metricIdx === -1 || valueIdx === -1) return [];
 
@@ -130,20 +120,21 @@ function extractExplicitFacts(
     );
     if (!entity) continue;
 
-    const metricMeta = parseMetricCell(row[metricIdx] ?? "");
+    const metricMeta = parseMetricCellWithSpec(row[metricIdx] ?? "", spec);
     if (!metricMeta.metric) continue;
 
     const parsedValue = parseValueCell(
       row[valueIdx] ?? "",
       unitIdx === -1 ? null : row[unitIdx] ?? null,
-      metricMeta.unit
+      metricMeta.unit,
+      spec
     );
     if (!parsedValue) continue;
 
     facts.push({
       entity,
       metric: metricMeta.metric,
-      period: periodIdx === -1 ? undefined : normalizePeriod(row[periodIdx] ?? ""),
+      period: periodIdx === -1 ? undefined : normalizeFactPeriod(row[periodIdx] ?? "", spec),
       value: parsedValue.value,
       unit: parsedValue.unit ?? metricMeta.unit ?? undefined,
       source_quote: rowRaw,
@@ -170,15 +161,16 @@ function extractExplicitFacts(
 
 function extractMatrixFacts(
   table: TableLike,
-  pageEntity: string | null
+  pageEntity: string | null,
+  spec: FactsExtractorSpec
 ): YamlFact[] {
-  const headers = table.headers.map(normalizeHeader);
-  const metricIdx = findHeaderIndex(headers, METRIC_ALIASES);
+  const headers = table.headers.map(normalizeFactHeader);
+  const metricIdx = findFactHeaderIndex(headers, "metric", spec);
   if (metricIdx === -1) return [];
 
-  const entityIdx = findHeaderIndex(headers, ENTITY_ALIASES);
-  const unitIdx = findHeaderIndex(headers, UNIT_ALIASES);
-  const explicitValueIdx = findHeaderIndex(headers, VALUE_ALIASES);
+  const entityIdx = findFactHeaderIndex(headers, "entity", spec);
+  const unitIdx = findFactHeaderIndex(headers, "unit", spec);
+  const explicitValueIdx = findFactHeaderIndex(headers, "value", spec);
   if (explicitValueIdx !== -1) return [];
 
   const periodColumns = headers
@@ -198,20 +190,20 @@ function extractMatrixFacts(
     );
     if (!entity) continue;
 
-    const metricMeta = parseMetricCell(row[metricIdx] ?? "");
+    const metricMeta = parseMetricCellWithSpec(row[metricIdx] ?? "", spec);
     if (!metricMeta.metric) continue;
 
     const inheritedUnit =
-      metricMeta.unit ?? (unitIdx === -1 ? null : parseUnitText(row[unitIdx] ?? ""));
+      metricMeta.unit ?? (unitIdx === -1 ? null : normalizeFactUnit(row[unitIdx] ?? "", spec));
 
     for (const column of periodColumns) {
-      const parsedValue = parseValueCell(row[column.idx] ?? "", null, inheritedUnit);
+      const parsedValue = parseValueCell(row[column.idx] ?? "", null, inheritedUnit, spec);
       if (!parsedValue) continue;
 
       facts.push({
         entity,
         metric: metricMeta.metric,
-        period: normalizePeriod(column.raw),
+        period: normalizeFactPeriod(column.raw, spec),
         value: parsedValue.value,
         unit: parsedValue.unit ?? inheritedUnit ?? undefined,
         source_quote: rowRaw,
@@ -258,50 +250,18 @@ function dedupeYamlFacts(facts: YamlFact[]): YamlFact[] {
 // header / cell 解析（私有 helpers）
 // =============================================================================
 
-function findHeaderIndex(headers: string[], aliases: string[]): number {
-  return headers.findIndex((header) => aliases.includes(header));
-}
-
-function normalizeHeader(header: string): string {
-  // 保留 a-z / 0-9 / CJK 字符（U+3400-9FFF 覆盖中日韩统一表意 + 兼容扩展），
-  // 其他全部当分隔符 → "_"。否则 "公司名称" 会被全部 strip 成空串。
-  return stripMarkdown(header)
-    .toLowerCase()
-    .replace(/[%/()]+/g, " ")
-    .replace(/[^a-z0-9\u3400-\u9fff]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
-
-function parseMetricCell(cell: string): { metric: string | null; unit: string | null } {
-  const stripped = stripMarkdown(cell).trim();
-  if (stripped.length === 0) return { metric: null, unit: null };
-
-  const unitMatch = stripped.match(/\(([^)]+)\)\s*$/);
-  const unit = unitMatch ? parseUnitText(unitMatch[1] ?? "") : null;
-  const metricText = stripped.replace(/\(([^)]+)\)\s*$/, "").trim();
-  const metric = metricText
-    .toLowerCase()
-    .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-
-  return {
-    metric: metric.length > 0 ? metric : null,
-    unit,
-  };
-}
-
 function parseValueCell(
   cell: string,
   unitCell: string | null,
-  inheritedUnit: string | null
+  inheritedUnit: string | null,
+  spec: FactsExtractorSpec
 ): { value: number | string; unit: string | null } | null {
   const stripped = stripMarkdown(cell).trim();
   if (stripped.length === 0 || /^(-|n\/a|na|nm|none)$/i.test(stripped)) {
     return null;
   }
 
-  const explicitUnit = parseUnitText(unitCell ?? "") ?? inheritedUnit;
+  const explicitUnit = normalizeFactUnit(unitCell ?? "", spec) ?? inheritedUnit;
   let working = stripped;
   let detectedUnit = explicitUnit;
 
@@ -328,69 +288,13 @@ function parseValueCell(
     if (!Number.isFinite(value)) return null;
 
     if (!detectedUnit) {
-      detectedUnit = inferUnitFromCurrencyAndScale(currencyPrefix, scaleMatch);
+      detectedUnit = inferUnitFromCurrencyAndScale(currencyPrefix, scaleMatch, spec);
     }
 
     return { value, unit: detectedUnit };
   }
 
   return { value: stripped, unit: detectedUnit };
-}
-
-function inferUnitFromCurrencyAndScale(
-  currencyPrefix: string | null,
-  scale: string | null
-): string | null {
-  const currency = currencyPrefix?.toLowerCase() ?? "";
-  const normalizedScale = scale?.toLowerCase() ?? "";
-
-  if (normalizedScale === "x") return "x";
-
-  if (currency === "$" || currency === "usd" || currency === "us$") {
-    if (normalizedScale === "m" || normalizedScale === "mm" || normalizedScale === "million")
-      return "usd_m";
-    if (normalizedScale === "bn" || normalizedScale === "b" || normalizedScale === "billion")
-      return "usd_bn";
-    return "usd";
-  }
-  if (currency === "¥" || currency === "jpy") {
-    if (normalizedScale === "m" || normalizedScale === "mm" || normalizedScale === "million")
-      return "jpy_m";
-    return "jpy";
-  }
-  if (currency === "cny" || currency === "rmb" || currency === "cn¥") {
-    if (normalizedScale === "bn" || normalizedScale === "b" || normalizedScale === "billion")
-      return "cny_bn";
-    if (normalizedScale === "m" || normalizedScale === "mm" || normalizedScale === "million")
-      return "cny_m";
-    return "cny";
-  }
-  if (currency === "€" || currency === "eur") return "eur";
-  if (currency === "£" || currency === "gbp") return "gbp";
-
-  if (normalizedScale === "x") return "x";
-  return null;
-}
-
-function parseUnitText(text: string): string | null {
-  const normalized = stripMarkdown(text)
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (normalized.length === 0) return null;
-  if (normalized === "%" || normalized.includes("pct") || normalized.includes("percent"))
-    return "pct";
-  if (normalized === "x" || normalized.includes("turn")) return "x";
-  if (/(usd|us\$|\$).*(bn|billion| b)/.test(normalized)) return "usd_bn";
-  if (/(usd|us\$|\$).*(mm|million| m)/.test(normalized)) return "usd_m";
-  if (/(jpy|¥).*(mm|million| m)/.test(normalized)) return "jpy_m";
-  if (/(cny|rmb|cn¥).*(bn|billion| b)/.test(normalized)) return "cny_bn";
-  if (/(cny|rmb|cn¥).*(mm|million| m)/.test(normalized)) return "cny_m";
-  if (normalized === "usd" || normalized === "$") return "usd";
-  if (normalized === "jpy" || normalized === "¥") return "jpy";
-  if (normalized === "cny" || normalized === "rmb" || normalized === "cn¥") return "cny";
-  return normalized.replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || null;
 }
 
 function looksLikePeriodHeader(header: string): boolean {
@@ -414,11 +318,6 @@ function looksLikePeriodHeader(header: string): boolean {
   if (/^FY?\d{2,4}(?:[ae]|下半年|上半年)?$/i.test(value)) return true;
 
   return false;
-}
-
-function normalizePeriod(value: string): string | undefined {
-  const stripped = stripMarkdown(value).trim();
-  return stripped.length > 0 ? stripped : undefined;
 }
 
 function resolveEntitySlug(cell: string, fallback: string | null): string | null {

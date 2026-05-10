@@ -1,0 +1,34 @@
+kind: timeline
+name: source-default
+
+applies_to:
+  page_types:
+    - source
+    - brief
+
+event_types:
+  - earnings
+  - guidance
+  - partnership
+  - regulatory
+  - debt
+  - rating_change
+  - product_launch
+  - thesis_open
+  - thesis_close
+  - news
+  - other
+
+placeholder_dates:
+  - "YYYY-01-01"
+  - "YYYY-07-01"
+
+suspicious_summary_terms:
+  - fy
+  - expected
+  - estimate
+  - 1h
+  - 2h
+  - e
+  - guidance window
+  - source

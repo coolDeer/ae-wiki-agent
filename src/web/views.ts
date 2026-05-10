@@ -635,7 +635,8 @@ export async function viewPage(identifier: string): Promise<string> {
   `);
 
   const outLinks = await db.execute(sql`
-    SELECT p.slug, p.title, p.display_name, p.type, l.link_type, l.context
+    SELECT p.id, p.slug, p.title, p.display_name, p.type,
+           l.link_type, l.context, l.link_source, l.origin_field
     FROM links l JOIN pages p ON p.id = l.to_page_id
     WHERE l.from_page_id = ${BigInt(page.id)}
       AND l.deleted = 0 AND p.deleted = 0
@@ -653,6 +654,9 @@ export async function viewPage(identifier: string): Promise<string> {
   `);
 
   const comments = await listPageComments(BigInt(page.id));
+  const groupedOutLinks = aggregateOutboundLinks(
+    outLinks as Array<Record<string, unknown>>
+  );
 
   const meta = page.frontmatter ?? {};
   const isEntity = ["company", "industry", "concept"].includes(page.type);
@@ -665,6 +669,7 @@ export async function viewPage(identifier: string): Promise<string> {
     drift_direction: string;
     range_pct: number | null;
     latest: number | null;
+    unit: string | null;
     sources_count: number;
   }> = [];
   if (isEntity) {
@@ -694,6 +699,7 @@ export async function viewPage(identifier: string): Promise<string> {
       SELECT metric,
              COUNT(*)::int AS obs,
              COUNT(DISTINCT source_page_id)::int AS sources_n,
+             MAX(unit) AS unit,
              MIN(v) AS min_v,
              MAX(v) AS max_v,
              AVG(v) AS mean_v,
@@ -709,6 +715,7 @@ export async function viewPage(identifier: string): Promise<string> {
       metric: string;
       obs: number;
       sources_n: number;
+      unit: string | null;
       min_v: number | null;
       max_v: number | null;
       mean_v: number | null;
@@ -738,6 +745,7 @@ export async function viewPage(identifier: string): Promise<string> {
         drift_direction: direction,
         range_pct: rangePct,
         latest: s.latest !== null ? Number(s.latest) : null,
+        unit: s.unit ?? null,
         sources_count: s.sources_n,
       });
     }
@@ -797,12 +805,12 @@ ${timelineRows.length > 0
   : ""
 }
 
-${outLinks.length > 0
-  ? `<h2>Outbound links (${outLinks.length})</h2>
-    <ul class="plain">${outLinks
+${groupedOutLinks.length > 0
+  ? `<h2>Outbound links (${groupedOutLinks.length})</h2>
+    <ul class="plain">${groupedOutLinks
       .map(
         (l) =>
-          `<li><a href="${pageHref(String(l.slug ?? ""))}">${escape(outboundLinkDisplayName(l))}</a> ${pageTag(String(l.type ?? ""))} ${linkTypeTag(String(l.link_type ?? "mention"))}</li>`
+          `<li><a href="${pageHref(String(l.slug ?? ""))}">${escape(outboundLinkDisplayName(l))}</a> ${pageTag(String(l.type ?? ""))} ${linkTypeTag(String(l.link_type ?? "mention"))} ${renderProvenanceBadges(l.provenance)}</li>`
       )
       .join("")}</ul>`
   : ""
@@ -852,6 +860,28 @@ type SourceFactRow = {
   unit: string | null;
   confidence: string | null;
   metadata: { extracted_by?: string; source_quote?: string; evidence_context?: string } | null;
+};
+
+type OutboundLinkRow = {
+  id?: string | number | bigint | null;
+  slug?: string | null;
+  title?: string | null;
+  display_name?: string | null;
+  type?: string | null;
+  link_type?: string | null;
+  context?: string | null;
+  link_source?: string | null;
+  origin_field?: string | null;
+};
+
+type AggregatedOutboundLink = {
+  slug: string;
+  title: string | null;
+  display_name: string | null;
+  type: string | null;
+  link_type: string | null;
+  context: string | null;
+  provenance: string[];
 };
 
 function renderPageMetadataCard(
@@ -909,6 +939,51 @@ function renderPageMetadataCard(
       ${metaRow("Page ID", `#${page.id}`, { mono: true })}
     </div>
   </details>`;
+}
+
+function aggregateOutboundLinks(rows: OutboundLinkRow[]): AggregatedOutboundLink[] {
+  const grouped = new Map<string, AggregatedOutboundLink>();
+  for (const row of rows) {
+    const slug = String(row.slug ?? "");
+    const linkType = String(row.link_type ?? "mention");
+    if (!slug) continue;
+    const key = `${slug}|${linkType}`;
+    const existing = grouped.get(key) ?? {
+      slug,
+      title: row.title == null ? null : String(row.title),
+      display_name: row.display_name == null ? null : String(row.display_name),
+      type: row.type == null ? null : String(row.type),
+      link_type: row.link_type == null ? null : String(row.link_type),
+      context: row.context == null ? null : String(row.context),
+      provenance: [],
+    };
+    const provenance = provenanceLabel(row.link_source, row.origin_field);
+    if (provenance && !existing.provenance.includes(provenance)) {
+      existing.provenance.push(provenance);
+    }
+    grouped.set(key, existing);
+  }
+  return Array.from(grouped.values());
+}
+
+function provenanceLabel(
+  linkSource: string | null | undefined,
+  originField: string | null | undefined
+): string | null {
+  if (linkSource === "markdown") return "wikilink";
+  if (linkSource === "frontmatter" && originField === "primary_entities") {
+    return "primary_entities";
+  }
+  if (originField === "facts_block") return "facts";
+  if (originField === "timeline_block") return "timeline";
+  return null;
+}
+
+function renderProvenanceBadges(provenance: string[]): string {
+  if (provenance.length === 0) return "";
+  return provenance
+    .map((p) => `<span class="tag">${escape(p)}</span>`)
+    .join(" ");
 }
 
 function renderSourceFactsCard(facts: SourceFactRow[]): string {
@@ -1219,6 +1294,7 @@ function renderEntityDashboard(
     drift_direction: string;
     range_pct: number | null;
     latest: number | null;
+    unit: string | null;
     sources_count: number;
   }>
 ): string {
@@ -1306,7 +1382,7 @@ function renderEntityDashboard(
                 <td>${escape(m.metric)}</td>
                 <td>${directionEmoji(m.drift_direction)} <span class="muted">${escape(m.drift_direction)}</span></td>
                 <td class="muted">${m.range_pct !== null ? `${(m.range_pct * 100).toFixed(0)}%` : "-"}</td>
-                <td>${m.latest !== null ? escape(String(m.latest)) : "-"}</td>
+                <td>${m.latest !== null ? formatFactDisplayValue({ value: m.latest, unit: m.unit }) : "-"}</td>
                 <td class="muted">${m.obs_count} / ${m.sources_count}</td>
                 <td><a class="btn-inline" href="/consensus?slug=${encodeURIComponent(slug)}&metric=${encodeURIComponent(m.metric)}">view →</a></td>
               </tr>`
@@ -1422,10 +1498,10 @@ export async function viewConsensus(
   const statsBlock = stats
     ? `<div class="kv">
         <div class="k">count</div><div>${stats.count}</div>
-        <div class="k">mean</div><div>${stats.mean.toFixed(2)}</div>
-        <div class="k">std</div><div>${stats.std.toFixed(2)}</div>
-        <div class="k">range</div><div>${stats.min} → ${stats.max} (${(stats.range_pct * 100).toFixed(0)}% of mean)</div>
-        <div class="k">earliest → latest</div><div>${stats.earliest} → ${stats.latest}</div>
+        <div class="k">mean</div><div>${formatFactDisplayValue({ value: stats.mean, unit: observations[0]?.unit ?? null })}</div>
+        <div class="k">std</div><div>${formatFactDisplayValue({ value: stats.std, unit: observations[0]?.unit ?? null })}</div>
+        <div class="k">range</div><div>${formatFactDisplayValue({ value: stats.min, unit: observations[0]?.unit ?? null })} → ${formatFactDisplayValue({ value: stats.max, unit: observations[0]?.unit ?? null })} (${(stats.range_pct * 100).toFixed(0)}% of mean)</div>
+        <div class="k">earliest → latest</div><div>${formatFactDisplayValue({ value: stats.earliest, unit: observations[0]?.unit ?? null })} → ${formatFactDisplayValue({ value: stats.latest, unit: observations[0]?.unit ?? null })}</div>
       </div>`
     : `<div class="muted">no numeric observations</div>`;
 
@@ -1433,8 +1509,8 @@ export async function viewConsensus(
     drift && drift.direction !== "insufficient_data"
       ? `<div class="kv">
           <div class="k">direction</div><div><span class="tag">${escape(drift.direction)}</span> ${drift.drift_pct !== undefined ? `(${(drift.drift_pct * 100).toFixed(1)}%)` : ""}</div>
-          ${drift.first_half_avg !== undefined ? `<div class="k">first half avg</div><div>${drift.first_half_avg.toFixed(2)}</div>` : ""}
-          ${drift.second_half_avg !== undefined ? `<div class="k">second half avg</div><div>${drift.second_half_avg.toFixed(2)}</div>` : ""}
+          ${drift.first_half_avg !== undefined ? `<div class="k">first half avg</div><div>${formatFactDisplayValue({ value: drift.first_half_avg, unit: observations[0]?.unit ?? null })}</div>` : ""}
+          ${drift.second_half_avg !== undefined ? `<div class="k">second half avg</div><div>${formatFactDisplayValue({ value: drift.second_half_avg, unit: observations[0]?.unit ?? null })}</div>` : ""}
         </div>
         ${(drift.outliers ?? []).length > 0
           ? `<h4 style="margin-top:12px">Outliers (|σ| > 1.5)</h4>
@@ -1442,7 +1518,7 @@ export async function viewConsensus(
               ${(drift.outliers ?? [])
                 .map(
                   (o) =>
-                    `<li><a href="${pageHref(o.source_slug)}">${escape(o.source_slug)}</a> · ${escape(o.period)} · <strong>${o.value}</strong> · σ=${o.deviation_pct.toFixed(2)}</li>`
+                    `<li><a href="${pageHref(o.source_slug)}">${escape(o.source_slug)}</a> · ${escape(o.period)} · <strong>${formatFactDisplayValue({ value: o.value, unit: observations[0]?.unit ?? null })}</strong> · σ=${o.deviation_pct.toFixed(2)}</li>`
                 )
                 .join("")}
              </ul>`

@@ -18,6 +18,13 @@
 import { eq, and, isNull, sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { withCreateAudit } from "~/core/audit.ts";
+import {
+  matchFactsSpec,
+  normalizeFactMetric,
+  normalizeFactPeriod,
+  normalizeFactUnit,
+  type FactsExtractorSpec,
+} from "~/core/extractors/facts.ts";
 import { resolveOrCreatePage } from "./_helpers.ts";
 import type { IngestContext } from "~/core/types.ts";
 import { extractTierA } from "./stage-5-tier-a.ts";
@@ -32,43 +39,59 @@ import type {
 
 export async function stage5Facts(ctx: IngestContext): Promise<void> {
   const [page] = await db
-    .select({ content: schema.pages.content })
+    .select({
+      content: schema.pages.content,
+      type: schema.pages.type,
+      frontmatter: schema.pages.frontmatter,
+    })
     .from(schema.pages)
     .where(eq(schema.pages.id, ctx.pageId))
     .limit(1);
   if (!page) return;
+  const factsSpec = matchFactsSpec(page.type);
+  const researchType = getResearchType(page.frontmatter);
 
   const tierA: CandidateFact[] = extractTierA(page.content).map((fact) => ({
     ...fact,
     extractedBy: "tier_a" as const,
   }));
-  const tierB: CandidateFact[] = (
-    await extractTierBFromTables(ctx.pageId, page.content)
-  ).map((fact) => ({ ...fact, extractedBy: "tier_b" as const }));
+  const tierB: CandidateFact[] =
+    researchType === "meeting_minutes"
+      ? []
+      : (
+          await extractTierBFromTables(ctx.pageId, page.content, factsSpec)
+        ).map((fact) => ({ ...fact, extractedBy: "tier_b" as const }));
 
   console.log(`  [stage5] tier A: ${tierA.length} candidate facts`);
   console.log(`  [stage5] tier B: ${tierB.length} candidate facts`);
 
-  // Tier C：把 A+B 已有的 (entity, metric, period) 传过去，让 LLM 只补漏
-  const alreadyKeys = new Set<string>();
-  for (const f of [...tierA, ...tierB]) {
-    alreadyKeys.add(
-      `${String(f.entity).trim()}|${String(f.metric).trim()}|${String(f.period ?? "").trim()}`
+  let tierC: CandidateFact[] = [];
+  if (researchType === "meeting_minutes") {
+    console.log(
+      "  [stage5] tier B/C disabled for meeting_minutes; rely on explicit facts block only"
     );
+  } else {
+    // Tier C：把 A+B 已有的 (entity, metric, period) 传过去，让 LLM 只补漏
+    const alreadyKeys = new Set<string>();
+    for (const f of [...tierA, ...tierB]) {
+      alreadyKeys.add(
+        `${String(f.entity).trim()}|${String(f.metric).trim()}|${String(f.period ?? "").trim()}`
+      );
+    }
+    const tierCRaw = await extractTierC(page.content, alreadyKeys);
+    tierC = tierCRaw.map((fact) => ({
+      entity: fact.entity,
+      metric: fact.metric,
+      period: fact.period,
+      value: fact.value,
+      unit: fact.unit,
+      source_quote: fact.source_quote,
+      confidence: fact.confidence,
+      extractedBy: "tier_c" as const,
+    }));
   }
-  const tierCRaw = await extractTierC(page.content, alreadyKeys);
-  const tierC: CandidateFact[] = tierCRaw.map((fact) => ({
-    entity: fact.entity,
-    metric: fact.metric,
-    period: fact.period,
-    value: fact.value,
-    unit: fact.unit,
-    source_quote: fact.source_quote,
-    confidence: fact.confidence,
-    extractedBy: "tier_c" as const,
-  }));
 
-  const candidates = dedupeCandidates([...tierA, ...tierB, ...tierC]);
+  const candidates = dedupeCandidates([...tierA, ...tierB, ...tierC], factsSpec);
   if (candidates.length === 0) return;
 
   const today = todayLocal();
@@ -77,7 +100,7 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
   let unchanged = 0;
 
   for (const f of candidates) {
-    const normalized = await normalize(f, ctx, f.extractedBy, page.content);
+    const normalized = await normalize(f, ctx, f.extractedBy, page.content, factsSpec);
     if (!normalized) {
       skipped++;
       continue;
@@ -191,6 +214,14 @@ function todayLocal(): string {
   return `${y}-${m}-${day}`;
 }
 
+function getResearchType(frontmatter: unknown): string | null {
+  if (!frontmatter || typeof frontmatter !== "object") return null;
+  const researchType = (frontmatter as Record<string, unknown>).research_type;
+  return typeof researchType === "string" && researchType.trim()
+    ? researchType.trim()
+    : null;
+}
+
 /**
  * 严格相等：value_numeric / value_text / unit 全等才算 unchanged。
  * value_numeric 是 numeric 列，drizzle 返回 string；用字符串比可避免浮点抖动。
@@ -215,11 +246,14 @@ function factValueEquals(
 // dedupe + normalize（orchestrator 私有）
 // =============================================================================
 
-function dedupeCandidates(facts: CandidateFact[]): CandidateFact[] {
+function dedupeCandidates(
+  facts: CandidateFact[],
+  spec: FactsExtractorSpec
+): CandidateFact[] {
   const seen = new Set<string>();
   const result: CandidateFact[] = [];
   for (const fact of facts) {
-    const key = candidateKey(fact);
+    const key = candidateKey(fact, spec);
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(fact);
@@ -227,13 +261,13 @@ function dedupeCandidates(facts: CandidateFact[]): CandidateFact[] {
   return result;
 }
 
-function candidateKey(fact: CandidateFact): string {
+function candidateKey(fact: CandidateFact, spec: FactsExtractorSpec): string {
   return [
     String(fact.entity).trim(),
-    String(fact.metric).trim(),
-    String(fact.period ?? "").trim(),
+    normalizeFactMetric(String(fact.metric), spec) ?? String(fact.metric).trim(),
+    normalizeFactPeriod(fact.period ?? "", spec) ?? "",
     String(fact.value).trim(),
-    String(fact.unit ?? "").trim(),
+    normalizeFactUnit(fact.unit ?? "", spec) ?? "",
   ].join("|");
 }
 
@@ -241,7 +275,8 @@ async function normalize(
   f: YamlFact,
   ctx: IngestContext,
   extractedBy: ExtractedBy,
-  content: string
+  content: string,
+  spec: FactsExtractorSpec
 ): Promise<NormalizedFact | null> {
   if (!f.entity || typeof f.entity !== "string") return null;
 
@@ -253,19 +288,23 @@ async function normalize(
   if (!entityPageId) return null;
 
   if (!f.metric || typeof f.metric !== "string") return null;
+  const normalizedMetric = normalizeFactMetric(f.metric, spec);
+  if (!normalizedMetric) return null;
+  const normalizedPeriod = normalizeFactPeriod(f.period ?? null, spec) ?? null;
+  const normalizedUnit = normalizeFactUnit(f.unit ?? null, spec) ?? null;
 
-  const parsedValue = parseFactValue(f.value, f.metric, f.unit);
+  const parsedValue = parseFactValue(f.value, normalizedMetric, normalizedUnit ?? undefined);
   if (!parsedValue) {
     return null;
   }
 
   return {
     entity_page_id: entityPageId,
-    metric: f.metric,
-    period: f.period ?? null,
+    metric: normalizedMetric,
+    period: normalizedPeriod,
     value_numeric: parsedValue.valueNumeric,
     value_text: parsedValue.valueText,
-    unit: f.unit ?? null,
+    unit: normalizedUnit,
     confidence: (f.confidence ?? 1.0).toString(),
     source_quote: f.source_quote ?? null,
     evidence_context: buildEvidenceContextFromSources(ctx.rawMarkdown, content, f.source_quote ?? null),

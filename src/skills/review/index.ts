@@ -18,6 +18,7 @@ import * as YAML from "yaml";
 
 import { Actor } from "~/core/audit.ts";
 import { db, schema } from "~/core/db.ts";
+import { isSuspiciousPlaceholderDate } from "~/core/extractors/timeline.ts";
 import { splitBody } from "~/core/markdown.ts";
 
 import { extractTierA } from "../ingest/stage-5-tier-a.ts";
@@ -33,6 +34,19 @@ interface ReviewProfile {
   requireFactsBlock?: boolean;
   requireTimelineMarker?: boolean;
   requireRelationSubsections?: boolean;
+  customValidator?: (
+    ctx: ReviewValidationContext
+  ) => ReviewIssue[];
+}
+
+interface ReviewValidationContext {
+  page: PageMeta;
+  mergedFrontmatter: Record<string, unknown>;
+  sections: SectionBlock[];
+  compiledTruth: string;
+  rawBody: string;
+  timeline: string;
+  facts: ReturnType<typeof extractTierA>;
 }
 
 export interface ReviewIssue {
@@ -129,6 +143,7 @@ const REVIEW_PROFILES: Partial<Record<string, ReviewProfile>> = {
     requiredFrontmatterKeys: ["research_id", "research_type", "markdown_url"],
     requireFactsBlock: true,
     requireRelationSubsections: true,
+    customValidator: validateSourceCustomRules,
   },
   brief: {
     minChars: 120,
@@ -550,6 +565,20 @@ export function buildReviewReport(page: PageMeta, narrative: string): PageReview
         }
       }
     }
+
+    if (profile.customValidator) {
+      issues.push(
+        ...profile.customValidator({
+          page,
+          mergedFrontmatter,
+          sections,
+          compiledTruth,
+          rawBody,
+          timeline,
+          facts,
+        })
+      );
+    }
   }
 
   return {
@@ -571,6 +600,48 @@ export function buildReviewReport(page: PageMeta, narrative: string): PageReview
     },
     issues,
   };
+}
+
+function validateSourceCustomRules(ctx: ReviewValidationContext): ReviewIssue[] {
+  if (!isMeetingMinutesResearchType(ctx.mergedFrontmatter)) return [];
+
+  const issues: ReviewIssue[] = [];
+  const requiredMeetingSections = [
+    "Meeting Context",
+    "Management Claims vs Analyst Inference",
+    "Management Claims",
+    "Analyst Inference",
+  ];
+
+  for (const heading of requiredMeetingSections) {
+    if (!findSection(ctx.sections, heading)) {
+      issues.push({
+        severity: "error",
+        code: "missing_meeting_minutes_section",
+        message: `meeting_minutes source is missing required section "${heading}"`,
+        suggestion:
+          'Add the dedicated meeting_minutes profile sections so management statements and agent inference stay separated.',
+      });
+    }
+  }
+
+  if (!/<!--\s*facts\b/i.test(ctx.compiledTruth)) {
+    issues.push({
+      severity: "warn",
+      code: "meeting_minutes_missing_facts_block",
+      message: "meeting_minutes source has no explicit facts block",
+      suggestion:
+        "For meeting minutes, only structured facts explicitly stated by management or the note should be added to the facts block.",
+    });
+  }
+
+  return issues;
+}
+
+function isMeetingMinutesResearchType(
+  frontmatter: Record<string, unknown>
+): boolean {
+  return frontmatter.research_type === "meeting_minutes";
 }
 
 async function loadPageMeta(pageId: bigint): Promise<PageMeta | null> {
@@ -751,11 +822,6 @@ function findApproximateTimelineDates(timeline: string): ReviewIssue[] {
     });
   }
   return issues;
-}
-
-function isSuspiciousPlaceholderDate(date: string, summary: string): boolean {
-  if (!/^\d{4}-(01-01|07-01)$/.test(date)) return false;
-  return /\b(expected|planned|plan|ramp|ramping|begin|began|according|source|2h|h2|202\dE?)\b/i.test(summary);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

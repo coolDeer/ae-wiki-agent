@@ -18,6 +18,7 @@ import {
   listRecentComments,
   queryFacts,
   recentActivity,
+  resolveWikilink,
   search,
 } from "~/mcp/queries.ts";
 import {
@@ -999,6 +1000,28 @@ function buildRuntimeTools(): RuntimeTool[] {
           ticker: asOptionalString(input.ticker),
           confidence: asOptionalString(input.confidence),
           limit: asOptionalNumber(input.limit),
+        }),
+    },
+    {
+      name: "resolve_wikilink",
+      description:
+        "Resolve a free-text page hint to the best existing wiki slug. Use this before writing source/thesis/brief/output wikilinks.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          hint: { type: "string" },
+          type: { type: "string" },
+          limit: { type: "integer" },
+          min_similarity: { type: "number" },
+        },
+        required: ["hint"],
+      },
+      execute: async (input) =>
+        resolveWikilink({
+          hint: String(input.hint),
+          type: asOptionalString(input.type),
+          limit: asOptionalNumber(input.limit),
+          minSimilarity: asOptionalNumber(input.min_similarity),
         }),
     },
     {

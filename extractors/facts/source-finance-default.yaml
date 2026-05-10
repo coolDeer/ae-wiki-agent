@@ -1,0 +1,127 @@
+kind: facts
+name: source-finance-default
+
+applies_to:
+  page_types:
+    - source
+    - brief
+
+header_aliases:
+  entity:
+    - entity
+    - company
+    - target
+    - subject
+    - ticker
+    - slug
+    - 公司
+    - 公司名称
+    - 股票
+    - 股票代码
+    - 标的
+    - 名称
+  metric:
+    - metric
+    - item
+    - kpi
+    - 指标
+    - 项目
+    - 科目
+    - 内容
+  period:
+    - period
+    - quarter
+    - timeframe
+    - date
+    - fiscal_period
+    - 期间
+    - 季度
+    - 财年
+    - 日期
+  value:
+    - value
+    - data
+    - figure
+    - amount
+    - result
+    - number
+    - 数值
+    - 数据
+    - 金额
+    - 数字
+  unit:
+    - unit
+    - currency
+    - multiple
+    - 单位
+    - 货币
+
+metric_aliases:
+  gm: gross_margin
+  gpm: gross_margin
+  gross_margin_percent: gross_margin
+  op_margin: operating_margin
+  operating_margin_percent: operating_margin
+  rev: revenue
+  sales: revenue
+  yoy_growth: growth_yoy
+  y_y_growth: growth_yoy
+
+unit_aliases:
+  pct:
+    - "%"
+    - pct
+    - percent
+    - percentage
+  x:
+    - x
+    - turn
+    - turns
+  usd_bn:
+    - usd bn
+    - us$ bn
+    - $ bn
+    - usd billion
+  usd_m:
+    - usd m
+    - usd mm
+    - us$ m
+    - $ m
+    - usd million
+  jpy_m:
+    - jpy m
+    - "¥ m"
+    - jpy million
+  cny_bn:
+    - cny bn
+    - rmb bn
+    - cn¥ bn
+    - cny billion
+  cny_m:
+    - cny m
+    - rmb m
+    - cn¥ m
+    - cny million
+  usd:
+    - usd
+    - us$
+    - "$"
+  jpy:
+    - jpy
+    - "¥"
+  cny:
+    - cny
+    - rmb
+    - cn¥
+  eur:
+    - eur
+    - "€"
+  gbp:
+    - gbp
+    - "£"
+
+period_aliases:
+  current: current
+  ttm: TTM
+  ltm: LTM
+  ntm: NTM

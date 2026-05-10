@@ -1,0 +1,24 @@
+kind: signals
+name: source-default
+
+applies_to:
+  page_types:
+    - source
+    - brief
+
+typed_link_semantics:
+  confirms: thesis_validation
+  cites: thesis_validation
+  derives_from: thesis_validation
+  mention: thesis_validation
+  tracks: thesis_validation
+  contradicts: thesis_invalidation
+  critiques: thesis_invalidation
+  supersedes: thesis_invalidation
+
+fact_rules:
+  min_delta_pct: 0.1
+  consensus_drift_warning_pct: 0.2
+  consensus_drift_critical_pct: 0.35
+  single_prior_signal_type: fact_outlier
+  multi_prior_signal_type: consensus_drift

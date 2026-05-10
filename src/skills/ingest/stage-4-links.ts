@@ -1,23 +1,18 @@
 /**
  * Stage 4: 实体识别 + 链接抽取
  *
- * 从 page.content 提取：
- *   1. [[dir/slug]] / [[dir/slug|display]] — Obsidian wikilink
- *   2. [[dir/slug|TYPE: display]] — typed wikilink（投资语义）
- *      其中 TYPE ∈ VALID_LINK_TYPES，写入 links.link_type；不识别则降级为 mention
- *   3. [text](dir/slug) — markdown 内联链接（仅当 dir 在白名单时算 entity link）
- *
- * 对每个引用：
- *   - resolveOrCreatePage(slug)（不存在则自动建，confidence='low'）
- *   - INSERT INTO links (link_source='extracted', origin_page_id=ctx.pageId)
- *
- * 多 typed link 同一 (from, to) 可共存（schema uq_links 含 link_type）。
- * 同 slug 同 type 同来源去重；不同 type 写多行。
+ * 从 narrative / frontmatter / facts_block / timeline 收集实体，再把 link 写入图。
+ * 解析规则由 `extractors/links/source-default.yaml` 驱动。
  */
 
-import { and, eq, sql as drizzleSql } from "drizzle-orm";
+import { eq, sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { withCreateAudit } from "~/core/audit.ts";
+import { matchLinkSpec } from "~/core/extractors/match-spec.ts";
+import {
+  harvestLinkRefs,
+  type HarvestedLinkOccurrence,
+} from "~/core/extractors/links.ts";
 import {
   maybeEnqueueEnrichForBacklinkGrowth,
   resolveOrCreatePage,
@@ -26,30 +21,6 @@ import {
 import type { IngestContext } from "~/core/types.ts";
 import type { PageType } from "~/core/schema/pages.ts";
 
-const ENTITY_DIRS = [
-  "companies",
-  "industries",
-  "concepts",
-  "sources",
-  "theses",
-  "outputs",
-  "briefs",
-];
-
-/**
- * Typed wikilink 白名单。agent 写 `[[slug|TYPE: display]]` 时只允许这些 TYPE。
- * 不在白名单的 prefix 静默降级为 mention（display 保持原样）。
- *
- * 语义（投资研究专用）:
- *   mention      仅提及，无判断
- *   confirms     确认/印证另一 source 的数据或观点
- *   contradicts  反驳/不同看法
- *   supersedes   取代旧版本（同源更新）
- *   cites        引用作为数据来源
- *   critiques    批评方法论 / 假设
- *   derives_from thesis 基于某 source 论据
- *   tracks       thesis 跟踪某 entity
- */
 export const VALID_LINK_TYPES = new Set([
   "mention",
   "confirms",
@@ -61,45 +32,15 @@ export const VALID_LINK_TYPES = new Set([
   "tracks",
 ]);
 
-/** 解析 [[slug|TYPE: display]] 中 display 段开头的 TYPE prefix。 */
-const TYPE_PREFIX_RE = /^([a-z_]+)\s*:\s*/;
-function parseLinkType(display: string | undefined): string {
-  if (!display) return "mention";
-  const m = display.match(TYPE_PREFIX_RE);
-  if (!m || !m[1]) return "mention";
-  return VALID_LINK_TYPES.has(m[1]) ? m[1] : "mention";
-}
-
-/**
- * 这些 type 的红链允许 stage-4 auto-create 空 stub（confidence='low'，等 enrich）。
- *
- * 反过来 sources/theses/outputs/briefs 必须由 ingest:commit/brief / thesis:open /
- * daily-* 这些显式入口创建——agent narrative 里写 `[[sources/foo]]` 通常是
- * 凭直觉猜 slug，slug 错了会污染图。这种红链改成只记 events，不建 page。
- */
 const AUTO_CREATE_TYPES: ReadonlySet<PageType> = new Set([
   "company",
   "industry",
   "concept",
 ]);
-const DIR_PATTERN = ENTITY_DIRS.join("|");
-
-// [[dir/slug]] / [[dir/slug|display]]
-const WIKILINK_RE = new RegExp(
-  `\\[\\[(${DIR_PATTERN})\\/([^\\]|#]+?)(?:#[^\\]|]*?)?(?:\\|([^\\]]+?))?\\]\\]`,
-  "g"
-);
-
-// [text](dir/slug) 或 [text](../dir/slug.md)
-const MD_LINK_RE = new RegExp(
-  `\\[([^\\]]+)\\]\\(((?:\\.\\.\\/)*(${DIR_PATTERN})\\/[^)\\s]+?)(?:\\.md)?\\)`,
-  "g"
-);
 
 export interface UnresolvedWikilink {
   slug: string;
   inferredType: PageType;
-  /** pg_trgm 相似度建议；agent / lint 可用来纠错 */
   suggestions: Array<{
     slug: string;
     type: string;
@@ -112,14 +53,29 @@ export interface Stage4Result {
   refsExtracted: number;
   entitiesCreated: number;
   linksWritten: number;
-  /** 因为 type 不在 AUTO_CREATE_TYPES（即 source/thesis/output/brief）被拒绝建页的红链。
-   *  这些条目同时已写入 events.action='wikilink_unresolved'，不再次落库。 */
   unresolved: UnresolvedWikilink[];
+}
+
+export function candidateAliasFromLinkLabel(label: string | undefined): string | null {
+  if (!label) return null;
+  const stripped = label.replace(/^([a-z_]+)\s*:\s*/, "").replace(/\s+/g, " ").trim();
+  if (!stripped) return null;
+  if (!/[\u3400-\u9fff]/.test(stripped)) return null;
+  if (stripped.length > 40) return null;
+  if (/[\[\]]/.test(stripped)) return null;
+  if (/[\/／、,，;&；]|(?:\s+and\s+)|(?:\s+or\s+)/i.test(stripped)) return null;
+  return stripped;
 }
 
 export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
   const [page] = await db
-    .select({ content: schema.pages.content, slug: schema.pages.slug })
+    .select({
+      content: schema.pages.content,
+      slug: schema.pages.slug,
+      type: schema.pages.type,
+      frontmatter: schema.pages.frontmatter,
+      timeline: schema.pages.timeline,
+    })
     .from(schema.pages)
     .where(eq(schema.pages.id, ctx.pageId))
     .limit(1);
@@ -127,11 +83,17 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
     return { refsExtracted: 0, entitiesCreated: 0, linksWritten: 0, unresolved: [] };
   }
 
-  const refsMap = extractRefs(page.content);
+  const linkSpec = matchLinkSpec(page.type);
+  const refsMap = harvestLinkRefs(
+    {
+      content: page.content,
+      frontmatter: (page.frontmatter as Record<string, unknown>) ?? {},
+      timeline: page.timeline,
+    },
+    linkSpec
+  );
   console.log(`  [stage4] 抽到 ${refsMap.size} 个唯一引用`);
 
-  // 用前后 page 总数差算 entitiesCreated（helper 不再返回 wasCreated 标志，这是
-  // 最简的统计方式，且不会因 helper 内部并发 / onConflict 行为有偏差）。
   const beforeCount = await countActivePages();
   let linksWritten = 0;
   const unresolved: UnresolvedWikilink[] = [];
@@ -167,15 +129,14 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
         continue;
       }
     }
-
     if (!targetId) continue;
 
-    // 同 (slug, link_type) 共用一行（schema uq_links 含 link_type）。
-    // 不同 type 写多行，让 typed-edge graph 长出来。
-    const occByType = groupOccurrencesByLinkType(ref.occurrences);
+    const occByKey = groupOccurrencesByLinkKey(ref.occurrences);
     let firstWrite = true;
-    for (const [linkType, occs] of occByType) {
-      const ctxText = buildContext(page.content, occs[0]!);
+    for (const [key, occs] of occByKey) {
+      const [linkType, linkSource, originField] = splitLinkKey(key);
+      const safeType = VALID_LINK_TYPES.has(linkType) ? linkType : "mention";
+      const ctxText = buildContext(page.content, occs[0]);
       const inserted = await db
         .insert(schema.links)
         .values(
@@ -183,10 +144,11 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
             {
               fromPageId: ctx.pageId,
               toPageId: targetId,
-              linkType,
+              linkType: safeType,
               context: ctxText,
-              linkSource: "extracted",
+              linkSource,
               originPageId: ctx.pageId,
+              originField: originField ?? null,
               weight: "1.0",
             },
             ctx.actor
@@ -196,7 +158,6 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
         .returning({ id: schema.links.id });
       if (inserted.length > 0) {
         linksWritten++;
-        // backlink 增长 enrich 触发只看第一次写入即可（避免每个 type 都触发一次）
         if (firstWrite) {
           await maybeEnqueueEnrichForBacklinkGrowth({
             pageId: targetId,
@@ -212,12 +173,9 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
 
   const afterCount = await countActivePages();
   const createdEntities = Math.max(0, afterCount - beforeCount);
-
   console.log(
     `  [stage4] entities created=${createdEntities}, links written=${linksWritten}` +
-      (unresolved.length > 0
-        ? `, unresolved=${unresolved.length} (logged to events)`
-        : "")
+      (unresolved.length > 0 ? `, unresolved=${unresolved.length} (logged to events)` : "")
   );
 
   return {
@@ -228,20 +186,36 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
   };
 }
 
-/**
- * 把同 slug 的多次出现按 link_type 分组。每组共用一行 link_type 的 link 行；
- * 同 type 出现多次只取第一次的 occurrence 用作 context（足够定位）。
- */
-function groupOccurrencesByLinkType(
-  occurrences: RefOccurrence[]
-): Map<string, RefOccurrence[]> {
-  const grouped = new Map<string, RefOccurrence[]>();
+function groupOccurrencesByLinkKey(
+  occurrences: HarvestedLinkOccurrence[]
+): Map<string, HarvestedLinkOccurrence[]> {
+  const grouped = new Map<string, HarvestedLinkOccurrence[]>();
   for (const occ of occurrences) {
-    const arr = grouped.get(occ.linkType) ?? [];
+    const key = buildLinkKey(occ.linkType, occ.source, occ.originField);
+    const arr = grouped.get(key) ?? [];
     arr.push(occ);
-    grouped.set(occ.linkType, arr);
+    grouped.set(key, arr);
   }
   return grouped;
+}
+
+function buildLinkKey(
+  linkType: string,
+  source: HarvestedLinkOccurrence["source"],
+  originField: string | null
+): string {
+  return `${linkType}|${source}|${originField ?? ""}`;
+}
+
+function splitLinkKey(
+  key: string
+): [string, "markdown" | "frontmatter" | "extracted", string | null] {
+  const [linkType, source, originField] = key.split("|");
+  return [
+    linkType || "mention",
+    (source as "markdown" | "frontmatter" | "extracted") || "extracted",
+    originField || null,
+  ];
 }
 
 async function countActivePages(): Promise<number> {
@@ -251,7 +225,6 @@ async function countActivePages(): Promise<number> {
   return r?.n ?? 0;
 }
 
-/** 取一段以匹配位置为中心的上下文，前后各 50 字符（去 newline）。 */
 function buildContext(
   content: string,
   occurrence: { start: number; end: number } | undefined
@@ -260,14 +233,9 @@ function buildContext(
   const radius = 50;
   const start = Math.max(0, occurrence.start - radius);
   const end = Math.min(content.length, occurrence.end + radius);
-  return content
-    .slice(start, end)
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 200); // 安全上限
+  return content.slice(start, end).replace(/\s+/g, " ").trim().slice(0, 200);
 }
 
-/** pg_trgm fuzzy 找最像的 5 个候选（同 type 优先）。 */
 async function fetchSuggestions(
   slug: string,
   inferredType: PageType
@@ -296,7 +264,6 @@ async function fetchSuggestions(
   }));
 }
 
-/** 记一条 wikilink_unresolved event。建议列表已由调用方 fetch 好。 */
 async function logUnresolvedWikilink(opts: {
   slug: string;
   inferredType: PageType;
@@ -321,125 +288,8 @@ async function logUnresolvedWikilink(opts: {
       opts.actor
     )
   );
-
-  const hint = opts.suggestions.length > 0
+  const hint = opts.suggestions.length
     ? ` (closest: ${opts.suggestions[0]!.slug} sim=${opts.suggestions[0]!.similarity.toFixed(2)})`
     : "";
   console.log(`  [stage4] 跳过红链 ${opts.slug} —— ${opts.inferredType} 必须显式创建${hint}`);
-}
-
-/**
- * 抽出所有 wikilink + markdown-style link，按 slug 分组返回每个 slug 的所有
- * 出现位置（用于后续切 context）。slug 做 whitespace 标准化（多空格→单空格、
- * 首尾去白）以避免 `Tencent  Holdings` 和 `Tencent Holdings` 被当成两个不同 slug。
- *
- * 拒绝包含 CLAUDE.md 声明的禁止字符（`* ? < > | : \\ "`）的 slug ——
- * 这些通常是 agent 写的占位符 / 通配符（如 `[[companies/*]]` 表示"这一类公司"），
- * 不是真实 entity 引用。事故案例：narrative 写 `create/confirm [[companies/*]]
- * stubs before relying on company-level signals`，stage-4 把 `companies/*` 当真
- * slug 建了空 stub。
- *
- * 同时拒绝 ticker / stock code 形态的 slug（如 `companies/300750.SZ` /
- * `companies/AAPL` / `companies/3931.HK`）—— ticker 应该写到 `pages.ticker` 列
- * 或 frontmatter 里，不能当 slug。事故案例：钠离子电池调研 narrative 写
- * `[[companies/300750.SZ]]` 而不是 `[[companies/CATL]]`，建出 6 个 ticker-slug
- * 的空 stub。详见 ae-research-ingest SKILL.md "Wikilink 纪律 §6"。
- */
-const FORBIDDEN_SLUG_CHARS_RE = /[*?<>|:\\"]/;
-
-/**
- * A 股 / 港股 / 日股 / 韩股 ticker pattern：纯数字 + 市场后缀。
- *
- * **不拦截美股 4-5 字母全大写代码**（如 `AAPL` / `MSFT`）—— 因为很多公司
- * 的"正式名缩写"就是这种形式（CATL / BYD / TSMC / NVIDIA），无法靠正则
- * 跟 ticker 区分。美股 ticker 当 slug 用的事故场景较少（agent 通常会写
- * 公司名而非 ticker）；如果将来撞了再加 case-by-case 名单。
- */
-const TICKER_SLUG_RE = /^[0-9]{3,6}\.(?:SZ|SH|HK|TW|TO|JP|KS)$/;
-
-/**
- * 一次出现：位置 + 该处的 link_type（typed wikilink 各自带）。
- * markdown 内联链接 [text](slug) 永远是 'mention'（不支持 type prefix）。
- */
-interface RefOccurrence {
-  start: number;
-  end: number;
-  linkType: string;
-}
-
-interface ExtractedRef {
-  occurrences: RefOccurrence[];
-  aliases: string[];
-}
-
-export function candidateAliasFromLinkLabel(label: string | undefined): string | null {
-  if (!label) return null;
-  const stripped = stripTypedDisplayPrefix(label).replace(/\s+/g, " ").trim();
-  if (!stripped) return null;
-  if (!/[\u3400-\u9fff]/.test(stripped)) return null;
-  if (stripped.length > 40) return null;
-  if (/[\[\]]/.test(stripped)) return null;
-  if (/[\/／、,，;&；]|(?:\s+and\s+)|(?:\s+or\s+)/i.test(stripped)) return null;
-  return stripped;
-}
-
-function stripTypedDisplayPrefix(display: string): string {
-  const m = display.match(TYPE_PREFIX_RE);
-  if (!m || !m[1] || !VALID_LINK_TYPES.has(m[1])) return display;
-  return display.slice(m[0].length);
-}
-
-function extractRefs(content: string): Map<string, ExtractedRef> {
-  const refs = new Map<string, ExtractedRef>();
-
-  const addRef = (slug: string, occ: RefOccurrence, alias: string | null = null): void => {
-    const namePart = slug.split("/").slice(1).join("/");
-    if (FORBIDDEN_SLUG_CHARS_RE.test(namePart)) {
-      console.log(`  [stage4] 丢弃非法 slug: ${slug}（含 * ? < > | : \\ " 等占位字符）`);
-      return;
-    }
-    if (slug.startsWith("companies/") && TICKER_SLUG_RE.test(namePart)) {
-      console.log(
-        `  [stage4] 丢弃 ticker-as-slug: ${slug} —— ticker 写 frontmatter 或 enrich:save --ticker，slug 必须用公司名（如 companies/CATL，不是 companies/300750.SZ）`
-      );
-      return;
-    }
-    const ref = refs.get(slug) ?? { occurrences: [], aliases: [] };
-    ref.occurrences.push(occ);
-    if (alias && !ref.aliases.some((a) => a.toLowerCase() === alias.toLowerCase())) {
-      ref.aliases.push(alias);
-    }
-    refs.set(slug, ref);
-  };
-
-  const normalize = (s: string): string => s.replace(/\s+/g, " ").trim();
-
-  for (const m of content.matchAll(WIKILINK_RE)) {
-    const dir = m[1];
-    const tail = m[2];
-    const display = m[3]; // 可选 |display 段
-    if (!dir || !tail) continue;
-    const slug = `${dir}/${normalize(tail)}`;
-    if (!slug.split("/")[1]) continue;
-    const start = m.index ?? 0;
-    const end = start + m[0].length;
-    addRef(slug, { start, end, linkType: parseLinkType(display) }, candidateAliasFromLinkLabel(display));
-  }
-
-  for (const m of content.matchAll(MD_LINK_RE)) {
-    const label = m[1];
-    const full = m[2];
-    if (!full) continue;
-    const cleaned = full.replace(/^(?:\.\.\/)+/, "").replace(/\.md$/, "");
-    const parts = cleaned.split("/");
-    const dir = parts[0];
-    const tail = parts.slice(1).join("/");
-    if (!dir || !tail) continue;
-    const slug = `${dir}/${normalize(tail)}`;
-    const start = m.index ?? 0;
-    const end = start + m[0].length;
-    addRef(slug, { start, end, linkType: "mention" }, candidateAliasFromLinkLabel(label));
-  }
-
-  return refs;
 }

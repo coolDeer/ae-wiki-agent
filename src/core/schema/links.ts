@@ -39,7 +39,8 @@ export const links = pgTable(
         t.toPageId,
         t.linkType,
         t.linkSource,
-        t.originPageId
+        t.originPageId,
+        t.originField
       )
       .where(sql`deleted = 0`),
     fromIdx: index("idx_links_from").on(t.fromPageId),

@@ -1,0 +1,16 @@
+kind: thesis_conditions
+name: source-default
+
+applies_to:
+  page_types:
+    - source
+    - brief
+
+match_fields:
+  - condition
+  - title
+  - summary
+
+status_mapping:
+  thesis_validation: met
+  thesis_invalidation: invalidated

@@ -1,0 +1,23 @@
+kind: links
+name: source-default
+
+applies_to:
+  page_types:
+    - source
+    - brief
+    - company
+    - industry
+    - concept
+    - thesis
+    - output
+
+entity_sources:
+  - wikilink
+  - markdown_link
+  - frontmatter.primary_entities
+  - facts_block.entity
+  - timeline_block.entity
+
+relation_rules:
+  - type: mention
+    when: harvested_entity

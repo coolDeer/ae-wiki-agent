@@ -6,7 +6,9 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { auditFields } from "./_audit.ts";
 
 export const signals = pgTable(
@@ -31,6 +33,14 @@ export const signals = pgTable(
     ...auditFields,
   },
   (t) => ({
+    thesisSourceTypeUnique: uniqueIndex("uq_signals_thesis_source_type")
+      .on(t.signalType, t.entityPageId, t.thesisPageId, t.sourcePageId)
+      .where(
+        sql`deleted = 0
+            AND entity_page_id IS NOT NULL
+            AND thesis_page_id IS NOT NULL
+            AND source_page_id IS NOT NULL`
+      ),
     entityIdx: index("idx_signals_entity").on(t.entityPageId, t.detectedAt),
     thesisIdx: index("idx_signals_thesis").on(t.thesisPageId),
   })
