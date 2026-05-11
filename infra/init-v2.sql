@@ -291,7 +291,7 @@ CREATE TABLE IF NOT EXISTS raw_files (
   tags              TEXT[],                                     -- 上游 tags[]
   mongo_doc         JSONB,                                      -- 完整 MongoDB ResearchReportRecord 文档（取代旧的 api_metadata）
   parse_status      TEXT,                                       -- upstream parseStatus: 'completed' | 'pending' | ...
-  triage_decision   TEXT        NOT NULL DEFAULT 'pending',     -- 'pending' | 'pass' | 'commit' | 'brief'
+  triage_decision   TEXT        NOT NULL DEFAULT 'pending',     -- 'pending' | 'processing' | 'pass' | 'commit' | 'brief'
   ingested_page_id  BIGINT,
   ingested_at       TIMESTAMPTZ,
   skipped_at        TIMESTAMPTZ,
@@ -597,7 +597,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_timeline_dedup
 -- 3.9 raw_files
 CREATE UNIQUE INDEX IF NOT EXISTS uq_raw_files_research_id
   ON raw_files (research_id) WHERE deleted = 0 AND research_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_raw_files_pending       ON raw_files (create_time DESC) WHERE triage_decision = 'pending' AND ingested_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_raw_files_pending
+  ON raw_files (create_time ASC, id ASC)
+  WHERE deleted = 0
+    AND ingested_at IS NULL
+    AND skipped_at IS NULL
+    AND triage_decision IN ('pending', 'processing');
 CREATE INDEX IF NOT EXISTS idx_raw_files_research_type ON raw_files (research_type);
 CREATE INDEX IF NOT EXISTS idx_raw_files_triage_decision ON raw_files (triage_decision);
 CREATE INDEX IF NOT EXISTS idx_raw_files_org           ON raw_files (org_code) WHERE org_code IS NOT NULL;

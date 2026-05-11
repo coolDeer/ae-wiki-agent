@@ -5,7 +5,7 @@
  * （`skills/ae-research-ingest/SKILL.md`）执行，调多段式 CLI 串联：
  *
  *   Triage 流程：
- *     1. ingest:peek                 — 列下一份候选 raw（不写库），返回 V2 信号 + preview
+ *     1. ingest:peek                 — 原子领取下一份候选 raw，返回 V2 信号 + preview
  *     2a. ingest:pass <rf> --reason  — agent 判定无关，标 raw_file 跳过
  *     2b. ingest:commit <rf>         — agent 判定值得（深度 source），建 page 骨架 + chunks（Stage 1+2）
  *     2c. ingest:brief  <rf>         — agent 判定为前沿动态（轻量 brief），建 page 骨架 + chunks
@@ -17,8 +17,8 @@
  * 详细见 doc/architecture.md §4.1 与 skills/ae-research-ingest/SKILL.md。
  */
 
-import { asc, eq, isNull, and, sql as drizzleSql } from "drizzle-orm";
-import { db, schema } from "~/core/db.ts";
+import { eq, and, sql as drizzleSql } from "drizzle-orm";
+import { db, schema, sql as pgSql } from "~/core/db.ts";
 import { Actor } from "~/core/audit.ts";
 import { fetchContentListV2, fetchRawMarkdown } from "~/core/raw-loader.ts";
 import type { IngestContext } from "~/core/types.ts";
@@ -33,16 +33,12 @@ import { stage6Jobs } from "./stage-6-jobs.ts";
 import { stage7Timeline } from "./stage-7-timeline.ts";
 import { stage8Thesis } from "./stage-8-thesis.ts";
 
-interface IngestOptions {
-  limit?: number;
-  force?: boolean;
-}
-
 // ============================================================================
 // Triage 三件套（peek / commit / pass）—— B 方案：先看再做
 // ============================================================================
 
 const PEEK_PREVIEW_CHARS = 1500;
+const INGEST_CLAIM_TTL_MINUTES = 30;
 
 export interface PeekResult {
   rawFileId: bigint;
@@ -57,14 +53,23 @@ export interface PeekResult {
   v2Stats: V2Stats | null;
   /** V2 不可用时的告警，agent 应直接 pass（reason 引用此告警） */
   warning?: string;
+  /** triage_decision='processing' 短租约 TTL。超时后其他 worker 可重新领取。 */
+  claimTtlMinutes: number;
 }
 
 /**
- * Peek：列下一份候选 raw_file，返回 preview + V2 结构信号（不写库）。
+ * Peek：原子领取下一份候选 raw_file，返回 preview + V2 结构信号。
+ *
+ * 并发语义：
+ * - 领取用 UPDATE ... FOR UPDATE SKIP LOCKED ... RETURNING，一次只有一个 worker 能拿到同一行。
+ * - triage_decision='processing' 是短租约状态；agent 崩溃后，超过 TTL 的行会被下一次 peek 重新领取。
+ *
  * agent 看完后调 ingest:commit（继续）/ ingest:brief（轻量）/ ingest:pass（跳过）。
  */
-export async function ingestPeek(): Promise<PeekResult | null> {
-  const [rf] = await pickPending({ limit: 1 });
+export async function ingestPeek(
+  actor: string = Actor.systemIngest
+): Promise<PeekResult | null> {
+  const rf = await claimNextPendingRawFile(actor);
   if (!rf) return null;
 
   const [rawMarkdown, v2] = await Promise.all([
@@ -93,6 +98,7 @@ export async function ingestPeek(): Promise<PeekResult | null> {
     preview,
     hasContentListV2: hasV2,
     v2Stats,
+    claimTtlMinutes: INGEST_CLAIM_TTL_MINUTES,
     ...(warning ? { warning } : {}),
   };
 }
@@ -263,7 +269,7 @@ export async function ingestAppendNarrative(
 /**
  * Triage 跳过：raw 不值得 ingest（噪声 / 与投资研究无关）。
  *
- * 软删 page + 软删 raw_file（防止重新被 pickPending 拿到），写 events 留痕。
+ * 软删 page + 软删 raw_file（防止重新被 ingest:peek 拿到），写 events 留痕。
  * agent 在 ingest:next 之后、ingest:write 之前判断后调用。
  */
 export async function ingestSkip(
@@ -637,20 +643,58 @@ async function markStageFailed(
 // 共享工具
 // ============================================================================
 
-async function pickPending(opts: IngestOptions): Promise<(typeof schema.rawFiles.$inferSelect)[]> {
-  return db
+async function claimNextPendingRawFile(
+  actor: string
+): Promise<typeof schema.rawFiles.$inferSelect | null> {
+  const claimed = (await pgSql`
+    UPDATE raw_files
+    SET
+      triage_decision = 'processing',
+      update_by = ${actor},
+      update_time = NOW()
+    WHERE id = (
+      SELECT id
+      FROM raw_files
+      WHERE deleted = 0
+        AND ingested_at IS NULL
+        AND skipped_at IS NULL
+        AND (
+          triage_decision = 'pending'
+          OR (
+            triage_decision = 'processing'
+            AND update_time < NOW() - (${INGEST_CLAIM_TTL_MINUTES}::int * INTERVAL '1 minute')
+          )
+        )
+      ORDER BY create_time ASC, id ASC
+      LIMIT 1
+      FOR UPDATE SKIP LOCKED
+    )
+    RETURNING id::text AS id, triage_decision AS triage_decision
+  `) as Array<{ id: string; triage_decision: string }>;
+
+  const row = claimed[0];
+  if (!row) return null;
+
+  const rawFileId = BigInt(row.id);
+  await db.insert(schema.events).values({
+    actor,
+    action: "ingest_claim",
+    entityType: "raw_file",
+    entityId: rawFileId,
+    payload: {
+      ttlMinutes: INGEST_CLAIM_TTL_MINUTES,
+      triageDecision: row.triage_decision,
+    },
+    createBy: actor,
+    updateBy: actor,
+  });
+
+  const [rf] = await db
     .select()
     .from(schema.rawFiles)
-    .where(
-      and(
-        eq(schema.rawFiles.deleted, 0),
-        eq(schema.rawFiles.triageDecision, "pending"),
-        isNull(schema.rawFiles.skippedAt),
-        opts.force ? undefined : isNull(schema.rawFiles.ingestedAt)
-      )
-    )
-    .orderBy(asc(schema.rawFiles.createTime), asc(schema.rawFiles.id))
-    .limit(opts.limit ?? 100);
+    .where(and(eq(schema.rawFiles.id, rawFileId), eq(schema.rawFiles.deleted, 0)))
+    .limit(1);
+  return rf ?? null;
 }
 
 async function buildContext(

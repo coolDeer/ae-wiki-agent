@@ -497,7 +497,7 @@ function normalizeAgentRunData(raw: unknown): AgentRunData {
 function defaultPromptForSkill(skill: string): string {
   switch (skill) {
     case "ae-research-ingest":
-      return "Execute this skill once for the next pending raw file.";
+      return "Execute this skill once for the next claimable raw file.";
     case "ae-enrich":
       return "Execute this skill once for the next enrich candidate.";
     case "ae-entity-refresh":
@@ -1110,9 +1110,9 @@ function buildRuntimeTools(): RuntimeTool[] {
     },
     {
       name: "ingest_peek",
-      description: "Peek the next pending raw_file without writing anything.",
+      description: "Atomically claim the next pending raw_file and return a preview.",
       inputSchema: { type: "object", properties: {} },
-      execute: async () => ingestPeek(),
+      execute: async () => ingestPeek(Actor.agentRuntime),
     },
     {
       name: "ingest_pass",

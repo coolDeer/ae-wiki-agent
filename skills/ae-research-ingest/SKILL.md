@@ -32,7 +32,7 @@ metadata:
 ## 流程总览
 
 ```
-ingest:peek
+ingest:peek  # atomically claims one raw_file lease
   ↓ 看预览，三选一：
   ├─ 核心投资素材    → ingest:commit  → write (7 段 source 模板) → finalize
   ├─ 前沿动态弱相关  → ingest:brief   → write (4 段 brief 模板)  → finalize
@@ -49,7 +49,7 @@ ingest:peek
 cd ae-wiki-agent && bun src/cli.ts ingest:peek
 ```
 
-返回 JSON（**不写库**）：
+返回 JSON（会把该 `raw_file` 原子标为 `triage_decision='processing'`，避免并发 agent 拿到同一篇）：
 
 ```json
 {
@@ -60,6 +60,7 @@ cd ae-wiki-agent && bun src/cli.ts ingest:peek
   "rawCharCount": 9112,
   "preview": "...前 1500 字...",
   "hasContentListV2": true,
+  "claimTtlMinutes": 30,
   "v2Stats": {
     "pageCount": 26,
     "blockCount": 247,
@@ -873,7 +874,7 @@ bun src/cli.ts ingest:finalize <pageId>
 
 | 症状                             | 原因                                      | 解决                                                                                          |
 | ------------------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `ingest:peek` 返回 null          | 没有 pending raw_file                     | 先跑 `$ae-fetch-reports`；或检查 `WHERE deleted=0 AND ingested_at IS NULL AND skipped_at IS NULL` |
+| `ingest:peek` 返回 null          | 没有可领取 raw_file                     | 先跑 `$ae-fetch-reports`；或检查 `WHERE deleted=0 AND ingested_at IS NULL AND skipped_at IS NULL AND triage_decision IN ('pending','processing')` |
 | `ingest:commit` 报"已 ingest"    | rawFile 已被 ingest                       | 不能重复 commit；要重做需先撤销 `ingested_at`                                                           |
 | `ingest:commit` 报"已被跳过"        | rawFile 已 pass                          | 撤销 `skipped_at` 后再 commit                                                                   |
 | `ingest:write` 报 stdin 为空      | 忘记管道 / heredoc                          | 检查命令拼写                                                                                      |

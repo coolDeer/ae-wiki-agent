@@ -154,7 +154,7 @@ $ae-fetch-reports → $ae-research-ingest → $ae-enrich → $ae-thesis-track（
 bun src/cli.ts fetch-reports [--limit N] [--dry-run]
 
 # Ingest 三段式（gbrain "thin harness, fat skill" 模式）
-bun src/cli.ts ingest:peek                      # 看下一份 raw_file 预览，不写库
+bun src/cli.ts ingest:peek                      # 原子领取下一份 raw_file 并预览
 bun src/cli.ts ingest:commit <rawFileId>        # 认为是正式 source 时建 page
 bun src/cli.ts ingest:brief <rawFileId>         # 认为是轻量 brief 时建 page
 bun src/cli.ts ingest:write <pageId>            # stdin 写 agent 生成的 narrative
@@ -456,7 +456,7 @@ aecapllc API 不定期出新 `researchTypeName`：
 ### Ingest 三段式
 
 ```
-ingest:peek         → 取 raw_file 预览（不写库）
+ingest:peek         → 原子领取 raw_file 预览（写 triage_decision='processing' 短租约）
 ingest:commit/brief → 选定归宿，HTTP fetch markdown_url，建 pages 骨架，切 chunks
                       返回 {pageId, markdownUrl, ...}
 agent               → 通过 markdownUrl 拉原文，按对应 skill 模板写 narrative
@@ -796,7 +796,7 @@ const rows = await sql`SELECT * FROM pages WHERE id = ${1}`;
 
 - ✅ **Triage 三分流程**：`ingest:peek` → `commit / brief / pass` 三选一（之前是二分 next/skip）。SKILL.md 已更新成默认工作流
 - ✅ **`page.type='brief'`**：轻量前沿动态归宿（slug 前缀 `briefs/`，4 段精简模板，不强制 facts/timeline YAML）
-- ✅ **`raw_files.skipped_at + skip_reason`**（migration v2.4.0）：跟 `deleted=1` 语义分开；`pickPending` 已加过滤；带 backfill 脚本
+- ✅ **`raw_files.skipped_at + skip_reason`**（migration v2.4.0）：跟 `deleted=1` 语义分开；`ingest:peek` 已加过滤；带 backfill 脚本
 - ✅ **`ingest:pass / commit / brief / skip`** 四个新 CLI 命令上线（src/skills/ingest/index.ts）
 - ✅ **Stage 3 frontmatter 解析**：narrative 顶部 YAML 块用 `gray-matter` 解析后合并进 `pages.frontmatter`（之前丢弃）
 - ✅ **Stage 4 link_type 默认 `'mention'`**（之前空字符串）；旧数据已批量回填

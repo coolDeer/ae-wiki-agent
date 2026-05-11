@@ -3,7 +3,7 @@
  * ae-wiki CLI 入口
  *
  * Ingest triage 流程（gbrain "thin harness, fat skill" 模式）：
- *   ae-wiki ingest:peek                              # 看下一份 raw（不写库），返回 V2 信号 + preview
+ *   ae-wiki ingest:peek                              # 原子领取下一份 raw，返回 V2 信号 + preview
  *   ae-wiki ingest:commit <raw_id>                   # 深度 source（建 page type=source）
  *   ae-wiki ingest:brief  <raw_id>                   # 轻量 brief（建 page type=brief）
  *   ae-wiki ingest:pass   <raw_id> --reason "..."    # 噪声跳过（不建 page）
@@ -43,7 +43,7 @@ function printHelp(): void {
                                           # --per-type：每个 researchType 最多 N 条（与 --types 配合）
 
   # —— Triage 流程（推荐）：peek → pass | commit → write → finalize ——
-  ae-wiki ingest:peek                     # 列下一份候选 raw 的预览（不写库）
+  ae-wiki ingest:peek                     # 原子领取下一份候选 raw 的预览
   ae-wiki ingest:pass <raw_file_id> --reason "..."
                                           # peek 后判定无关：标 raw_file skip（不建 page）
   ae-wiki ingest:commit <raw_file_id>     # peek 后判定值得（核心投资素材）：建 page (type=source)
@@ -234,7 +234,8 @@ async function main(): Promise<void> {
 
     case "ingest:peek": {
       const { ingestPeek } = await import("./skills/ingest/index.ts");
-      const result = await ingestPeek();
+      const actor = getArg("--actor") ?? "system:ingest";
+      const result = await ingestPeek(actor);
       if (!result) {
         console.log("(没有待处理的 raw_files)");
         process.exit(0);
@@ -249,6 +250,7 @@ async function main(): Promise<void> {
           preview: result.preview,
           hasContentListV2: result.hasContentListV2,
           v2Stats: result.v2Stats,
+          claimTtlMinutes: result.claimTtlMinutes,
           ...(result.warning ? { warning: result.warning } : {}),
         })
       );

@@ -27,17 +27,28 @@ description: 用 subagent 并行批量跑 ae-research-ingest，避免主对话 c
 
 ### 1. 不要 peek，用具体 rawFileId
 
-**peek 是有状态的**：多个 subagent 并行调 peek 会拿到同一行 → 重复处理 + 浪费。
+**peek 是有状态的**：它会领取一条短租约。批处理时仍应由编排器集中领取 N 条，避免 subagent 自己决定队列顺序、TTL 和失败重试策略。
 
-正确做法：编排器（你）**先查 DB 拿 N 个 pending rawFileIds**，每个 subagent 收到**指定的 rawFileId**，subagent 直接调 `ingest:commit <id>` / `ingest:brief <id>` / `ingest:pass <id>`，跳过 peek。
+正确做法：编排器（你）**先用原子 claim SQL 拿 N 个 pending rawFileIds**，每个 subagent 收到**指定的 rawFileId**，subagent 直接调 `ingest:commit <id>` / `ingest:brief <id>` / `ingest:pass <id>`，跳过 peek。
 
 ```sql
--- 编排器先跑这个查询拿 ID 列表
-SELECT id, title, research_type
-FROM raw_files
-WHERE deleted=0 AND ingested_page_id IS NULL AND skipped_at IS NULL
-ORDER BY id ASC
-LIMIT N;
+-- 编排器先跑这个原子领取查询拿 ID 列表
+UPDATE raw_files
+SET triage_decision = 'processing',
+    update_by = 'agent:batch-ingest',
+    update_time = NOW()
+WHERE id IN (
+  SELECT id
+  FROM raw_files
+  WHERE deleted=0
+    AND ingested_at IS NULL
+    AND skipped_at IS NULL
+    AND triage_decision = 'pending'
+  ORDER BY create_time ASC, id ASC
+  LIMIT N
+  FOR UPDATE SKIP LOCKED
+)
+RETURNING id, title, research_type;
 ```
 
 ### 2. 并发度有限制

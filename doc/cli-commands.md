@@ -67,7 +67,7 @@ ae-wiki fetch-reports --date 2026-04-29 --dry-run
 
 ### `ingest:peek`
 
-预览下一份待处理 raw，不写库。
+原子领取下一份待处理 raw，并返回预览。领取后该行会暂时变为 `triage_decision='processing'`，避免并发 ingest 拿到同一篇。
 
 ```bash
 ae-wiki ingest:peek
@@ -471,4 +471,3 @@ ae-wiki jobs:supervisor start --detach
 ### Q3: 命令执行后就退出，是否正常？
 
 正常。CLI 默认是“一次一个命令，执行即退出”；`web`、`jobs:worker` 这类是常驻命令。
-

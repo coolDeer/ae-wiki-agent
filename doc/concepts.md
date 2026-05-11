@@ -75,7 +75,7 @@ raw_files (
   research_id,                    -- mongo doc.researchId（partial unique，去重）
   research_type,                  -- mongo doc.researchType 字符串映射
   title, tags, mongo_doc,
-  triage_decision,                -- 'pending' | 'pass' | 'commit' | 'brief'
+  triage_decision,                -- 'pending' | 'processing' | 'pass' | 'commit' | 'brief'
   ingested_page_id,               -- 已 ingest 后挂上来
   ingested_at, skipped_at, skip_reason,
   ...

@@ -717,7 +717,7 @@ CREATE TABLE raw_files (
   mongo_doc         JSONB,                         -- 完整 MongoDB ResearchReportRecord 文档
   parse_status      TEXT,                          -- upstream parseStatus: 'completed' | 'pending' | ...
   -- v2.5.1：Triage 决策结果
-  triage_decision   TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'commit' | 'brief' | 'pass'
+  triage_decision   TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'processing' | 'commit' | 'brief' | 'pass'
   ingested_page_id  BIGINT,                        -- ingest 后回填
   ingested_at       TIMESTAMPTZ,
   -- v2.4.0：Triage 主动跳过（与 deleted=1 语义分开）
@@ -746,7 +746,7 @@ CREATE INDEX idx_raw_files_skipped          ON raw_files (skipped_at) WHERE skip
 **字段说明**：
 - `markdown_url`：v2.5.0 起替代 `raw_path`。`fetchRawMarkdown(rf)` 进程内缓存，同 ingest 流程多次调用只 fetch 一次（见 `src/core/raw-loader.ts`）
 - `research_id` partial unique（`WHERE deleted=0 AND research_id IS NOT NULL`）— fetch-reports 直接 `INSERT ... ON CONFLICT (research_id) WHERE deleted=0 AND research_id IS NOT NULL DO NOTHING`
-- `triage_decision`：默认 `'pending'`；`ingest:peek` 不改；`commit/brief` 写对应值并建 page；`pass` 写 `'pass'` + 标 `skipped_at`
+- `triage_decision`：默认 `'pending'`；`ingest:peek` 原子领取并写 `'processing'` 短租约；`commit/brief` 写对应值并建 page；`pass` 写 `'pass'` + 标 `skipped_at`
 - `mongo_doc` 存完整 `ResearchReportRecord` 文档（含 `parsedMarkdownS3` / `parsedContentListS3` / `parseLockedBy` / 时间戳等），失去 schema 锁定但保留全部上游信息
 - `org_code` 当前不强制（NULL 兼容旧数据），未来添加 access control 时可强制 `pages.org_code = raw_files.org_code`
 - `tags` 在 ingest Stage 4 之外也会同步到 `tags` 表（m2m 行）便于按标签搜索

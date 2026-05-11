@@ -28,7 +28,8 @@ export const rawFiles = pgTable(
     tags: text("tags").array(),
     mongoDoc: jsonb("mongo_doc"),
     parseStatus: text("parse_status"),
-    // 显式 triage 结果：pending | pass | commit | brief
+    // 显式 triage 结果：pending | processing | pass | commit | brief
+    // processing 是 ingest:peek 的短租约状态，超时后可被重新领取。
     triageDecision: text("triage_decision").notNull().default("pending"),
     ingestedPageId: bigint("ingested_page_id", { mode: "bigint" }),
     ingestedAt: timestamp("ingested_at", { withTimezone: true }),
@@ -41,7 +42,9 @@ export const rawFiles = pgTable(
     researchIdUnique: uniqueIndex("uq_raw_files_research_id")
       .on(t.researchId)
       .where(sql`deleted = 0 AND research_id IS NOT NULL`),
-    pendingIdx: index("idx_raw_files_pending").on(t.createTime),
+    pendingIdx: index("idx_raw_files_pending")
+      .on(t.createTime, t.id)
+      .where(sql`deleted = 0 AND ingested_at IS NULL AND skipped_at IS NULL AND triage_decision IN ('pending', 'processing')`),
     typeIdx: index("idx_raw_files_research_type").on(t.researchType),
     triageIdx: index("idx_raw_files_triage_decision").on(t.triageDecision),
     orgIdx: index("idx_raw_files_org").on(t.orgCode),

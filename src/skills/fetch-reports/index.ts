@@ -174,7 +174,7 @@ export async function fetchReports(
       const type = researchTypeName(doc.researchType);
 
       if (!opts.dryRun) {
-        await db
+        const inserted = await db
           .insert(schema.rawFiles)
           .values({
             sourceId: "default",
@@ -198,7 +198,15 @@ export async function fetchReports(
             target: schema.rawFiles.researchId,
             // partial unique index: uq_raw_files_research_id
             where: drizzleSql`deleted = 0 AND research_id IS NOT NULL`,
-          });
+          })
+          .returning({ id: schema.rawFiles.id });
+        if (inserted.length === 0) {
+          result.skippedExisting++;
+          if (opts.perTypeLimit) {
+            perTypeCount.set(type, (perTypeCount.get(type) ?? 0) + 1);
+          }
+          continue;
+        }
       }
 
       result.inserted++;
