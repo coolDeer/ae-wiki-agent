@@ -1,9 +1,10 @@
 ---
 
-## name: ae-research-ingest
+name: ae-research-ingest
 description: 把 raw_files 中待处理的研究素材 ingest 进 wiki。Triage 流程：peek → 三选一 (commit 深 source / brief 轻量前沿 / pass 噪声) → write → finalize。Agent 当 LLM，core 只做确定性落库。
 metadata:
   short-description: Triage + 三段式 ingest（agent 写 narrative）
+---
 
 # ae-research-ingest
 
@@ -157,47 +158,104 @@ cd ae-wiki-agent && bun src/cli.ts ingest:commit <rawFileId>
 
 返回 `{pageId, markdownUrl, ...}`，type='source'，slug 前缀 `sources/`。
 
-### Source narrative 模板（7 段必填）
+### Source narrative 模板（投资研究编译版）
 
 **Write the final narrative in English.** Keep ticker symbols, accounting terms, and product names in their standard English forms. Chinese may appear only inside direct quotes, aliases, or source titles when necessary.
 
-**Add a YAML frontmatter block at the top of every source narrative.** At minimum, include `tags` and `view_side`.
+**Add a YAML frontmatter block at the top of every source narrative.** At minimum, include `tags`, `view_side`, `time_horizon`, and `primary_entities`.
 
 ```markdown
 ---
 tags: [semiconductor, memory]
 view_side: neutral
+time_horizon: near_term | medium_term | long_term | mixed
+primary_entities:
+  - companies/<slug>
+  - industries/<slug>
 ---
 
 ## Source Overview
-（一段话总结：主题 / 调研对象 / 关键时点）
+One paragraph: what this source is, who / what it covers, and why it matters now.
 
-## Key Takeaways
-（3-7 条编号列表，每条引用具体数据。覆盖维度：
-  1. 核心数据和变化（价格、产能、增速等定量信息）
-  2. 关键判断与观点（即使没有具体数字）
-  3. 行业参与者的行为模式（结构性观察容易被忽略，但对判断行业拐点至关重要）
-  4. 与市场共识不同的观点（expectation gap）
-  5. 时效性信号（前瞻指引、超预期 / 低于预期））
+## Entities Covered
+- Companies: [[companies/<slug>|Name]]
+- Industries: [[industries/<slug>|Name]]
+- Concepts: [[concepts/<slug>|Name]]
+- Related thesis: [[theses/<slug>|Name]] or None.
 
-## Important Data Points
-（表格优先：指标 | 数据 | 备注 | 来源）
+## Factual Claims And Data
+Use a table whenever possible.
 
-## Notable Quotes / Views
-（blockquote 保留原文。优先收录：管理层表态、专家对结构性问题的判断、反直觉观点）
+| Entity | Metric / Claim | Period | Value | Unit | Source Quote | Why It Matters |
+| --- | --- | --- | --- | --- | --- | --- |
+| [[companies/<slug>|Name]] | revenue | FY2027E | 123 | usd_m | "..." | Explains estimate revision / margin risk / demand inflection. |
 
-## Structural Observations
-（非数字型的长期判断 —— 竞争对手行为模式 / 行业参与者心态变化 / 长期趋势的早期信号。
-**此章节不得省略**，没有则写"None."）
+If the source has no useful numeric data, list the hard non-numeric facts as bullet points with source quotes.
+
+## Core Views
+- View:
+  Evidence:
+  Affected entities:
+  Confidence: high | medium | low
+- View:
+  Evidence:
+  Affected entities:
+  Confidence: high | medium | low
+
+## Investment Mechanism
+Explain the causal chain from source evidence to investment impact:
+source data -> business driver -> revenue / margin / multiple / risk -> affected company or industry.
+
+## Expectation Gap
+- Consensus / prior view:
+- New evidence:
+- Investment implication:
+
+## Investment Implications
+| Direction | Entity | Setup | Catalyst | Risk / Invalidation |
+| --- | --- | --- | --- | --- |
+| long / short / monitor / avoid | [[companies/<slug>|Name]] | ... | ... | ... |
 
 ## Relation To Existing Knowledge
 ### New Information
 ### Confirms Existing View
 ### Contradictions / Revisions
-（写之前先用 search 工具查 wiki 里已有的相关公司/行业页，建立交叉引用）
+（写之前先用 search 工具查 wiki 里已有的相关 source / company / industry 页，建立交叉引用。至少引用 2 个具体已存在页面，优先包含一个 prior source 和一个 company / industry；不要只写泛泛的"confirms prior wiki coverage"。）
 
-## Follow-ups
+## Follow-up Research Tasks
+- Task:
+  Priority: high | medium | low
+  Needed source or data:
 ```
+
+### Lightweight profile for `meeting_minutes`
+
+For `research_type=meeting_minutes`, keep the general source template, but use these adjustments:
+
+```markdown
+## Meeting Context
+- Meeting participants: management / investor / broker / expert / channel partner
+- Institutions: company / broker / fund / other
+- Date: YYYY-MM-DD if explicit, otherwise "not disclosed"
+- Format: 1x1 / group / field trip / conference / call
+- Management Q&A: yes / no / mixed / unclear
+
+## Management Claims vs Analyst Inference
+### Management Claims
+- Only statements explicitly attributed to management / meeting notes / direct Q&A.
+
+### Analyst Inference
+- Your interpretation, causal read-through, or cross-source synthesis.
+- Keep it separate from management statements; never restate inference as if management said it.
+```
+
+Additional rules for `meeting_minutes`:
+
+- `## Meeting Context` and `## Management Claims vs Analyst Inference` are required.
+- In `## Factual Claims And Data`, prioritize numbers explicitly stated by management or the meeting record.
+- Do not extract facts from `## Investment Implications`, `## Expectation Gap`, or any inferred summary line.
+- If a date appears only as your synthesis of an implication, keep it in prose and do not write it into `facts` or `timeline`.
+- `timeline` should only contain explicitly dated discrete events from the meeting notes, and may use `partnership | regulatory | debt` in addition to the existing event types.
 
 #### 结构化附录：`facts` 走 comment block，`timeline` 走独立尾段
 
@@ -219,9 +277,40 @@ view_side: neutral
 
 - entity: companies/<slug>
   date: 2026-04-15
-  event_type: earnings | guidance | rating_change | product_launch | news | other
+  event_type: earnings | guidance | partnership | regulatory | debt | rating_change | product_launch | news | other
   summary: <一句话>
 ```
+
+### Deterministic Derivation Contract
+
+以下内容不是“风格建议”，而是下游 deterministic stages 的输入契约：
+
+- Stage 4 links：`extractors/links/source-default.yaml`
+  - 首次提及的重要实体优先写成 `[[wikilink]]`
+  - `primary_entities` 会被当成显式 entity source
+  - `facts` / `timeline` 里的 `entity:` 也会被 Stage 4 收进图
+
+- Stage 5 facts：`extractors/facts/source-finance-default.yaml`
+  - `metric / period / unit` 会按 spec 归一
+  - facts 只写 source 明确给出的数值或可验证 claim，不要把推断写进 block
+  - 表格 header 尽量贴近 `Entity / Metric / Period / Value / Unit`
+
+- Stage 7 timeline：`extractors/timeline/source-default.yaml`
+  - timeline 只接受精确 `YYYY-MM-DD`
+  - 不要把 `2026E / 2H26 / current` 映射成 `YYYY-01-01 / YYYY-07-01`
+
+- Stage 8 signals / thesis conditions：
+  - `extractors/signals/source-default.yaml`
+  - `extractors/thesis-conditions/source-default.yaml`
+  - 当 narrative 明确是在确认 / 反驳既有 source 或 thesis 时，优先用 typed wikilink
+  - `confirms / cites / derives_from / tracks` 倾向 validation
+  - `contradicts / critiques / supersedes` 倾向 invalidation
+
+这套约束的目标是形成：
+
+`spec -> narrative -> stage`
+
+也就是 agent 写 narrative 时，就知道哪些结构会被哪个 stage 消费，而不是把所有解析假设都藏在代码里。
 
 ### Source 写作约束
 
@@ -245,14 +334,18 @@ view_side: neutral
   - 看不出来、证据不够 → `unknown`
 - `facts`：
 只写原文**明确给出的**数字、口径、估值、指引，不要把你的推断塞进 fact。
+  - 对 `meeting_minutes`，只抽管理层 / 纪要明示数字；不要从 `Investment Implications` 或你的总结里反推“日期事实”或二手数字。
 - `timeline`：
-只写**明确的离散事件**，例如业绩披露、指引更新、评级调整、产品发布、已发生的会议/管理层表态。
+只写**明确日期的离散事件**，例如业绩披露、指引更新、评级调整、产品发布、已发生的会议/管理层表态。
+  - 可用 event_type：`earnings | guidance | partnership | regulatory | debt | rating_change | product_launch | thesis_open | thesis_close | news | other`
+- 禁止把 `2026E` / `2H26` / `this year` / `current` 这类期间硬映射成 `YYYY-01-01` 或 `YYYY-07-01`。
+- 没有精确 `YYYY-MM-DD` 原文日期时，相关内容只能写进 `## Factual Claims And Data`、`## Core Views` 或 `## Follow-up Research Tasks`，不要写 timeline。
 - 如果只有结构性判断、没有明确事件日期：
-写进 `## 结构性观察`，**不要**硬编 timeline。
+写进 `## Core Views` 或 `## Investment Mechanism`，**不要**硬编 timeline。
 - 如果没有可抽取 fact：
-`facts` 块可以省略，但对深度 source 来说通常说明提炼还不够，先回头检查一遍原文。
+`facts` 块可以省略，但对深度 source 来说通常说明提炼还不够，先回头检查一遍原文。省略后 `page:review` 会给 warning，不会阻止 finalize。
 - 如果没有明确 timeline 事件：
-`<!-- timeline -->` 整段都省略。
+`<!-- timeline -->` 整段都省略。省略后 `page:review` 不应阻止 finalize；如果写了 timeline block，YAML 必须能被 Stage 7 解析。
 
 ---
 
@@ -333,10 +426,10 @@ platform: twitter
 
 两种验证方式（任选）：
 
-**方式 A：`resolve_wikilink` MCP 工具（推荐）**
+**方式 A：`resolve_wikilink` 工具（推荐）**
 
 ```
-mcp__ae-wiki__resolve_wikilink({
+resolve_wikilink({
   hint: "h200 csp channel check",   // 自由文本 hint（英中皆可）
   type: "source"                     // 限定 type，匹配更准
 })
@@ -351,12 +444,12 @@ mcp__ae-wiki__resolve_wikilink({
 **方式 B：`search` 工具兜底**
 
 ```
-mcp__ae-wiki__search({ query: "H200 channel check", type: "source", keyword_only: true })
+search({ query: "H200 channel check", type: "source", keyword_only: true })
 ```
 
 ### 3. Aspirational thesis 只能用纯文本
 
-写 `## Follow-ups` 段时构想"未来想 open 的论点"——**不要**写成 `[[theses/X]]` wikilink（即便 stage-4 现在会拒绝建，也不要让坏习惯进 narrative）。改写成：
+写 `## Follow-up Research Tasks` 段时构想"未来想 open 的论点"——**不要**写成 `[[theses/X]]` wikilink（即便 stage-4 现在会拒绝建，也不要让坏习惯进 narrative）。改写成：
 
 ```markdown
 - Build thesis: AWS-AI-reacceleration — long AMZN with conviction triggers on (a) ...
@@ -416,6 +509,8 @@ narrative 内不能这样：
 
 显示用大写写 `[[companies/catl|CATL]]`（slug 仍 lowercase，display 自由）。`pages.title` 列存品牌原写法（"CATL"），slug 是机器友好的标识。
 
+**中国公司中文名必须进入 aliases**：只要 source 里能确认某个中国公司的中文官方名 / 常用中文名，就必须在后续 enrich 时写进 `--aliases`。在 source narrative 中首次提到中国公司时，优先写成 `[[companies/muxi|沐曦]]` 这类带中文 display 的 wikilink；Stage 4 会把安全的中文 display label 自动预填进红链 aliases。不要把 `中际旭创/新易盛` 这种并称整段当 alias。
+
 **ticker 的归宿**：
 - enrich:save 时通过 `--ticker 300750.SZ` 写到 `pages.ticker` 列
 - 多重上市的多 ticker 都填到 `pages.aliases`（`["300750.SZ", "Contemporary Amperex Technology", "宁德时代"]`）
@@ -429,7 +524,7 @@ narrative 内不能这样：
 **不要写 `[[persons/X]]`**——这个 type 已被废弃。CEO / CFO / 高管 / 创始人的信息应当：
 
 - 写在所属公司的 `[[companies/X]]` narrative 或 frontmatter.management 字段里
-- 高管引言放在 source 页的 `## Notable Quotes / Views`，引用时用 `Andy Jassy（[[companies/Amazon]] CEO）`
+- 高管引言放在 source 页的 `## Core Views` 或 `## Factual Claims And Data` 的 `Source Quote` 字段，引用时用 `Andy Jassy（[[companies/Amazon]] CEO）`
 - 匿名专家（"北美广告专家A"）只出现在 source 正文，不需要建实体页
 
 ### 8. 出错怎么办
@@ -512,6 +607,8 @@ forecast]]).
 | --------------- | --------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | `tags`          | agent           | 主题标签数组（小写英文，短横线分隔）                                                               | 同时被 web UI 和 search 消费                                                           |
 | `view_side`     | agent           | 观点位置标签：`buy_side`, `sell_side`, `neutral`, `unknown`                                 | **必填**；供 daily-review Q7 聚合偏见结构使用                                                |
+| `time_horizon`  | agent           | 时间维度标签：`near_term`, `medium_term`, `long_term`, `mixed`                         | **必填**；帮助 daily / thesis 读 source 时理解观点时效性                                      |
+| `primary_entities` | agent        | 当前 source 最核心的 entity slug 列表（如 `companies/...`, `industries/...`）                 | **必填**；links extractor 会从 `frontmatter.primary_entities` 读取核心实体                         |
 | `research_id`   | **stage-1 自动写** | 上游 mongo `_id`                                                                   | agent 不要重写                                                                       |
 | `research_type` | **stage-1 自动写** | 上游 type（`acecamp_article` / `merit` / `meeting_minutes` / `semi_analysis` / ...） | agent 不要重写；web UI 读这个字段渲染                                                        |
 | `markdown_url`  | **stage-1 自动写** | 解析后 markdown S3 直链                                                               | agent 不要重写；fetch raw 用                                                           |
@@ -520,7 +617,7 @@ forecast]]).
 | `file_type`     | **stage-1 自动写** | `pdf` / `docx` / `pptx` ...（来自 `mongo_doc.detectedFileType` / `finalType`）       | agent 不要重写                                                                       |
 
 
-**Stage-1 已自动写入 7 个字段**（`title` / `research_id` / `research_type` / `markdown_url` / `publish_date` / `original_url` / `file_type`）。对 source 页，`pages.title` 一律直接使用 `raw_files.title`。agent 只需要专注 `tags` 和 `view_side`。**不要在 narrative frontmatter 里重写这些自动字段**——重写会盖掉准确值。
+**Stage-1 已自动写入 7 个字段**（`title` / `research_id` / `research_type` / `markdown_url` / `publish_date` / `original_url` / `file_type`）。对 source 页，`pages.title` 一律直接使用 `raw_files.title`。agent 需要负责的 source frontmatter 是：`tags`、`view_side`、`time_horizon`、`primary_entities`。**不要在 narrative frontmatter 里重写 stage-1 自动字段**——重写会盖掉准确值。
 
 ### Brief 页（`type='brief'`）允许的 frontmatter key
 
@@ -624,6 +721,16 @@ cd ae-wiki-agent && bun src/cli.ts ingest:finalize <pageId>
 - Stage 8 thesis 关联（active thesis 命中 → 写 signal）
 
 source 和 brief 都跑同样的 5 个 stage —— brief 通常 facts/timeline 段无产出，是预期。
+
+### Batch closeout: queue entity refresh once
+
+`ingest:finalize` only finalizes the current source / brief page. After a full ingest batch finishes, queue entity refresh jobs once:
+
+```bash
+bun src/cli.ts entity:queue-refresh --limit 500
+```
+
+This scans entity pages that lag new high-value evidence and creates one `entity-refresh` job per entity. Do not run this after every single page in a batch unless the user explicitly wants immediate refresh jobs.
 
 ### 断点续跑
 
@@ -786,7 +893,7 @@ bun src/cli.ts ingest:finalize <pageId>
 
 - 这篇素材的归类对吗：`commit / brief / pass`
 - 首次提到的重要实体是否加了 wikilink
-- source 页是否真的写出了 `## 结构性观察`，而不只是数字摘录
+- source 页是否真的写出了 `## Core Views` / `## Investment Mechanism`，而不只是数字摘录
 - `facts` 是否只包含原文明示信息
 - `timeline` 是否只包含有明确日期的离散事件
 - brief 是否足够短，没有硬凑成 source
@@ -798,4 +905,4 @@ bun src/cli.ts ingest:finalize <pageId>
 - raw 文件的去重、平台拉取 → `$ae-fetch-reports`
 - entity 元数据补全（公司信息 / 市值）→ `$ae-enrich`
 - 论点状态机维护 → `$ae-thesis-track`
-- brief 升级为 source（需要二次 ingest 同一份 raw）→ 暂未支持，撤销 ingest 后重跑
+- 批量调度 / 并行 ingest → `$ae-batch-ingest`

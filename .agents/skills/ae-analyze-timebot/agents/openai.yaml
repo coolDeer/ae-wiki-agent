@@ -1,0 +1,4 @@
+interface:
+  display_name: "Analyze TimeBot"
+  short_description: "拉取 TimeBot 周工时并为每位分析师产出个性化研究建议"
+  default_prompt: "Use $ae-analyze-timebot [YYYY-MM-DD] to summarize a week of TimeBot entries and propose follow-ups."

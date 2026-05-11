@@ -1,0 +1,4 @@
+interface:
+  display_name: "Research Ingest"
+  short_description: "Triage + 三段式 ingest 把 raw_files 转成 wiki 页"
+  default_prompt: "Use $ae-research-ingest to triage and ingest pending raw_files into wiki pages."

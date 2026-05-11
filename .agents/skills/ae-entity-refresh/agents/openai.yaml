@@ -1,0 +1,4 @@
+interface:
+  display_name: "Entity Refresh"
+  short_description: "Refresh stale entity pages from new structured evidence"
+  default_prompt: "Use $ae-entity-refresh to refresh the requested entity page from new source/fact/timeline/signal evidence."

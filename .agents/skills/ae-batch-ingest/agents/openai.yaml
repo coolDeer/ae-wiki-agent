@@ -1,0 +1,4 @@
+interface:
+  display_name: "Batch Ingest"
+  short_description: "用 subagent 并行批量跑 ae-research-ingest"
+  default_prompt: "Use $ae-batch-ingest to orchestrate parallel ingest runs across multiple pending raw_files."

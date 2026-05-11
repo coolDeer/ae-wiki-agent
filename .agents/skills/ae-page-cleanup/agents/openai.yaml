@@ -1,0 +1,4 @@
+interface:
+  display_name: "AE Page Cleanup"
+  short_description: "Clean duplicate and noisy ae-wiki pages"
+  default_prompt: "Clean ae-wiki pages: find duplicate, orphan, mistyped, and noisy entity pages; dry-run proposed merges and removals before applying."
