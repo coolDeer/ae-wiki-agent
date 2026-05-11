@@ -52,12 +52,16 @@ async function runJob(job: typeof schema.minionJobs.$inferSelect): Promise<unkno
       return null;
     case "enrich_entity":
       return await runEnrichEntity(job);
+    case "entity-refresh":
+      return await runEntityRefresh(job);
     case "agent_run":
       return await runAgentJob(job);
     case "lint_run":
       return await runLintJob(job);
     case "facts_expire":
       return await runFactsExpireJob(job);
+    case "wiki_maintain":
+      return await runWikiMaintainJob(job);
     default:
       throw new Error(`unknown job name: ${job.name}`);
   }
@@ -90,6 +94,28 @@ async function runFactsExpireJob(
     `  [facts_expire] ageDays=${result.ageDays} expired=${result.expiredCount}`
   );
   return result as unknown as Record<string, unknown>;
+}
+
+async function runWikiMaintainJob(
+  job: typeof schema.minionJobs.$inferSelect
+): Promise<Record<string, unknown>> {
+  const data = (job.data ?? {}) as {
+    limit?: number;
+    applySafe?: boolean;
+    dryRun?: boolean;
+    entityRefreshLimit?: number;
+    enqueueEnrich?: boolean;
+    enrichLimit?: number;
+    enqueueThesisReview?: boolean;
+    thesisLimit?: number;
+    factAgeDays?: number;
+  };
+  const { runWikiMaintain } = await import("~/skills/maintain/index.ts");
+  const report = await runWikiMaintain(data);
+  console.log(
+    `  [wiki_maintain] lint=${report.summary.totalLintIssues} entity_refresh=${report.summary.entityRefreshApplied} enrich_jobs=${report.summary.enrichJobsQueued} thesis_jobs=${report.summary.thesisJobsQueued}`
+  );
+  return report as unknown as Record<string, unknown>;
 }
 
 async function runEmbedChunks(
@@ -233,17 +259,22 @@ async function runEnrichEntity(
     pageId?: string;
     slug?: string;
     sourcePageId?: string;
+    retrigger?: boolean;
+    reason?: string;
   };
   const pageId = data.pageId ? BigInt(data.pageId) : null;
   if (!pageId) throw new Error("enrich_entity: data.pageId 缺失");
 
-  const ctx = await enrichLoadContext(pageId);
+  const isRetrigger = data.retrigger === true;
+  const ctx = await enrichLoadContext(pageId, { allowNonLow: isRetrigger });
   if (!ctx) {
     console.log(`  [enrich_entity] page #${pageId}: already enriched or unavailable, skip`);
     return {
       pageId: pageId.toString(),
       status: "noop",
-      reason: "page is missing, non-low confidence, or unsupported type",
+      reason: isRetrigger
+        ? "page is missing or unsupported type"
+        : "page is missing, non-low confidence, or unsupported type",
     };
   }
 
@@ -253,6 +284,11 @@ async function runEnrichEntity(
     "Do not move to another candidate unless enrich_get returns null for this page.",
     `Target title: ${ctx.title}`,
     `Target type: ${ctx.type}`,
+    `Target confidence: ${ctx.confidence ?? "unknown"}`,
+    ctx.displayName ? `Target display name: ${ctx.displayName}` : "Target display name: missing.",
+    isRetrigger
+      ? `This is a retrigger (${data.reason ?? "new backlinks or low completeness"}). Read the existing page with get_page, and use append mode for new evidence when existing content is substantial.`
+      : "This is an initial enrich candidate; write a full entity narrative if existing content is empty.",
     ctx.backlinks.length > 0
       ? `Known backlinks: ${ctx.backlinks
           .map((backlink) => `${backlink.sourceSlug} (${backlink.sourceDate ?? "unknown date"})`)
@@ -292,6 +328,26 @@ async function runEnrichEntity(
     status: "queued",
     agentJobId: agentJob.id.toString(),
   };
+}
+
+async function runEntityRefresh(
+  job: typeof schema.minionJobs.$inferSelect
+): Promise<unknown> {
+  const data = (job.data ?? {}) as {
+    skill?: string;
+    targetPageId?: string;
+    entitySlug?: string;
+  };
+  if (!data.targetPageId) {
+    throw new Error("entity-refresh: data.targetPageId 缺失");
+  }
+  if (data.skill !== "ae-entity-refresh") {
+    throw new Error("entity-refresh: data.skill 必须是 ae-entity-refresh");
+  }
+  console.log(
+    `  [entity-refresh] page #${data.targetPageId}${data.entitySlug ? ` (${data.entitySlug})` : ""} → LLM`
+  );
+  return await runAgentJob(job);
 }
 
 /**

@@ -98,7 +98,9 @@ export interface RedlinkContext {
   slug: string;
   type: string;
   title: string;
+  displayName: string | null;
   ticker: string | null;
+  confidence: string | null;
   /** 指向此 page 的 backlink 来源（source 页等）的简要信息 */
   backlinks: Array<{
     sourcePageId: bigint;
@@ -109,13 +111,17 @@ export interface RedlinkContext {
   }>;
 }
 
-async function loadRedlinkContextByPageId(pageId: bigint): Promise<RedlinkContext | null> {
+async function loadRedlinkContextByPageId(
+  pageId: bigint,
+  opts: { allowNonLow?: boolean } = {}
+): Promise<RedlinkContext | null> {
   const [target] = await db
     .select({
       id: schema.pages.id,
       slug: schema.pages.slug,
       type: schema.pages.type,
       title: schema.pages.title,
+      displayName: schema.pages.displayName,
       ticker: schema.pages.ticker,
       confidence: schema.pages.confidence,
     })
@@ -125,7 +131,7 @@ async function loadRedlinkContextByPageId(pageId: bigint): Promise<RedlinkContex
 
   if (!target) return null;
   if (target.type === "source") return null;
-  if (target.confidence !== "low") return null;
+  if (!opts.allowNonLow && target.confidence !== "low") return null;
 
   const backlinkSources = await db
     .select({
@@ -151,7 +157,9 @@ async function loadRedlinkContextByPageId(pageId: bigint): Promise<RedlinkContex
     slug: target.slug,
     type: target.type,
     title: target.title,
+    displayName: target.displayName,
     ticker: target.ticker,
+    confidence: target.confidence,
     backlinks: backlinkSources.map((b) => ({
       sourcePageId: b.pageId,
       sourceSlug: b.slug,
@@ -248,8 +256,11 @@ export async function enrichPrepareNext(opts: {
   return null;
 }
 
-export async function enrichLoadContext(pageId: bigint): Promise<RedlinkContext | null> {
-  return loadRedlinkContextByPageId(pageId);
+export async function enrichLoadContext(
+  pageId: bigint,
+  opts: { allowNonLow?: boolean } = {}
+): Promise<RedlinkContext | null> {
+  return loadRedlinkContextByPageId(pageId, opts);
 }
 
 export interface EnrichSaveOpts {
@@ -332,6 +343,34 @@ export function requiresDisplayNameForEnrich(page: {
   return isEntityPageType(page.type) && !page.displayName;
 }
 
+export function nextEnrichConfidence(
+  existingConfidence: string | null,
+  requestedConfidence?: "high" | "medium" | "low"
+): string | undefined {
+  if (requestedConfidence) return requestedConfidence;
+  if (existingConfidence === null || existingConfidence === "low") return "medium";
+  return undefined;
+}
+
+export function confidenceAfterEnrichReview(opts: {
+  existingConfidence: string | null;
+  requestedConfidence?: "high" | "medium" | "low";
+  plannedConfidence: string | undefined;
+  reviewStatus: "pass" | "fail";
+}): string | undefined {
+  const { existingConfidence, requestedConfidence, plannedConfidence, reviewStatus } = opts;
+  if (
+    reviewStatus === "fail" &&
+    requestedConfidence === undefined &&
+    plannedConfidence !== undefined &&
+    plannedConfidence !== "low" &&
+    (existingConfidence === null || existingConfidence === "low")
+  ) {
+    return existingConfidence ?? "low";
+  }
+  return plannedConfidence;
+}
+
 /**
  * 保存 enrich 后的 narrative。
  *   - 写 page_versions 快照（reason='enrich'）
@@ -370,6 +409,7 @@ export async function enrichSave(
       slug: schema.pages.slug,
       type: schema.pages.type,
       displayName: schema.pages.displayName,
+      confidence: schema.pages.confidence,
     })
     .from(schema.pages)
     .where(eq(schema.pages.id, pageId))
@@ -448,9 +488,10 @@ export async function enrichSave(
   // 构造 update set —— 只更新提供的字段。append 模式下 content / contentHash
   // 由 stage3AppendNarrative 内部更新（含 page_versions 快照）。
   const updateSet: Record<string, unknown> = {
-    confidence: opts.confidence ?? "medium",
     frontmatter: mergedFrontmatter,
   };
+  const confidenceUpdate = nextEnrichConfidence(existing.confidence, opts.confidence);
+  if (confidenceUpdate !== undefined) updateSet.confidence = confidenceUpdate;
   if (nextDisplayName !== undefined) updateSet.displayName = nextDisplayName;
   if (opts.ticker !== undefined) updateSet.ticker = opts.ticker;
   if (opts.sector !== undefined) updateSet.sector = opts.sector;
@@ -510,7 +551,7 @@ export async function enrichSave(
     completenessScore = result.total;
     await db
       .update(schema.pages)
-      .set({ completenessScore: completenessScore.toString() })
+      .set(withAudit({ completenessScore: completenessScore.toString() }, actor))
       .where(eq(schema.pages.id, pageId));
   }
 
@@ -518,6 +559,22 @@ export async function enrichSave(
     await import("../review/index.ts");
   const review = await reviewStoredPage(pageId);
   await persistPageReview(review, actor);
+
+  const finalConfidenceUpdate = confidenceAfterEnrichReview({
+    existingConfidence: existing.confidence,
+    requestedConfidence: opts.confidence,
+    plannedConfidence: confidenceUpdate,
+    reviewStatus: review.status,
+  });
+  const reviewBlockedConfidenceBump =
+    finalConfidenceUpdate !== confidenceUpdate &&
+    finalConfidenceUpdate !== undefined;
+  if (reviewBlockedConfidenceBump) {
+    await db
+      .update(schema.pages)
+      .set(withAudit({ confidence: finalConfidenceUpdate }, actor))
+      .where(eq(schema.pages.id, pageId));
+  }
 
   // 写 event
   await db.insert(schema.events).values({
@@ -527,7 +584,10 @@ export async function enrichSave(
     entityId: pageId,
     payload: {
       narrativeLen: narrative.length,
-      confidence: opts.confidence ?? "medium",
+      confidence: finalConfidenceUpdate ?? existing.confidence ?? null,
+      plannedConfidence: confidenceUpdate ?? null,
+      reviewBlockedConfidenceBump,
+      reviewStatus: review.status,
       fieldsSet: Object.keys(opts).filter((k) => opts[k as keyof EnrichSaveOpts] !== undefined),
       aliasesAction,
       aliasesAfter: nextAliases ?? null,
@@ -545,8 +605,12 @@ export async function enrichSave(
     completenessScore !== null
       ? `, completeness=${completenessScore.toFixed(3)}`
       : "";
+  const reviewLog =
+    reviewBlockedConfidenceBump
+      ? `, review=${review.status} kept confidence=${finalConfidenceUpdate}`
+      : `, review=${review.status}`;
   console.log(
-    `[enrich:save] page #${pageId} narrative ${narrative.length} chars, confidence=${opts.confidence ?? "medium"}${aliasLog}${scoreLog}`
+    `[enrich:save] page #${pageId} narrative ${narrative.length} chars, confidence=${finalConfidenceUpdate ?? existing.confidence ?? "(unchanged)"}${aliasLog}${scoreLog}${reviewLog}`
   );
   console.log(formatPageReviewReport(review));
 }

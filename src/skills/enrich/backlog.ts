@@ -99,11 +99,18 @@ export async function getEnrichBacklog(opts: {
       GROUP BY to_page_id
     ),
     inflight AS (
-      SELECT DISTINCT mj.data->>'pageId' AS page_id
+      SELECT DISTINCT
+        CASE
+          WHEN mj.name = 'enrich_entity' THEN mj.data->>'pageId'
+          ELSE mj.data->>'targetPageId'
+        END AS page_id
       FROM minion_jobs mj
       WHERE mj.deleted = 0
         AND mj.status IN ('waiting', 'active')
-        AND mj.name = 'enrich_entity'
+        AND (
+          mj.name = 'enrich_entity'
+          OR (mj.name = 'agent_run' AND mj.data->>'skill' = 'ae-enrich')
+        )
     )
     SELECT
       p.id::text AS page_id,

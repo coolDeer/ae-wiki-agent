@@ -721,6 +721,16 @@ cd ae-wiki-agent && bun src/cli.ts ingest:finalize <pageId>
 
 source 和 brief 都跑同样的 5 个 stage —— brief 通常 facts/timeline 段无产出，是预期。
 
+### Batch closeout: queue entity refresh once
+
+`ingest:finalize` only finalizes the current source / brief page. After a full ingest batch finishes, queue entity refresh jobs once:
+
+```bash
+bun src/cli.ts entity:queue-refresh --limit 500
+```
+
+This scans entity pages that lag new high-value evidence and creates one `entity-refresh` job per entity. Do not run this after every single page in a batch unless the user explicitly wants immediate refresh jobs.
+
 ### 断点续跑
 
 每个 stage 成功后写 `events.action='ingest_stage_done'`；失败写 `ingest_stage_failed`。

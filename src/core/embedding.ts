@@ -4,7 +4,7 @@
  *
  * - text-embedding-3-large 原生 3072 维 → dimensions=1536 截断（与 vector(1536) schema 对齐）
  * - text-embedding-3-small 原生 1536 维 → 默认即可
- * - 输入超 8000 字符自动截断
+ * - 输入超 WIKI_EMBEDDING_MAX_INPUT_CHARS 字符自动截断
  * - 429 时优先用 Retry-After 头部秒数；否则指数退避（4s → 120s 封顶）
  */
 
@@ -13,7 +13,6 @@ import { getEnv } from "./env.ts";
 import { recordUsage } from "./llm-usage.ts";
 
 const TARGET_DIM = 1536;
-const MAX_CHARS = 8000;
 const MAX_RETRIES = 5;
 const BASE_DELAY_MS = 4000;
 const MAX_DELAY_MS = 120000;
@@ -43,7 +42,7 @@ export async function embedBatch(
   const model = options.model ?? env.OPENAI_EMBEDDING_MODEL;
   const needsDimsParam = model.includes("3-large");
 
-  const truncated = texts.map((t) => t.slice(0, MAX_CHARS));
+  const truncated = texts.map((t) => t.slice(0, env.WIKI_EMBEDDING_MAX_INPUT_CHARS));
   const results: number[][] = [];
 
   for (let i = 0; i < truncated.length; i += BATCH_SIZE) {
@@ -118,7 +117,7 @@ export async function embed(
   text: string,
   options: { model?: string } = {}
 ): Promise<number[]> {
-  const truncated = text.slice(0, MAX_CHARS);
+  const truncated = text.slice(0, getEnv().WIKI_EMBEDDING_MAX_INPUT_CHARS);
   const [v] = await embedBatch([truncated], options);
   if (!v) throw new Error("embedding returned empty");
   return v;

@@ -81,8 +81,39 @@ function aliasesScore(page: Page): number {
   return 0;
 }
 
-function tickerScore(page: Page): number {
-  return page.ticker && page.ticker.length > 0 ? 1.0 : 0;
+function listingOrOwnershipScore(page: Page): number {
+  if (page.ticker && page.ticker.trim().length > 0) return 1.0;
+
+  const content = (page.content ?? "").toLowerCase();
+  const ownershipSignals = [
+    "private company",
+    "privately held",
+    "not publicly listed",
+    "unlisted",
+    "subsidiary",
+    "parent company",
+    "owned by",
+    "controlled by",
+    "state-owned",
+    "joint venture",
+    "portfolio company",
+    "funding round",
+    "series a",
+    "series b",
+    "series c",
+    "ipo candidate",
+    "pre-ipo",
+    "未上市",
+    "私有",
+    "私营",
+    "子公司",
+    "母公司",
+    "控股",
+  ];
+
+  if (ownershipSignals.some((signal) => content.includes(signal))) return 1.0;
+  if (page.exchange && page.exchange.trim().length > 0) return 0.6;
+  return 0;
 }
 
 function sectorScore(page: Page): number {
@@ -138,7 +169,7 @@ function hasCitations(page: Page): number {
 function scoreCompany(page: Page): CompletenessResult {
   const dimensions: DimensionScore[] = [
     { name: "content", weight: 0.20, score: hasContent(page) },
-    { name: "ticker", weight: 0.15, score: tickerScore(page) },
+    { name: "listing_or_ownership", weight: 0.15, score: listingOrOwnershipScore(page) },
     { name: "sector", weight: 0.10, score: sectorScore(page) },
     { name: "aliases", weight: 0.15, score: aliasesScore(page) },
     { name: "wikilinks", weight: 0.10, score: hasWikilinks(page) },

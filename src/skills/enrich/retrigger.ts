@@ -5,10 +5,11 @@
  *   首次 enrich 时只有 1 个 backlink，agent 按规矩留 low confidence；
  *   后续 N 篇 source 又提到 NVIDIA，backlink 累积到 5+，但没机制让它重 enrich。
  *
- * 触发候选条件（AND 关系）：
- *   1. 完整度低：completeness_score < `--min-score`（默认 0.5）
- *   2. backlink 量大：backlinks >= `--min-backlinks`（默认 3）
- *   3. 有"涨势"：自上次 enrich event 以来 backlink 增量 >= `--min-new-backlinks`（默认 2）
+ * 触发候选条件：
+ *   1. backlink 量大：backlinks >= `--min-backlinks`（默认 3）
+ *   2. 且满足任一：
+ *      - 完整度低：completeness_score < `--min-score`（默认 0.5）
+ *      - 有"涨势"：自上次 enrich event 以来 backlink 增量 >= `--min-new-backlinks`（默认 2）
  *      —— 防止刚 enrich 完的 page 立刻又重跑
  *   4. 没有 in-flight enrich job
  *   5. type ∈ {company, industry, concept, thesis}
@@ -72,6 +73,22 @@ export interface RetriggerOpts {
   dryRun?: boolean;
 }
 
+export function isRetriggerCandidate(row: {
+  completenessScore: number;
+  backlinks: number;
+  newBacklinksSinceEnrich: number;
+}, thresholds: {
+  minScore: number;
+  minBacklinks: number;
+  minNewBacklinks: number;
+}): boolean {
+  if (row.backlinks < thresholds.minBacklinks) return false;
+  return (
+    row.completenessScore < thresholds.minScore ||
+    row.newBacklinksSinceEnrich >= thresholds.minNewBacklinks
+  );
+}
+
 export async function runRetrigger(opts: RetriggerOpts = {}): Promise<RetriggerResult> {
   const minScore = opts.minScore ?? 0.5;
   const minBacklinks = opts.minBacklinks ?? 3;
@@ -129,14 +146,23 @@ export async function runRetrigger(opts: RetriggerOpts = {}): Promise<RetriggerR
     LEFT JOIN backlink_counts bc ON bc.to_page_id = p.id
     WHERE p.deleted = 0
       ${typeFilter}
-      AND p.completeness_score::numeric < ${minScore}
       AND COALESCE(bc.n, 0) >= ${minBacklinks}
       AND NOT EXISTS (
         SELECT 1 FROM minion_jobs mj
         WHERE mj.deleted = 0
-          AND mj.name = 'enrich_entity'
           AND mj.status IN ('waiting', 'active')
-          AND mj.data->>'pageId' = p.id::text
+          AND (
+            (
+              mj.name = 'enrich_entity'
+              AND mj.data->>'pageId' = p.id::text
+            )
+            OR
+            (
+              mj.name = 'agent_run'
+              AND mj.data->>'skill' = 'ae-enrich'
+              AND mj.data->>'targetPageId' = p.id::text
+            )
+          )
       )
     ORDER BY bc.n DESC, p.completeness_score::numeric ASC, p.id ASC
     LIMIT ${limit * 3}
@@ -152,9 +178,18 @@ export async function runRetrigger(opts: RetriggerOpts = {}): Promise<RetriggerR
     new_backlinks_since_enrich: number;
   }>;
 
-  // 应用 minNewBacklinks 过滤（从未 enrich 过的 last_at IS NULL，new_backlinks = backlinks，永远算）
+  // 应用 retrigger 过滤（从未 enrich 过的 last_at IS NULL，new_backlinks = backlinks，永远算）
   const candidates: RetriggerCandidate[] = rows
-    .filter((r) => r.new_backlinks_since_enrich >= minNewBacklinks)
+    .filter((r) =>
+      isRetriggerCandidate(
+        {
+          completenessScore: parseFloat(r.completeness_score),
+          backlinks: r.backlinks,
+          newBacklinksSinceEnrich: r.new_backlinks_since_enrich,
+        },
+        { minScore, minBacklinks, minNewBacklinks }
+      )
+    )
     .slice(0, limit)
     .map((r) => {
       const lastAt = r.last_enrich_at

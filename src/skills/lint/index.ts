@@ -35,6 +35,8 @@ interface LintOptions {
   factAgeDays?: number;
   /** 每项检查保留的样本 ID 数量 */
   sampleSize?: number;
+  /** 默认写 events(action='lint_run')；维护 dry-run 会关掉 */
+  writeEvent?: boolean;
 }
 
 const ENTITY_TYPES = ["company", "industry", "concept", "thesis"];
@@ -231,18 +233,20 @@ export async function runLint(opts: LintOptions = {}): Promise<LintReport> {
     checks,
   };
 
-  await db.insert(schema.events).values(
-    withCreateAudit(
-      {
-        actor: Actor.systemJobs,
-        action: "lint_run",
-        entityType: null,
-        entityId: null,
-        payload: report as unknown as Record<string, unknown>,
-      },
-      Actor.systemJobs
-    )
-  );
+  if (opts.writeEvent !== false) {
+    await db.insert(schema.events).values(
+      withCreateAudit(
+        {
+          actor: Actor.systemJobs,
+          action: "lint_run",
+          entityType: null,
+          entityId: null,
+          payload: report as unknown as Record<string, unknown>,
+        },
+        Actor.systemJobs
+      )
+    );
+  }
 
   return report;
 }

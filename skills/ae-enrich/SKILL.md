@@ -108,13 +108,72 @@ get_page("sources/meeting_minutes-20bfde-260427")
 
 ### Step 3：选模板 + 写 narrative
 
-按 entity type 选模板：
+按 entity type 选模板。**H2 标题必须使用下面的英文原文**，不要改成中文标题；deterministic page review 会按这些 heading 校验。
 
-| type | 章节模板 |
-|---|---|
-| **company** | 公司概况 / 商业模式 / 财务摘要 / 竞争格局 / 估值 / 风险因素 / 催化剂 / 关键时间线 / 相关页面 / 引用来源 |
-| **industry** | 行业概况 / 市场规模与增长 / 产业链分析 / 竞争格局 / 关键趋势 / 监管环境 / 投资机会与风险 / 相关公司 / 引用来源 |
-| **concept** | 定义 / 在投资研究中的应用 / 相关概念 / 引用来源 |
+#### Company template
+
+```markdown
+## Company Overview
+## Business Model
+## Financial Summary
+## Competitive Landscape
+## Valuation
+## Risk Factors
+## Catalysts
+## Key Timeline
+## Sources
+```
+
+写作标准：
+- `Company Overview`：一句话定义公司、国家 / listing status / ownership、核心业务。上市公司写 ticker / exchange；私有公司或子公司写 parent / funding / ownership / disclosure status，不要硬编 ticker。
+- `Business Model`：收入来源、客户、产品线、单位经济或利润驱动；能量化就量化，不能量化就说明 source 未披露。
+- `Financial Summary`：收入 / 利润 / margin / guidance / estimates / market cap / order backlog 等 source-backed 数字。没有可用数字时写清“no source-backed financial disclosure found”，并列出缺口。
+- `Competitive Landscape`：竞品、上下游、份额、技术 / 成本 / 渠道差异。竞品必须用 wikilink，且不要把竞品并称写成 aliases。
+- `Valuation`：只写 source 提供的 valuation、target price、multiple、funding valuation 或可验证市值；没有就写 valuation evidence unavailable。
+- `Risk Factors`：技术、需求、监管、融资、客户集中、竞争、估值或执行风险，并标注 source。
+- `Catalysts`：未来 3-12 个月能改变认知的事件，如 earnings、product launch、policy、capacity ramp、contract win、IPO、financing。
+- `Key Timeline`：只列有明确日期或 period 的事件；不要把 FY2026E / 2H26 硬映射成具体日期。
+- `Sources`：列出本页实际使用的 backlink source 和必要公开核验来源。
+
+#### Industry template
+
+```markdown
+## Industry Overview
+## Market Size And Growth
+## Value Chain
+## Competitive Landscape
+## Key Trends
+## Regulatory Environment
+## Investment Opportunities And Risks
+## Related Companies
+## Sources
+```
+
+写作标准：
+- `Industry Overview`：定义行业边界，明确包含 / 不包含什么，避免泛泛百科。
+- `Market Size And Growth`：TAM / SAM / shipment / capacity / spending / growth rate / penetration；没有数字则写 source 未给出可验证 market size。
+- `Value Chain`：上游 inputs、核心供应商、下游 customers、利润池和 bargaining power。
+- `Competitive Landscape`：主要公司、份额、进入壁垒、成本曲线或技术路线。
+- `Key Trends`：必须覆盖 demand drivers / supply constraints / technology shift / pricing cycle 中相关项。
+- `Regulatory Environment`：政策、许可、补贴、出口管制、医保 / 能源 / 数据监管等；没有 material regulation 时说明。
+- `Investment Opportunities And Risks`：写成投资机制，而不是行业描述：source evidence → business driver → revenue / margin / multiple / risk。
+- `Related Companies`：列 relevant companies，并用 wikilink 区分 leaders / challengers / suppliers / customers。
+- `Sources`：列实际使用来源。
+
+#### Concept template
+
+```markdown
+## Definition
+## Use In Investment Research
+## Related Concepts
+## Sources
+```
+
+写作标准：
+- `Definition`：说明是什么、解决什么问题、**不是什么**；技术 / 会计 / 产业术语要给边界。
+- `Use In Investment Research`：必须落到投资变量：revenue、margin、multiple、capex、working capital、policy risk、competitive moat 或 adoption curve。
+- `Related Concepts`：区分 inputs / substitutes / downstream effects / commonly confused terms，尽量使用 wikilink。
+- `Sources`：列 source-backed 定义和投资用途来源。
 
 skill 本身就是模板源，不依赖额外 `templates/` 文件。
 
@@ -129,7 +188,7 @@ skill 本身就是模板源，不依赖额外 `templates/` 文件。
 #### 写作边界
 
 - narrative 里按人类可读方式写数字，不需要为了数据库做“小数归一”
-- 没有明确数据时可以写“未披露”或“待补充”，不要补会计口径猜测
+- 没有明确数据时可以写 “not disclosed in available sources” / “no source-backed disclosure found”，同时说明缺的是 revenue、margin、ownership、valuation、market size 还是 timeline；不要补会计口径猜测。
 - 如果同一 entity 只有 1 份 backlink source：
   可以 enrich，但要明确哪些信息只是单一来源说法
 - 如果你发现这个 page 其实不该存在：
@@ -143,7 +202,7 @@ skill 本身就是模板源，不依赖额外 `templates/` 文件。
 
 | 现状 | 模式 | 命令 | 写什么 |
 |---|---|---|---|
-| 空 / < 200 字符（首次 enrich） | **write** | `enrich:save` | 完整 narrative（按 type 模板 6/4/4 段） |
+| 空 / < 200 字符（首次 enrich） | **write** | `enrich:save` | 完整 narrative（company 9 段 / industry 9 段 / concept 4 段，H2 必须用英文模板原文） |
 | 已有 narrative ≥ 200 字符 | **append** | `enrich:save --append` | **只写本次新增** delta（1-3 段，禁止重复旧内容） |
 
 > ⚠️ **NEVER overwrite paragraphs**——已有 narrative 一定走 append。投资 thesis 演化轨迹（「3 月看好 → 4 月质疑 → 5 月 unwind」）是核心知识资产，整页重写会丢失这条链。
@@ -193,7 +252,7 @@ cd ae-wiki-agent && bun src/cli.ts enrich:save <pageId> --append --append-source
 | `--sector X` | 行业（与 wiki/industry/ 对齐） |
 | `--sub-sector X` | 细分行业 |
 | `--country X` | 国家代码 / 名称 |
-| `--aliases A,B,C` | 别名 merge（默认）；其他形式见下文 §Aliases |
+| `--aliases A,B,C` | 别名 merge（默认）；带逗号的法定名称用 JSON 数组，详见下文 §Aliases |
 | `--confidence high\|medium\|low` | 默认 `medium`；调研充分可设 `high` |
 | `--append` | **增量模式**（已有 content 时必须用） |
 | `--append-source slug` | 关联 source slug（自动写到 update 块标题） |
@@ -289,6 +348,12 @@ enrich:save 拒绝写入：以下 alias 与已有 page 冲突...
 
 `--aliases` 与 `--aliases-remove` 可组合（先删后加，net update）。`--aliases-replace` 与前两者**互斥**。
 
+三个 alias flag 都支持两种格式：
+- 简单逗号列表：`--aliases "Tencent,腾讯,0700.HK"`
+- JSON 数组：`--aliases '["Arista Networks, Inc.","Arista Networks Inc.","ANET"]'`
+
+当单个 alias 自身含逗号时必须用 JSON 数组，不要写成 `--aliases "Arista Networks, Inc.,ANET"`，否则 shell/CLI 会把 `Inc.` 当成独立 alias。
+
 ```bash
 # 典型：merge 模式（默认）—— 加 4 个新 alias，原有的保留
 bun src/cli.ts enrich:save 100 \
@@ -310,10 +375,15 @@ bun src/cli.ts enrich:save 100 \
 bun src/cli.ts enrich:save 100 \
   --aliases-replace "Tencent,腾讯,Tencent Holdings,0700.HK" \
   < /tmp/narrative.md
+
+# alias 自身含逗号：用 JSON 数组
+bun src/cli.ts enrich:save 249 \
+  --aliases '["Arista Networks, Inc.","Arista Networks Inc.","ANET"]' \
+  < /tmp/narrative.md
 ```
 
 **注意事项**：
-- aliases 元素之间用 `,` 分隔，单个元素可含空格（如 `Tencent Holdings Ltd`）
+- 简单格式下 aliases 元素之间用 `,` 分隔，单个元素可含空格（如 `Tencent Holdings Ltd`）
 - 不要塞 wiki 内部 slug（写 `Tencent` 不写 `companies/Tencent`）
 - merge 模式不会丢 stage-4 自动预填的 namePart（`[[companies/Tencent]]` 建 stub 时已存了 `Tencent`）
 
@@ -340,16 +410,16 @@ bun src/cli.ts enrich:save 100 \
      → 完整 source narrative
 
   3. 按 company 模板写 narrative：
-     ## 公司概况
-     [[companies/Euglena|Euglena]]（株式会社ユーグレナ，2931.T）是日本上市的微藻技术公司...
+     ## Company Overview
+     [[companies/Euglena|Euglena]]（株式会社ユーグレナ，2931.T）is a listed Japanese microalgae technology company...
 
-     ## 商业模式
+     ## Business Model
      三大板块（占比按 FY2026 收入）：
      - **Healthcare 90%**：核心 Q'SAI 子公司...
      - **Biofuels 0%**（2030E 30%）...
      - **Agriculture 4%** ...
 
-     ## 财务摘要
+     ## Financial Summary
      | 指标 | FY2026 | FY2030E | 备注 |
      ...
 

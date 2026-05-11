@@ -87,10 +87,10 @@ function printHelp(): void {
   ae-wiki enrich:next [--type T] [--skip N]     # 取下一个红链 + backlink 上下文
   ae-wiki enrich:save <page_id> [--display-name X] [--ticker X] [--sector Y] [--confidence high|medium]
                        # entity 页 display_name 为空时 --display-name 必填，由 enrich skill 生成
-                       [--aliases A,B,C]               # 默认：merge 进现有 aliases（case-insensitive 去重）
-                       [--aliases-replace A,B,C]       # 显式完全覆盖（与 --aliases / --aliases-remove 互斥）
+                       [--aliases A,B,C]               # 默认：merge 进现有 aliases；带逗号的名称可传 JSON 数组
+                       [--aliases-replace A,B,C]       # 显式完全覆盖；同样支持 JSON 数组
                        [--append [--append-source slug]] # 增量追加 dated update（已 enriched 的 entity 复 enrich 用）
-                       [--aliases-remove X,Y]          # 从现有 aliases 删除指定项（可与 --aliases 组合）
+                       [--aliases-remove X,Y]          # 从现有 aliases 删除指定项；同样支持 JSON 数组
                        [--allow-alias-conflict]        # 默认禁止：新 alias 与其它 page 撞 title/slug/alias 时报错
                                                 # 从 stdin 读 narrative 落库 + 更新元数据
   ae-wiki enrich:retype <page_id> --new-type company|industry|concept|thesis [--new-slug X] [--reason "..."]
@@ -122,6 +122,8 @@ function printHelp(): void {
                                                 # compiled entity page 落后于新 high-value evidence（typed source / facts / timeline / signals）的积压队列
   ae-wiki entity:update-candidates [--type T] [--limit N] [--json]
                                                 # 按优先级列出值得 refresh 的 entity；普通 mention backlink 不单独触发
+  ae-wiki entity:queue-refresh [--type T] [--limit N] [--source-page-id N] [--json]
+                                                # 为所有待 refresh entity 创建 entity-refresh LLM jobs；批量 ingest 结束后显式执行
   ae-wiki entity:refresh <slug|id> [--dry-run] [--source-limit N]
                                                 # 保守追加 entity update block，只消费 high-value evidence 写进 ## Updates
 
@@ -136,6 +138,8 @@ function printHelp(): void {
   ae-wiki page:review <page_id> [--json]  # 跑 deterministic page review，检查 schema / wikilink / provenance / blocks
   ae-wiki page:review-backlog [--status fail|pass|all] [--limit N] [--json]
                                           # 查看最近 page review 结果，优先清理 fail backlog
+  ae-wiki page:repair [--limit N] [--dry-run] [--json] [--all-entities] [--force-all] [--min-chars N]
+                                          # 结构性修复 legacy entity 页：补齐 schema heading，保留旧正文和 Updates；--all-entities 扫候选实体，--force-all 覆盖所有 active entity pages
 
   # —— PM dashboard / consensus drift ——
   ae-wiki entity:pulse <slug|id> [--recent N] [--facts N]
@@ -147,6 +151,13 @@ function printHelp(): void {
   ae-wiki web [--port 9083]               # 启动只读 web UI（home / search / page / theses / entities / outputs / queue）
 
   # —— 维护任务（也可作为 minion job 跑：lint_run / facts_expire） ——
+  ae-wiki wiki:maintain [--limit N] [--json] [--dry-run]
+                         [--apply-safe] [--entity-refresh-limit N]
+                         [--enqueue-enrich] [--enrich-limit N]
+                         [--enqueue-thesis-review] [--thesis-limit N]
+                         [--fact-age-days N] [--queue]
+                                          # 统一维护入口：lint + entity/facts/enrich/thesis/output backlog；
+                                          # 默认不改页面/事实/队列，显式 flag 才做安全写入或入队；--queue 作为 wiki_maintain job 跑
   ae-wiki lint:run [--stale-days N] [--raw-age-days N] [--fact-age-days N] [--sample N]
                                           # 跑健康检查（orphans / stale thesis / red links / pending raw / expired facts / review failures / alias conflicts）
   ae-wiki orphans [--type T] [--confidence low|medium|high] [--min-age-days N] [--limit N] [--json]
@@ -161,6 +172,13 @@ function printHelp(): void {
                                           # 汇总 duplicates + alias-conflicts；默认过滤高风险项，--include-human-review 可把人工复核候选也带上
   ae-wiki page:merge <canonical_page_id> <duplicate_page_id> [--reason "..."] [--dry-run] [--skip-narrative-fusion]
                                           # 把 duplicate entity page 合并进 canonical；必要时只迁结构化引用，不自动融合 narrative
+  ae-wiki page:auto-cleanup [--apply] [--include-structure-only] [--include-human-review-identity]
+                             [--type T] [--limit N] [--max-passes N] [--orphan-limit N] [--orphan-min-age-days N] [--no-retire] [--json]
+                                          # 循环扫描并执行安全 page merge；默认 dry-run，--apply 才写库；可顺手 retire 低置信孤儿 stub
+  ae-wiki page:retire <page_id> --reason "..." [--dry-run] [--force] [--max-content-chars N]
+                                          # 保守归档无引用 entity page；阻止非 low confidence / 有实质内容 / 有结构化引用的 page
+  ae-wiki company:metadata-audit [--limit N] [--confidence low|medium|high] [--include-ok] [--json]
+                                          # 只读审计 company display_name / aliases / ticker 缺失、异常、重复
   ae-wiki facts:expire [--age N]          # 把 period_end 已过 N 天 (默认 90) 的 latest fact 标 valid_to
 
   ae-wiki --help
@@ -768,6 +786,21 @@ async function main(): Promise<void> {
       break;
     }
 
+    case "entity:queue-refresh": {
+      const { formatEntityRefreshQueueReport, queueEntityRefreshJobs } = await import(
+        "./skills/entity-refresh/index.ts"
+      );
+      const limitStr = getArg("--limit");
+      const report = await queueEntityRefreshJobs({
+        type: getArg("--type"),
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+        sourcePageId: getArg("--source-page-id"),
+      });
+      if (getFlag("--json")) console.log(jsonStringify(report));
+      else console.log(formatEntityRefreshQueueReport(report));
+      break;
+    }
+
     case "entity:refresh": {
       const ident = args[0];
       if (!ident) {
@@ -791,15 +824,12 @@ async function main(): Promise<void> {
         process.exit(1);
       }
       const { enrichSave } = await import("./skills/enrich/index.ts");
+      const { parseCliListArg } = await import("./core/cli-list.ts");
       const narrative = await Bun.stdin.text();
       if (!narrative.trim()) {
         console.error("stdin 为空");
         process.exit(1);
       }
-      const parseList = (s: string | undefined): string[] | undefined =>
-        s !== undefined
-          ? s.split(",").map((item) => item.trim()).filter((item) => item.length > 0)
-          : undefined;
 
       const confArg = getArg("--confidence");
       const confidence =
@@ -814,9 +844,9 @@ async function main(): Promise<void> {
           subSector: getArg("--sub-sector"),
           country: getArg("--country"),
           exchange: getArg("--exchange"),
-          aliases: parseList(getArg("--aliases")),
-          aliasesReplace: parseList(getArg("--aliases-replace")),
-          aliasesRemove: parseList(getArg("--aliases-remove")),
+          aliases: parseCliListArg(getArg("--aliases")),
+          aliasesReplace: parseCliListArg(getArg("--aliases-replace")),
+          aliasesRemove: parseCliListArg(getArg("--aliases-remove")),
           allowAliasConflict: args.includes("--allow-alias-conflict"),
           confidence,
           append: args.includes("--append"),
@@ -1012,6 +1042,56 @@ async function main(): Promise<void> {
       return;
     }
 
+    case "wiki:maintain": {
+      const limitStr = getArg("--limit");
+      const entityRefreshLimitStr = getArg("--entity-refresh-limit");
+      const enrichLimitStr = getArg("--enrich-limit");
+      const thesisLimitStr = getArg("--thesis-limit");
+      const factAgeDaysStr = getArg("--fact-age-days");
+      const opts = {
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+        applySafe: getFlag("--apply-safe"),
+        dryRun: getFlag("--dry-run"),
+        entityRefreshLimit: entityRefreshLimitStr
+          ? parseInt(entityRefreshLimitStr, 10)
+          : undefined,
+        enqueueEnrich: getFlag("--enqueue-enrich"),
+        enrichLimit: enrichLimitStr ? parseInt(enrichLimitStr, 10) : undefined,
+        enqueueThesisReview: getFlag("--enqueue-thesis-review"),
+        thesisLimit: thesisLimitStr ? parseInt(thesisLimitStr, 10) : undefined,
+        factAgeDays: factAgeDaysStr ? parseInt(factAgeDaysStr, 10) : undefined,
+      };
+
+      if (getFlag("--queue")) {
+        const { Actor } = await import("./core/audit.ts");
+        const { addJob } = await import("./core/minions/queue.ts");
+        const job = await addJob(
+          "wiki_maintain",
+          opts as Record<string, unknown>,
+          Actor.systemJobs,
+          { priority: 40 }
+        );
+        console.log(
+          jsonStringify({
+            queued: true,
+            jobId: job.id.toString(),
+            name: job.name,
+            status: job.status,
+            data: opts,
+          })
+        );
+        break;
+      }
+
+      const { formatWikiMaintainReport, runWikiMaintain } = await import(
+        "./skills/maintain/index.ts"
+      );
+      const report = await runWikiMaintain(opts);
+      if (getFlag("--json")) console.log(jsonStringify(report));
+      else console.log(formatWikiMaintainReport(report));
+      break;
+    }
+
     case "lint:run": {
       const { runLint } = await import("./skills/lint/index.ts");
       const staleDays = getArg("--stale-days");
@@ -1128,6 +1208,33 @@ async function main(): Promise<void> {
       break;
     }
 
+    case "page:retire": {
+      const pageIdStr = args[0];
+      if (!pageIdStr) {
+        console.error("page:retire 需要 page_id");
+        console.error(
+          '示例: bun src/cli.ts page:retire 1743 --reason "orphan low-confidence noise page" --dry-run'
+        );
+        process.exit(1);
+      }
+      const reason = getArg("--reason");
+      if (!reason) {
+        console.error('page:retire 需要 --reason "..."');
+        process.exit(1);
+      }
+      const maxContentChars = getArg("--max-content-chars");
+      const { retirePage } = await import("./skills/page-retire/index.ts");
+      const report = await retirePage(BigInt(pageIdStr), {
+        reason,
+        actor: getArg("--actor") ?? "agent:claude",
+        dryRun: getFlag("--dry-run"),
+        force: getFlag("--force"),
+        maxContentChars: maxContentChars ? parseInt(maxContentChars, 10) : undefined,
+      });
+      console.log(jsonStringify(report));
+      break;
+    }
+
     case "page:merge-candidates": {
       const { findMergeCandidates, formatMergeCandidates } = await import(
         "./skills/merge-candidates/index.ts"
@@ -1144,6 +1251,61 @@ async function main(): Promise<void> {
         console.log(jsonStringify(report));
       } else {
         console.log(formatMergeCandidates(report));
+      }
+      break;
+    }
+
+    case "page:auto-cleanup": {
+      const { autoCleanupPages, formatAutoCleanupReport } = await import(
+        "./skills/page-auto-cleanup/index.ts"
+      );
+      const minSimStr = getArg("--min-sim");
+      const limitStr = getArg("--limit");
+      const maxPassesStr = getArg("--max-passes");
+      const orphanLimitStr = getArg("--orphan-limit");
+      const orphanMinAgeStr = getArg("--orphan-min-age-days");
+      const maxContentChars = getArg("--max-content-chars");
+      const report = await autoCleanupPages({
+        apply: getFlag("--apply"),
+        type: getArg("--type"),
+        minSim: minSimStr ? parseFloat(minSimStr) : undefined,
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+        maxPasses: maxPassesStr ? parseInt(maxPassesStr, 10) : undefined,
+        includeStructureOnly: getFlag("--include-structure-only"),
+        includeHumanReviewIdentity: getFlag("--include-human-review-identity"),
+        retireOrphans: !getFlag("--no-retire"),
+        orphanLimit: orphanLimitStr ? parseInt(orphanLimitStr, 10) : undefined,
+        orphanMinAgeDays: orphanMinAgeStr ? parseInt(orphanMinAgeStr, 10) : undefined,
+        maxContentChars: maxContentChars ? parseInt(maxContentChars, 10) : undefined,
+        actor: getArg("--actor") ?? "agent:page-auto-cleanup",
+      });
+      if (getFlag("--json")) {
+        console.log(jsonStringify(report));
+      } else {
+        console.log(formatAutoCleanupReport(report));
+      }
+      break;
+    }
+
+    case "company:metadata-audit": {
+      const { auditCompanyMetadata, formatCompanyMetadataAudit } = await import(
+        "./skills/company-metadata/index.ts"
+      );
+      const limitStr = getArg("--limit");
+      const confArg = getArg("--confidence");
+      const confidence =
+        confArg === "low" || confArg === "medium" || confArg === "high"
+          ? confArg
+          : undefined;
+      const report = await auditCompanyMetadata({
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+        includeOk: getFlag("--include-ok"),
+        confidence,
+      });
+      if (getFlag("--json")) {
+        console.log(jsonStringify(report));
+      } else {
+        console.log(formatCompanyMetadataAudit(report));
       }
       break;
     }
@@ -1225,6 +1387,28 @@ async function main(): Promise<void> {
         console.log(jsonStringify(report));
       } else {
         console.log(formatReviewBacklogReport(report));
+      }
+      break;
+    }
+
+    case "page:repair": {
+      const { formatPageRepairReport, repairReviewBacklog } = await import(
+        "./skills/page-repair/index.ts"
+      );
+      const limitStr = getArg("--limit");
+      const minCharsStr = getArg("--min-chars");
+      const report = await repairReviewBacklog({
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+        dryRun: getFlag("--dry-run"),
+        actor: getArg("--actor") ?? "agent:claude",
+        allEntities: getFlag("--all-entities"),
+        forceAll: getFlag("--all-entities") && getFlag("--force-all"),
+        minChars: minCharsStr ? parseInt(minCharsStr, 10) : undefined,
+      });
+      if (getFlag("--json")) {
+        console.log(jsonStringify(report));
+      } else {
+        console.log(formatPageRepairReport(report));
       }
       break;
     }

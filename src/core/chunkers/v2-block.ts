@@ -103,19 +103,20 @@ export interface V2Chunk {
 // =============================================================================
 
 export interface V2ChunkerOptions {
-  /** 普通 paragraph 滚动预算（tokens），到此值后 flush。默认 800。 */
+  /** 普通 paragraph 滚动预算（tokens），到此值后 flush。默认 600。 */
   targetTokens?: number;
-  /** list 整体不拆的上限。超过此值才按 item 切。默认 2400。 */
+  /** list 整体不拆的上限。超过此值才按 item 切。默认 1200。 */
   maxListAtomicTokens?: number;
   /**
-   * 含 CJK 字符的 chunk 硬上限（tokens）。默认 4000。
+   * 含 CJK 字符的 chunk 硬上限（tokens）。默认 2500。
    * OpenAI cl100k BPE 对中文常 ~1 char/token，比 estimateTokens 的 1.5 启发式
    * 多 50% 真实 token，所以 CJK 内容要保守。
    */
   maxHardTokensCjk?: number;
   /**
-   * 纯 ASCII chunk 硬上限（tokens）。默认 6500。
-   * 英文 ~4 chars/token 跟 estimateTokens 启发式吻合，可以放更宽。
+   * 纯 ASCII chunk 硬上限（tokens）。默认 3000。
+   * 英文 ~4 chars/token 跟 estimateTokens 启发式大体吻合，但 HTML / code /
+   * punctuation-heavy chunks 会显著偏离，所以也要留足安全余量。
    */
   maxHardTokensAscii?: number;
   /** 末尾过滤：chunk_text 字符数 < 此阈值则丢弃。默认 30。 */
@@ -125,10 +126,10 @@ export interface V2ChunkerOptions {
 }
 
 const DEFAULTS = {
-  targetTokens: 800,
-  maxListAtomicTokens: 2400,
-  maxHardTokensCjk: 4000,
-  maxHardTokensAscii: 6500,
+  targetTokens: 600,
+  maxListAtomicTokens: 1200,
+  maxHardTokensCjk: 2500,
+  maxHardTokensAscii: 3000,
   minChunkChars: 30,
   listSplitOverlap: 1,
 };
@@ -429,8 +430,8 @@ function splitIntoSentences(text: string): string[] {
 
 /**
  * 末尾兜底：单 chunk 超限时强制切。
- *   1. 含 CJK 走 maxCjkTokens（默认 4000，对应 OpenAI ~1 char/token）
- *      纯 ASCII 走 maxAsciiTokens（默认 6500，对应 ~4 chars/token）
+ *   1. 含 CJK 走 maxCjkTokens（默认 2500，对应 OpenAI ~1 char/token）
+ *      纯 ASCII 走 maxAsciiTokens（默认 3000，对应 ~4 chars/token）
  *   2. 段落边界优先（\n\n）
  *   3. 段落仍超限 → 句子边界（[.!?。！？]）
  *   4. 单句仍超限（如无标点的 SQL / 代码 / 字符串）→ 字符硬切兜底

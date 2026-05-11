@@ -81,7 +81,8 @@ ae-wiki-agent/                # 项目根
 │   ├── ae-enrich/SKILL.md
 │   ├── ae-thesis-track/SKILL.md
 │   ├── ae-daily-review/SKILL.md
-│   └── ae-daily-summarize/SKILL.md
+│   ├── ae-daily-summarize/SKILL.md
+│   └── ae-wiki-maintain/SKILL.md
 │
 ├── raw/                      # 原始素材，按 {date}/{researchType}/ 归档
 │
@@ -126,12 +127,20 @@ ae-wiki-agent/                # 项目根
 | `$ae-daily-review` | `wiki/output/daily-review-{date}.md` | 当日 ingest 后做 epistemic 复盘 |
 | `$ae-daily-summarize` | `wiki/output/daily-summarize-{date}.md` | 复盘后转 PM operational 简报 |
 
+外加一个**维护入口**：
+
+| 入口 | 输出 | 何时用 |
+|---|---|---|
+| `$ae-wiki-maintain` | health summary / safe upkeep / `wiki_maintain` job | 每日/夜间维护：lint、stale entity refresh、facts expire、enrich/thesis review queue |
+
 完整日循环：
 
 ```
 $ae-fetch-reports → $ae-research-ingest → $ae-enrich → $ae-thesis-track（按需）
                                                          ↓
                                                   $ae-daily-review → $ae-daily-summarize
+                                                         ↓
+                                                   $ae-wiki-maintain（nightly）
 ```
 
 ---

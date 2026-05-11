@@ -782,4 +782,148 @@ describe("enrich display name gate", () => {
     expect(normalizeDisplayName("  Huawei   Technologies  ")).toBe("Huawei Technologies");
     expect(normalizeDisplayName("   ")).toBe("");
   });
+
+  test("default enrich confidence only bumps low or unset pages", async () => {
+    ensureTestEnv();
+    const { nextEnrichConfidence } = await import("../src/skills/enrich/index.ts");
+
+    expect(nextEnrichConfidence("low")).toBe("medium");
+    expect(nextEnrichConfidence(null)).toBe("medium");
+    expect(nextEnrichConfidence("medium")).toBeUndefined();
+    expect(nextEnrichConfidence("high")).toBeUndefined();
+    expect(nextEnrichConfidence("high", "low")).toBe("low");
+  });
+
+  test("failed enrich review blocks default confidence bump", async () => {
+    ensureTestEnv();
+    const { confidenceAfterEnrichReview } = await import("../src/skills/enrich/index.ts");
+
+    expect(
+      confidenceAfterEnrichReview({
+        existingConfidence: "low",
+        plannedConfidence: "medium",
+        reviewStatus: "fail",
+      })
+    ).toBe("low");
+    expect(
+      confidenceAfterEnrichReview({
+        existingConfidence: "low",
+        requestedConfidence: "high",
+        plannedConfidence: "high",
+        reviewStatus: "fail",
+      })
+    ).toBe("high");
+    expect(
+      confidenceAfterEnrichReview({
+        existingConfidence: "low",
+        plannedConfidence: "medium",
+        reviewStatus: "pass",
+      })
+    ).toBe("medium");
+    expect(
+      confidenceAfterEnrichReview({
+        existingConfidence: "medium",
+        plannedConfidence: undefined,
+        reviewStatus: "fail",
+      })
+    ).toBeUndefined();
+  });
+});
+
+describe("enrich retrigger", () => {
+  test("new backlinks can retrigger even when completeness is high", async () => {
+    ensureTestEnv();
+    const { isRetriggerCandidate } = await import("../src/skills/enrich/retrigger.ts");
+
+    expect(
+      isRetriggerCandidate(
+        { completenessScore: 1, backlinks: 20, newBacklinksSinceEnrich: 3 },
+        { minScore: 0.5, minBacklinks: 3, minNewBacklinks: 2 }
+      )
+    ).toBe(true);
+    expect(
+      isRetriggerCandidate(
+        { completenessScore: 0.4, backlinks: 3, newBacklinksSinceEnrich: 0 },
+        { minScore: 0.5, minBacklinks: 3, minNewBacklinks: 2 }
+      )
+    ).toBe(true);
+    expect(
+      isRetriggerCandidate(
+        { completenessScore: 1, backlinks: 20, newBacklinksSinceEnrich: 0 },
+        { minScore: 0.5, minBacklinks: 3, minNewBacklinks: 2 }
+      )
+    ).toBe(false);
+  });
+});
+
+describe("CLI list parsing", () => {
+  test("supports JSON arrays for aliases containing commas", async () => {
+    const { parseCliListArg } = await import("../src/core/cli-list.ts");
+
+    expect(parseCliListArg("A,B,C")).toEqual(["A", "B", "C"]);
+    expect(parseCliListArg('["Arista Networks, Inc.","ANET"]')).toEqual([
+      "Arista Networks, Inc.",
+      "ANET",
+    ]);
+  });
+});
+
+describe("page repair", () => {
+  test("wraps legacy company content into required sections and preserves updates", async () => {
+    ensureTestEnv();
+    const { repairLegacyEntityContent } = await import("../src/skills/page-repair/index.ts");
+    const { buildReviewReport } = await import("../src/skills/review/index.ts");
+
+    const legacy = [
+      "[[companies/NVIDIA|NVIDIA]] legacy paragraph with [[companies/TSMC|TSMC]] and [[companies/Broadcom|Broadcom]].",
+      "",
+      "## Updates",
+      "",
+      "### 2026-05-10 (per [[sources/test]])",
+      "",
+      "New evidence arrived.",
+    ].join("\n");
+    const { repaired, changed } = repairLegacyEntityContent("company", legacy);
+    const report = buildReviewReport(
+      {
+        id: 1n,
+        slug: "companies/nvidia",
+        type: "company",
+        title: "nvidia",
+        contentHash: null,
+        frontmatter: {},
+      },
+      repaired
+    );
+
+    expect(changed).toBe(true);
+    expect(repaired).toContain("## Company Overview");
+    expect(repaired).toContain("### Legacy Notes");
+    expect(repaired).toContain("## Updates");
+    expect(report.status).toBe("pass");
+  });
+
+  test("does not turn empty stubs into reviewed pages during all-entity repair planning", async () => {
+    ensureTestEnv();
+    const { repairLegacyEntityContent } = await import("../src/skills/page-repair/index.ts");
+    const { buildReviewReport } = await import("../src/skills/review/index.ts");
+
+    const { repaired } = repairLegacyEntityContent("company", "");
+    const report = buildReviewReport(
+      {
+        id: 1n,
+        slug: "companies/empty",
+        type: "company",
+        title: "empty",
+        contentHash: null,
+        frontmatter: {},
+      },
+      repaired
+    );
+
+    expect(report.status).toBe("pass");
+    // The all-entity command skips short content before calling the repair helper;
+    // this assertion documents why that guard matters.
+    expect(repaired).toContain("Structural repair placeholder");
+  });
 });

@@ -25,8 +25,10 @@ import {
   enrichList,
   enrichLoadContext,
   enrichPrepareNext,
+  enrichRetype,
   enrichSave,
 } from "~/skills/enrich/index.ts";
+import { refreshEntityPage } from "~/skills/entity-refresh/index.ts";
 import {
   ingestBrief,
   ingestCommit,
@@ -498,6 +500,8 @@ function defaultPromptForSkill(skill: string): string {
       return "Execute this skill once for the next pending raw file.";
     case "ae-enrich":
       return "Execute this skill once for the next enrich candidate.";
+    case "ae-entity-refresh":
+      return "Execute this skill once for the requested entity refresh target.";
     case "ae-daily-review":
       return "Generate the daily review for today.";
     case "ae-daily-summarize":
@@ -1176,17 +1180,38 @@ function buildRuntimeTools(): RuntimeTool[] {
       },
     },
     {
+      name: "entity_refresh_preview",
+      description:
+        "Preview structured evidence that makes an entity page stale. Use this before writing an entity refresh delta.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          page_id: { type: "string" },
+          source_limit: { type: "integer" },
+        },
+        required: ["page_id"],
+      },
+      execute: async (input) =>
+        refreshEntityPage(parseRequiredBigInt(input.page_id, "page_id"), {
+          dryRun: true,
+          sourceLimit: asOptionalNumber(input.source_limit),
+        }),
+    },
+    {
       name: "enrich_get",
       description: "Load one specific enrich candidate with backlinks by page id.",
       inputSchema: {
         type: "object",
         properties: {
           page_id: { type: "string" },
+          allow_non_low: { type: "boolean" },
         },
         required: ["page_id"],
       },
       execute: async (input) =>
-        enrichLoadContext(parseRequiredBigInt(input.page_id, "page_id")),
+        enrichLoadContext(parseRequiredBigInt(input.page_id, "page_id"), {
+          allowNonLow: asOptionalBoolean(input.allow_non_low) ?? true,
+        }),
     },
     {
       name: "enrich_next",
@@ -1222,34 +1247,70 @@ function buildRuntimeTools(): RuntimeTool[] {
     },
     {
       name: "enrich_save",
-      description: "Save an enrich narrative and bump confidence.",
+      description: "Save an enrich narrative, update entity metadata, and optionally append rather than overwrite.",
       inputSchema: {
         type: "object",
         properties: {
           page_id: { type: "string" },
           narrative: { type: "string" },
+          display_name: { type: "string" },
           ticker: { type: "string" },
           sector: { type: "string" },
           sub_sector: { type: "string" },
           country: { type: "string" },
           exchange: { type: "string" },
           aliases: { type: "array", items: { type: "string" } },
+          aliases_replace: { type: "array", items: { type: "string" } },
+          aliases_remove: { type: "array", items: { type: "string" } },
+          allow_alias_conflict: { type: "boolean" },
           confidence: { type: "string" },
+          append: { type: "boolean" },
+          append_source: { type: "string" },
         },
         required: ["page_id", "narrative"],
       },
       execute: async (input) => {
         await enrichSave(parseRequiredBigInt(input.page_id, "page_id"), String(input.narrative), {
+          displayName: asOptionalString(input.display_name),
           ticker: asOptionalString(input.ticker),
           sector: asOptionalString(input.sector),
           subSector: asOptionalString(input.sub_sector),
           country: asOptionalString(input.country),
           exchange: asOptionalString(input.exchange),
           aliases: Array.isArray(input.aliases) ? input.aliases.map((item) => String(item)) : undefined,
-          confidence: asOptionalString(input.confidence) as any,
+          aliasesReplace: Array.isArray(input.aliases_replace)
+            ? input.aliases_replace.map((item) => String(item))
+            : undefined,
+          aliasesRemove: Array.isArray(input.aliases_remove)
+            ? input.aliases_remove.map((item) => String(item))
+            : undefined,
+          allowAliasConflict: asOptionalBoolean(input.allow_alias_conflict),
+          confidence: asOptionalConfidence(input.confidence),
+          append: asOptionalBoolean(input.append),
+          appendSourceSlug: asOptionalString(input.append_source),
         });
         return { ok: true };
       },
+    },
+    {
+      name: "enrich_retype",
+      description: "Retype a wrongly-created entity page before enrichment.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          page_id: { type: "string" },
+          new_type: { type: "string" },
+          new_slug: { type: "string" },
+          reason: { type: "string" },
+        },
+        required: ["page_id", "new_type"],
+      },
+      execute: async (input) =>
+        enrichRetype(parseRequiredBigInt(input.page_id, "page_id"), {
+          newType: String(input.new_type) as any,
+          newSlug: asOptionalString(input.new_slug),
+          reason: asOptionalString(input.reason),
+        }),
     },
     {
       name: "thesis_list",
@@ -1469,6 +1530,11 @@ function asOptionalNumber(value: unknown): number | undefined {
 
 function asOptionalBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function asOptionalConfidence(value: unknown): "high" | "medium" | "low" | undefined {
+  const s = asOptionalString(value);
+  return s === "high" || s === "medium" || s === "low" ? s : undefined;
 }
 
 function asOptionalBigInt(value: unknown): bigint | null {

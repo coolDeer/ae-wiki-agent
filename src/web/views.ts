@@ -627,7 +627,8 @@ export async function viewPage(identifier: string): Promise<string> {
   `);
 
   const inLinks = await db.execute(sql`
-    SELECT p.slug, p.title, p.display_name, p.type, l.link_type
+    SELECT p.slug, p.title, p.display_name, p.type,
+           l.link_type, l.context, l.link_source, l.origin_field
     FROM links l JOIN pages p ON p.id = l.from_page_id
     WHERE l.to_page_id = ${BigInt(page.id)}
       AND l.deleted = 0 AND p.deleted = 0
@@ -654,7 +655,10 @@ export async function viewPage(identifier: string): Promise<string> {
   `);
 
   const comments = await listPageComments(BigInt(page.id));
-  const groupedOutLinks = aggregateOutboundLinks(
+  const groupedInLinks = aggregatePageLinks(
+    inLinks as Array<Record<string, unknown>>
+  );
+  const groupedOutLinks = aggregatePageLinks(
     outLinks as Array<Record<string, unknown>>
   );
 
@@ -685,6 +689,7 @@ export async function viewPage(identifier: string): Promise<string> {
       WITH ordered AS (
         SELECT metric,
                value_numeric::float AS v,
+               unit,
                source_page_id,
                ROW_NUMBER() OVER (PARTITION BY metric ORDER BY valid_from, id) AS rn,
                COUNT(*) OVER (PARTITION BY metric) AS n,
@@ -816,12 +821,12 @@ ${groupedOutLinks.length > 0
   : ""
 }
 
-${inLinks.length > 0
-  ? `<h2>Backlinks (${inLinks.length})</h2>
-    <ul class="plain">${inLinks
+${groupedInLinks.length > 0
+  ? `<h2>Backlinks (${groupedInLinks.length})</h2>
+    <ul class="plain">${groupedInLinks
       .map(
         (l) =>
-          `<li><a href="${pageHref(String(l.slug ?? ""))}">${escape(pageDisplayName(l))}</a> ${pageTag(String(l.type ?? ""))} ${linkTypeTag(String(l.link_type ?? "mention"))}</li>`
+          `<li><a href="${pageHref(String(l.slug ?? ""))}">${escape(pageDisplayName(l))}</a> ${pageTag(String(l.type ?? ""))} ${linkTypeTag(String(l.link_type ?? "mention"))} ${renderProvenanceBadges(l.provenance)}</li>`
       )
       .join("")}</ul>`
   : ""
@@ -862,7 +867,7 @@ type SourceFactRow = {
   metadata: { extracted_by?: string; source_quote?: string; evidence_context?: string } | null;
 };
 
-type OutboundLinkRow = {
+type PageLinkRow = {
   id?: string | number | bigint | null;
   slug?: string | null;
   title?: string | null;
@@ -874,7 +879,7 @@ type OutboundLinkRow = {
   origin_field?: string | null;
 };
 
-type AggregatedOutboundLink = {
+type AggregatedPageLink = {
   slug: string;
   title: string | null;
   display_name: string | null;
@@ -941,8 +946,8 @@ function renderPageMetadataCard(
   </details>`;
 }
 
-function aggregateOutboundLinks(rows: OutboundLinkRow[]): AggregatedOutboundLink[] {
-  const grouped = new Map<string, AggregatedOutboundLink>();
+function aggregatePageLinks(rows: PageLinkRow[]): AggregatedPageLink[] {
+  const grouped = new Map<string, AggregatedPageLink>();
   for (const row of rows) {
     const slug = String(row.slug ?? "");
     const linkType = String(row.link_type ?? "mention");
@@ -2029,7 +2034,7 @@ export async function viewEntities(
   const dir = SORT.order === "ASC" ? sql`ASC` : sql`DESC`;
 
   const rows = await db.execute(sql`
-    SELECT p.id::text AS id, p.slug, p.type, p.title,
+    SELECT p.id::text AS id, p.slug, p.type, p.title, p.display_name,
            p.ticker, p.sector, p.confidence
     FROM pages p
     WHERE ${whereClause}
@@ -2097,7 +2102,7 @@ ${rows.length === 0
       ${rows
         .map(
           (r) => `<tr>
-            <td><a href="${pageHref(String(r.slug ?? ""))}">${escape(String(r.title ?? ""))}</a> <span class="muted score">${escape(String(r.slug ?? ""))}</span></td>
+            <td><a href="${pageHref(String(r.slug ?? ""))}">${escape(pageDisplayName(r as Record<string, unknown>))}</a> <span class="muted score">${escape(String(r.slug ?? ""))}</span></td>
             <td>${pageTag(String(r.type ?? ""))}</td>
             <td>${escape(String(r.ticker ?? ""))}</td>
             <td>${escape(String(r.sector ?? ""))}</td>

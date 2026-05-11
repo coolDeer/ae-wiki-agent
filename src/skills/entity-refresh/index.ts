@@ -2,6 +2,8 @@ import { and, eq, gt, inArray, sql } from "drizzle-orm";
 
 import { Actor, withCreateAudit } from "~/core/audit.ts";
 import { db, schema } from "~/core/db.ts";
+import { getEnv } from "~/core/env.ts";
+import { addJob } from "~/core/minions/queue.ts";
 
 import { stage3AppendNarrative } from "../ingest/stage-3-narrative.ts";
 import { persistPageReview, reviewStoredPage } from "../review/index.ts";
@@ -18,6 +20,7 @@ const HIGH_VALUE_LINK_TYPES = new Set([
   "derives_from",
   "tracks",
 ]);
+const MIN_REFRESHABLE_CONTENT_CHARS = 200;
 
 export function isHighValueSourceEvidence(input: {
   linkType: string | null;
@@ -72,7 +75,7 @@ export interface EntityUpdateCandidateRow extends EntityRow {
   priority: number;
   reasons: string[];
   suggestedSections: string[];
-  recommendedAction: "append_update" | "manual_rewrite";
+  recommendedAction: "append_update" | "llm_refresh";
 }
 
 export interface EntityUpdateCandidatesReport {
@@ -84,9 +87,40 @@ export interface EntityUpdateCandidatesReport {
   summary: {
     totalMatching: number;
     appendUpdate: number;
+    llmRefresh: number;
+    /** @deprecated kept for older wiki:maintain callers; equals llmRefresh. */
     manualRewrite: number;
   };
   rows: EntityUpdateCandidateRow[];
+}
+
+export interface EntityRefreshQueueRow {
+  pageId: string;
+  slug: string;
+  type: EligibleType;
+  title: string;
+  recommendedAction: EntityUpdateCandidateRow["recommendedAction"];
+  priority: number;
+  queued: boolean;
+  jobId: string | null;
+  reason: string;
+}
+
+export interface EntityRefreshQueueReport {
+  generatedAt: string;
+  trigger: {
+    sourcePageId: string | null;
+  };
+  filters: {
+    type?: string;
+    limit: number;
+  };
+  summary: {
+    candidates: number;
+    queued: number;
+    skipped: number;
+  };
+  rows: EntityRefreshQueueRow[];
 }
 
 export interface EntityRefreshReport {
@@ -149,7 +183,7 @@ export async function getEntityUpdateCandidates(opts: {
   const limit = opts.limit ?? 30;
   const rows = await loadEntityRows(opts.type, Math.max(limit, 200));
   const filtered = rows.filter(
-    (row) => row.daysBehind > 0 && row.newSources + row.newFacts + row.newTimelineEntries + row.newSignals > 0
+    (row) => row.newSources + row.newFacts + row.newTimelineEntries + row.newSignals > 0
   );
   const mapped = filtered
     .map((row) => {
@@ -169,7 +203,7 @@ export async function getEntityUpdateCandidates(opts: {
         row.newSources * 3 +
         Math.round((1 - row.completenessScore) * 10);
       const recommendedAction =
-        row.newSignals >= 2 || row.daysBehind >= 21 ? "manual_rewrite" : "append_update";
+        row.newSignals >= 2 || row.daysBehind >= 21 ? "llm_refresh" : "append_update";
 
       return {
         ...row,
@@ -191,9 +225,110 @@ export async function getEntityUpdateCandidates(opts: {
     summary: {
       totalMatching: filtered.length,
       appendUpdate: mapped.filter((row) => row.recommendedAction === "append_update").length,
-      manualRewrite: mapped.filter((row) => row.recommendedAction === "manual_rewrite").length,
+      llmRefresh: mapped.filter((row) => row.recommendedAction === "llm_refresh").length,
+      manualRewrite: mapped.filter((row) => row.recommendedAction === "llm_refresh").length,
     },
     rows: mapped,
+  };
+}
+
+export async function queueEntityRefreshJobs(opts: {
+  type?: string;
+  limit?: number;
+  sourcePageId?: string | number | bigint;
+} = {}): Promise<EntityRefreshQueueReport> {
+  const limit = opts.limit ?? 500;
+  const report = await getEntityUpdateCandidates({ type: opts.type, limit });
+  const env = getEnv();
+  const sourcePageId = opts.sourcePageId == null ? null : String(opts.sourcePageId);
+  const rows: EntityRefreshQueueRow[] = [];
+
+  for (const candidate of report.rows) {
+    if (await hasInFlightEntityRefreshJob(candidate.pageId)) {
+      rows.push({
+        pageId: candidate.pageId,
+        slug: candidate.slug,
+        type: candidate.type,
+        title: candidate.title,
+        recommendedAction: candidate.recommendedAction,
+        priority: candidate.priority,
+        queued: false,
+        jobId: null,
+        reason: "already-in-flight",
+      });
+      continue;
+    }
+
+    const skipReason = await getEntityRefreshSkipReason(candidate.pageId);
+    if (skipReason) {
+      rows.push({
+        pageId: candidate.pageId,
+        slug: candidate.slug,
+        type: candidate.type,
+        title: candidate.title,
+        recommendedAction: candidate.recommendedAction,
+        priority: candidate.priority,
+        queued: false,
+        jobId: null,
+        reason: skipReason,
+      });
+      continue;
+    }
+
+    const job = await addJob(
+      "entity-refresh",
+      {
+        skill: "ae-entity-refresh",
+        prompt: buildEntityRefreshJobPrompt(candidate, { sourcePageId }),
+        model: env.OPENAI_AGENT_MODEL,
+        maxTurns: 20,
+        targetPageId: candidate.pageId,
+        entitySlug: candidate.slug,
+        sourcePageId,
+        recommendedAction: candidate.recommendedAction,
+        reasons: candidate.reasons,
+        suggestedSections: candidate.suggestedSections,
+      },
+      Actor.agentRuntime,
+      {
+        priority: Math.max(40, Math.min(95, 40 + candidate.priority)),
+        progress: {
+          stage: "queued",
+          skill: "ae-entity-refresh",
+          target_page_id: candidate.pageId,
+          entity_slug: candidate.slug,
+          trigger_source_page_id: sourcePageId,
+          message: `Queued entity refresh for ${candidate.slug}`,
+        },
+      }
+    );
+
+    rows.push({
+      pageId: candidate.pageId,
+      slug: candidate.slug,
+      type: candidate.type,
+      title: candidate.title,
+      recommendedAction: candidate.recommendedAction,
+      priority: candidate.priority,
+      queued: true,
+      jobId: job.id.toString(),
+      reason: "queued",
+    });
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    trigger: { sourcePageId },
+    filters: {
+      type: opts.type,
+      limit,
+    },
+    summary: {
+      candidates: report.rows.length,
+      queued: rows.filter((row) => row.queued).length,
+      skipped: rows.filter((row) => !row.queued).length,
+    },
+    rows,
   };
 }
 
@@ -295,7 +430,7 @@ export function formatEntityUpdateCandidates(report: EntityUpdateCandidatesRepor
   const lines = [
     `Entity update candidates (${report.rows.length}/${report.summary.totalMatching} shown)`,
     `  filter: type=${report.filters.type ?? "(all entities)"} limit=${report.filters.limit}`,
-    `  summary: append_update=${report.summary.appendUpdate} manual_rewrite=${report.summary.manualRewrite}`,
+    `  summary: append_update=${report.summary.appendUpdate} llm_refresh=${report.summary.llmRefresh}`,
     "",
   ];
   if (report.rows.length === 0) {
@@ -308,6 +443,25 @@ export function formatEntityUpdateCandidates(report: EntityUpdateCandidatesRepor
     );
     lines.push(`    reasons: ${row.reasons.join("; ")}`);
     lines.push(`    sections: ${row.suggestedSections.join(", ")}`);
+  }
+  return lines.join("\n");
+}
+
+export function formatEntityRefreshQueueReport(report: EntityRefreshQueueReport): string {
+  const lines = [
+    `Entity refresh jobs (${report.rows.length}/${report.summary.candidates} candidates)`,
+    `  trigger_source_page_id=${report.trigger.sourcePageId ?? "(none)"} type=${report.filters.type ?? "(all entities)"} limit=${report.filters.limit}`,
+    `  summary: queued=${report.summary.queued} skipped=${report.summary.skipped}`,
+    "",
+  ];
+  if (report.rows.length === 0) {
+    lines.push("No entity refresh jobs queued.");
+    return lines.join("\n");
+  }
+  for (const row of report.rows) {
+    lines.push(
+      `  [${row.queued ? "queued" : "skipped"}] job=${row.jobId ?? "-"} action=${row.recommendedAction} p=${row.priority} #${row.pageId} ${row.slug} (${row.reason})`
+    );
   }
   return lines.join("\n");
 }
@@ -705,6 +859,105 @@ export function inferSuggestedSections(type: EligibleType, row: EntityRow): stri
   if (row.newSignals > 0) sections.add("Validation / Falsification Conditions");
   if (row.newTimelineEntries > 0) sections.add("Catalyst Timeline");
   return [...sections];
+}
+
+async function hasInFlightEntityRefreshJob(pageId: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: schema.minionJobs.id })
+    .from(schema.minionJobs)
+    .where(
+      and(
+        eq(schema.minionJobs.deleted, 0),
+        sql`${schema.minionJobs.status} IN ('waiting', 'active', 'paused')`,
+        sql`(
+          (
+            ${schema.minionJobs.name} = 'entity-refresh'
+            AND ${schema.minionJobs.data}->>'targetPageId' = ${pageId}
+          )
+          OR
+          (
+            ${schema.minionJobs.name} = 'agent_run'
+            AND ${schema.minionJobs.data}->>'skill' = 'ae-entity-refresh'
+            AND ${schema.minionJobs.data}->>'targetPageId' = ${pageId}
+          )
+        )`
+      )
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+async function getEntityRefreshSkipReason(pageId: string): Promise<string | null> {
+  const [page] = await db
+    .select({
+      type: schema.pages.type,
+      confidence: schema.pages.confidence,
+      displayName: schema.pages.displayName,
+      content: schema.pages.content,
+    })
+    .from(schema.pages)
+    .where(and(eq(schema.pages.id, BigInt(pageId)), eq(schema.pages.deleted, 0)))
+    .limit(1);
+  if (!page) return "page-not-found";
+
+  if (await hasInFlightEnrichJob(pageId)) return "enrich-in-flight";
+  if (page.confidence === "low") return "needs-enrich-confidence-low";
+  if ((page.content ?? "").trim().length < MIN_REFRESHABLE_CONTENT_CHARS) {
+    return "needs-enrich-short-content";
+  }
+  if (requiresDisplayName(page.type) && !page.displayName) {
+    return "needs-enrich-display-name";
+  }
+  return null;
+}
+
+async function hasInFlightEnrichJob(pageId: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: schema.minionJobs.id })
+    .from(schema.minionJobs)
+    .where(
+      and(
+        eq(schema.minionJobs.deleted, 0),
+        sql`${schema.minionJobs.status} IN ('waiting', 'active', 'paused')`,
+        sql`(
+          (
+            ${schema.minionJobs.name} = 'enrich_entity'
+            AND ${schema.minionJobs.data}->>'pageId' = ${pageId}
+          )
+          OR
+          (
+            ${schema.minionJobs.name} = 'agent_run'
+            AND ${schema.minionJobs.data}->>'skill' = 'ae-enrich'
+            AND ${schema.minionJobs.data}->>'targetPageId' = ${pageId}
+          )
+        )`
+      )
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+function requiresDisplayName(type: string): boolean {
+  return type === "company" || type === "industry" || type === "concept";
+}
+
+function buildEntityRefreshJobPrompt(
+  row: EntityUpdateCandidateRow,
+  opts: { sourcePageId: string | null }
+): string {
+  return [
+    `Run an entity refresh for [[${row.slug}|${row.title}]] (#${row.pageId}).`,
+    `Entity type=${row.type}, confidence=${row.confidence ?? "unknown"}, completeness=${row.completenessScore.toFixed(2)}.`,
+    `Trigger source page id=${opts.sourcePageId ?? "unknown"}; recommended_action=${row.recommendedAction}.`,
+    `Evidence counts since the compiled page update: sources=${row.newSources}, facts=${row.newFacts}, timeline=${row.newTimelineEntries}, signals=${row.newSignals}, lag_days=${row.daysBehind}.`,
+    `Reasons: ${row.reasons.join("; ") || "new structured evidence"}.`,
+    `Suggested sections to inspect/update: ${row.suggestedSections.join(", ") || "Sources"}.`,
+    "",
+    "Use the ae-entity-refresh workflow for exactly this page.",
+    "Do not move to another entity. Do not overwrite the existing page.",
+    "Read the existing page, inspect the refresh preview/new evidence, read the relevant source pages, then append a concise source-backed delta with enrich_save(append=true).",
+    "If the evidence changes conviction, risk, catalysts, financial summary, market structure, or thesis conditions, still handle it automatically with the LLM workflow; do not defer to a manual rewrite.",
+  ].join("\n");
 }
 
 function formatDate(value: Date | string): string {

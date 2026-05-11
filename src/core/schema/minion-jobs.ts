@@ -46,9 +46,11 @@ export type JobName =
   | "embed_chunks"
   | "extract_facts"
   | "enrich_entity"
+  | "entity-refresh"
   | "detect_signals"
   | "agent_run"
   | "lint_run"
-  | "facts_expire";
+  | "facts_expire"
+  | "wiki_maintain";
 
 export type JobStatus = "waiting" | "active" | "paused" | "completed" | "failed" | "cancelled";

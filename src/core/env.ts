@@ -28,6 +28,15 @@ const EnvSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+  // Embedding API 单条 input 的字符截断。OpenAI 限制是 token 级，8000 chars
+  // 对 HTML/CJK/符号密集文本仍可能超过 8192 tokens；默认 4000 更保守。
+  WIKI_EMBEDDING_MAX_INPUT_CHARS: z
+    .string()
+    .default("4000")
+    .transform((v) => {
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) && n > 0 ? n : 4000;
+    }),
 
   // 本地路径：workspace 根目录（用于 wiki/output/ 等派生产物）
   // raw_files 已不再落本地文件，markdown 通过 raw_files.markdown_url 按需 HTTP 拉
@@ -48,6 +57,37 @@ const EnvSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+
+  // V2 chunker budgets. These are token-estimate budgets, not exact tokenizer
+  // counts. Keep them well below the embedding model's 8192-token hard limit.
+  WIKI_CHUNK_TARGET_TOKENS: z
+    .string()
+    .default("600")
+    .transform((v) => {
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) && n > 0 ? n : 600;
+    }),
+  WIKI_CHUNK_MAX_LIST_ATOMIC_TOKENS: z
+    .string()
+    .default("1200")
+    .transform((v) => {
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) && n > 0 ? n : 1200;
+    }),
+  WIKI_CHUNK_MAX_HARD_TOKENS_CJK: z
+    .string()
+    .default("2500")
+    .transform((v) => {
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) && n > 0 ? n : 2500;
+    }),
+  WIKI_CHUNK_MAX_HARD_TOKENS_ASCII: z
+    .string()
+    .default("3000")
+    .transform((v) => {
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) && n > 0 ? n : 3000;
+    }),
 
   // 展示层时区（IANA name，如 "Asia/Shanghai" / "America/New_York" / "UTC"）。
   // 影响 web UI 时间格式化、daily-review/summarize 的 today 边界、orphans / lint 报表。

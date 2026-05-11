@@ -13,6 +13,7 @@
 import type { IngestContext } from "~/core/types.ts";
 import { and, eq, sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
+import { getEnv } from "~/core/env.ts";
 import { withAudit, withCreateAudit } from "~/core/audit.ts";
 import { buildTableBundleFromV2 } from "~/core/v2-tables.ts";
 import {
@@ -29,7 +30,13 @@ export async function stage2Chunk(ctx: IngestContext): Promise<void> {
     );
   }
 
-  const chunks = chunkContentListV2(v2);
+  const env = getEnv();
+  const chunks = chunkContentListV2(v2, {
+    targetTokens: env.WIKI_CHUNK_TARGET_TOKENS,
+    maxListAtomicTokens: env.WIKI_CHUNK_MAX_LIST_ATOMIC_TOKENS,
+    maxHardTokensCjk: env.WIKI_CHUNK_MAX_HARD_TOKENS_CJK,
+    maxHardTokensAscii: env.WIKI_CHUNK_MAX_HARD_TOKENS_ASCII,
+  });
   const tableArtifacts = buildTableBundleFromV2(v2);
 
   if (chunks.length > 0) {
