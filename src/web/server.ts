@@ -41,10 +41,12 @@ interface ServeOpts {
   port?: number;
 }
 
+const activeServers: Array<ReturnType<typeof Bun.serve>> = [];
+
 export async function startWebServer(opts: ServeOpts = {}): Promise<void> {
   const port = opts.port ?? 3000;
 
-  Bun.serve({
+  const server = Bun.serve({
     port,
     // 默认 10s 对 entity 页（多个 SQL roundtrip + 含 dashboard）不够。30s 留余量；
     // 单个长查询超 30s 应该独立调优，不该在 web 层兜底更长。
@@ -312,6 +314,55 @@ export async function startWebServer(opts: ServeOpts = {}): Promise<void> {
         }
 
         // Queue
+        if (path === "/queue/fetch-reports" && req.method === "POST") {
+          const form = await optionalFormData(req);
+          const date = String(form.get("date") ?? "").trim();
+          const limitRaw = String(form.get("limit") ?? "").trim();
+          const all = String(form.get("all") ?? "") === "1";
+          const limit = limitRaw ? parseInt(limitRaw, 10) : undefined;
+          if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            return Response.redirect(`/queue?notice=${encodeURIComponent("Invalid date; expected YYYY-MM-DD")}`, 303);
+          }
+          if (limitRaw && (!Number.isFinite(limit) || limit! <= 0)) {
+            return Response.redirect(`/queue?notice=${encodeURIComponent("Invalid limit; expected positive integer")}`, 303);
+          }
+          const { fetchReports } = await import("../skills/fetch-reports/index.ts");
+          const result = await fetchReports({
+            ...(date ? { date } : {}),
+            ...(all ? { all: true } : {}),
+            ...(limit ? { limit } : {}),
+          });
+          const notice = `fetch-reports done: inserted=${result.inserted}, existing=${result.skippedExisting}, failed=${result.failed}`;
+          return Response.redirect(`/queue?notice=${encodeURIComponent(notice)}`, 303);
+        }
+
+        if (path === "/queue/enqueue-ingest" && req.method === "POST") {
+          const form = await optionalFormData(req);
+          const countRaw = String(form.get("count") ?? "1").trim();
+          const count = parseInt(countRaw, 10);
+          if (!Number.isFinite(count) || count <= 0 || count > 100) {
+            return Response.redirect(`/queue?notice=${encodeURIComponent("Invalid ingest count; expected 1-100")}`, 303);
+          }
+          const model = String(form.get("model") ?? "").trim() || undefined;
+          const maxTurnsRaw = String(form.get("max_turns") ?? "20").trim();
+          const maxTurns = parseInt(maxTurnsRaw, 10);
+          if (!Number.isFinite(maxTurns) || maxTurns <= 0 || maxTurns > 100) {
+            return Response.redirect(`/queue?notice=${encodeURIComponent("Invalid max turns; expected 1-100")}`, 303);
+          }
+          const { submitAgentRun } = await import("../agents/runtime.ts");
+          const jobIds: string[] = [];
+          for (let i = 0; i < count; i++) {
+            const result = await submitAgentRun({
+              skill: "ae-research-ingest",
+              ...(model ? { model } : {}),
+              maxTurns,
+            });
+            jobIds.push(result.jobId.toString());
+          }
+          const notice = `queued ${jobIds.length} ae-research-ingest job(s): ${jobIds.join(", ")}`;
+          return Response.redirect(`/queue?name=agent_run&status=waiting&notice=${encodeURIComponent(notice)}`, 303);
+        }
+
         if (path === "/queue" && req.method === "GET") {
           const pageReq = parsePageRequest(url.searchParams);
           return html(
@@ -319,6 +370,7 @@ export async function startWebServer(opts: ServeOpts = {}): Promise<void> {
               {
                 name: url.searchParams.get("name") ?? undefined,
                 status: url.searchParams.get("status") ?? undefined,
+                notice: url.searchParams.get("notice") ?? undefined,
               },
               pageReq
             )
@@ -336,8 +388,18 @@ export async function startWebServer(opts: ServeOpts = {}): Promise<void> {
       }
     },
   });
+  activeServers.push(server);
 
   console.log(`[web] ae-wiki UI listening on http://localhost:${port}`);
+  const keepAlive = setInterval(() => {}, 60 * 60 * 1000);
+  const shutdown = () => {
+    clearInterval(keepAlive);
+    server.stop();
+    process.exit(0);
+  };
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
+  await new Promise<never>(() => {});
 }
 
 function html(body: string): Response {
@@ -357,6 +419,12 @@ function jsonErr(status: number, message: string): Response {
     status,
     headers: { "content-type": "application/json; charset=utf-8" },
   });
+}
+
+async function optionalFormData(req: Request): Promise<{ get(name: string): unknown }> {
+  const contentType = req.headers.get("content-type") ?? "";
+  if (!contentType) return new FormData();
+  return req.formData();
 }
 
 const SESSION_COOKIE = "ae_chat_sid";

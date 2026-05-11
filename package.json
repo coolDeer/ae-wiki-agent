@@ -14,7 +14,6 @@
     "test:governance": "bun test tests/markdown.test.ts tests/governance.test.ts",
     "test:watch": "bun test tests --watch",
     "regression": "bun run typecheck && bun run test",
-    "skills:sync:codex": "bun scripts/sync-codex-skills.ts --clean",
     "db:push": "drizzle-kit push",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",

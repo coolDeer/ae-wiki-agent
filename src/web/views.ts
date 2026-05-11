@@ -2193,16 +2193,57 @@ export async function viewOutputFile(filename: string): Promise<string> {
 // ============================================================================
 
 export async function viewQueue(
-  opts: { name?: string; status?: string },
+  opts: { name?: string; status?: string; notice?: string },
   pageReq: PageRequest
 ): Promise<string> {
   const byStatus = await db.execute(sql`
-    SELECT name, status, COUNT(*)::int AS n
+    SELECT
+      name,
+      CASE
+        WHEN name = 'agent_run' THEN COALESCE(data->>'skill', 'unknown')
+        ELSE NULL
+      END AS task_type,
+      CASE
+        WHEN name = 'agent_run' THEN name || ' / ' || COALESCE(data->>'skill', 'unknown')
+        ELSE name
+      END AS display_name,
+      status,
+      COUNT(*)::int AS n
     FROM minion_jobs
     WHERE deleted = 0
-    GROUP BY name, status
-    ORDER BY name, status
+    GROUP BY name, task_type, display_name, status
+    ORDER BY display_name, status
   `);
+
+  const queueStatsRows = await db.execute(sql`
+    SELECT
+      (
+        SELECT COUNT(*)::int
+        FROM raw_files
+        WHERE deleted = 0
+          AND ingested_page_id IS NULL
+          AND skipped_at IS NULL
+      ) AS raw_pending,
+      (
+        SELECT COUNT(*)::int
+        FROM minion_jobs
+        WHERE deleted = 0
+          AND name = 'agent_run'
+          AND status = 'waiting'
+          AND data->>'skill' = 'ae-research-ingest'
+      ) AS ingest_waiting,
+      (
+        SELECT COUNT(*)::int
+        FROM minion_jobs
+        WHERE deleted = 0
+          AND name = 'agent_run'
+          AND status = 'active'
+          AND data->>'skill' = 'ae-research-ingest'
+      ) AS ingest_active
+  `);
+  const queueStats = (queueStatsRows[0] as
+    | { raw_pending: number; ingest_waiting: number; ingest_active: number }
+    | undefined) ?? { raw_pending: 0, ingest_waiting: 0, ingest_active: 0 };
 
   const SORT = pickSortField(
     pageReq,
@@ -2234,6 +2275,7 @@ export async function viewQueue(
 
   const recentJobs = await db.execute(sql`
     SELECT id::text AS id, name, status, attempts, max_attempts,
+           data->>'skill' AS task_type,
            started_at, finished_at, create_time, error
     FROM minion_jobs
     WHERE ${where}
@@ -2267,6 +2309,59 @@ export async function viewQueue(
 
   const body = `
 <h2>Job queue</h2>
+${opts.notice ? `<div class="notice">${escape(opts.notice)}</div>` : ""}
+<div class="queue-actions-head">
+  <h3>Manual actions</h3>
+  <div class="queue-stats">
+    <span>Raw pending <strong>${queueStats.raw_pending}</strong></span>
+    <span>Ingest waiting <strong>${queueStats.ingest_waiting}</strong></span>
+    <span>Active <strong>${queueStats.ingest_active}</strong></span>
+  </div>
+</div>
+<div class="queue-actions">
+  <form method="post" action="/queue/fetch-reports" class="queue-action">
+    <div class="queue-action-title">Fetch reports</div>
+    <div class="queue-fields">
+      <label>
+        <span>Date</span>
+        <input name="date" placeholder="Default: yesterday">
+      </label>
+      <label>
+        <span>Limit</span>
+        <input name="limit" type="number" min="1" step="1" placeholder="No limit">
+      </label>
+    </div>
+    <div class="queue-action-footer">
+      <label class="check"><input type="checkbox" name="all" value="1"> All dates</label>
+      <button type="submit">Fetch reports</button>
+    </div>
+  </form>
+  <form method="post" action="/queue/enqueue-ingest" class="queue-action">
+    <div class="queue-action-title">Queue ingest agents</div>
+    <div class="queue-fields queue-fields-compact">
+      <label>
+        <span>Agents</span>
+        <input name="count" type="number" min="1" max="100" step="1" value="1">
+      </label>
+    </div>
+    <details class="queue-advanced">
+      <summary>Advanced</summary>
+      <div class="queue-fields">
+        <label>
+          <span>Model</span>
+          <input name="model" placeholder="${escape(env.OPENAI_AGENT_MODEL)}">
+        </label>
+        <label>
+          <span>LLM turns</span>
+          <input name="max_turns" type="number" min="1" max="100" step="1" value="20">
+        </label>
+      </div>
+    </details>
+    <div class="queue-action-footer queue-action-footer-end">
+      <button type="submit">Queue ingest</button>
+    </div>
+  </form>
+  </div>
 <div class="card">
   <h3>By name × status</h3>
   ${byStatus.length === 0
@@ -2275,7 +2370,7 @@ export async function viewQueue(
         ${byStatus
           .map(
             (r) =>
-              `<tr><td>${escape(String(r.name))}</td><td><span class="tag severity-${r.status === "failed" ? "warning" : "info"}">${escape(String(r.status))}</span></td><td>${r.n}</td></tr>`
+              `<tr><td>${renderJobName(String(r.name), r.task_type ? String(r.task_type) : null)}</td><td><span class="tag severity-${r.status === "failed" ? "warning" : "info"}">${escape(String(r.status))}</span></td><td>${r.n}</td></tr>`
           )
           .join("")}
       </tbody></table>`
@@ -2314,7 +2409,7 @@ ${recentJobs.length === 0
       .map(
         (j) => `<tr>
           <td class="muted score">${j.id}</td>
-          <td>${escape(String(j.name))}</td>
+          <td>${renderJobName(String(j.name), j.task_type ? String(j.task_type) : null)}</td>
           <td><span class="tag severity-${j.status === "failed" ? "warning" : "info"}">${escape(String(j.status))}</span></td>
           <td>${j.attempts}/${j.max_attempts}</td>
           <td class="muted score">${escape(fmtSh(j.create_time as string))}</td>
@@ -2328,6 +2423,11 @@ ${recentJobs.length === 0
 ${renderPagination(result, "/queue", keptParams)}
 `;
   return layout({ title: "Queue", body });
+}
+
+function renderJobName(name: string, taskType: string | null): string {
+  if (name !== "agent_run" || !taskType) return escape(name);
+  return `${escape(name)} <span class="job-task">${escape(taskType)}</span>`;
 }
 
 // ============================================================================
