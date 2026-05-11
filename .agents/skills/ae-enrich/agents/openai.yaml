@@ -1,0 +1,4 @@
+interface:
+  display_name: "Enrich Entity"
+  short_description: "把 ingest Stage 4 留下的红链 entity 补全为正式 wiki 页"
+  default_prompt: "Use $ae-enrich to flesh out low-confidence stub entities created during ingest."

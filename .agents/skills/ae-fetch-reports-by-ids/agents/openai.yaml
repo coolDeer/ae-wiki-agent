@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fetch Reports By IDs"
+  short_description: "按 researchId 列表精准拉取指定报告到 raw_files"
+  default_prompt: "Use $ae-fetch-reports-by-ids to fetch specific reports into raw_files by researchId."

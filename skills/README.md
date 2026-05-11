@@ -32,16 +32,16 @@ skills/
 |------|------|---------|
 | `skills/<name>/SKILL.md` | **规范源**，供 Codex 校验、安装、触发 | 本目录 |
 | `.claude/commands/<name>.md` | Claude Code 实际识别的 slash command | 由 `skills/` 同步而来 |
-| `~/.codex/skills/<name>/` | Codex 自动发现的本地 skill 安装目录 | 由 `skills/` 同步安装而来 |
+| `.agents/skills/<name>/` | 本仓库内 Codex 自动发现的 skill 安装目录 | 由 `skills/` 同步安装而来 |
 
-**约定**：修改 skill 时优先修改 `skills/<name>/SKILL.md`，然后再同步到 `.claude/commands/<name>.md` 和 `~/.codex/skills/<name>/`。Codex 与 Claude 的入口内容应保持一致。
+**约定**：修改 skill 时优先修改 `skills/<name>/SKILL.md`，然后再同步到 `.claude/commands/<name>.md` 和 `.agents/skills/<name>/`。Codex 与 Claude 的入口内容应保持一致。
 
 ## 同步到 Codex
 
 先在仓库内生成一份可检查的 Codex skill 安装目录：
 
 ```bash
-cd /Users/levin/project/agent/ae-wiki-agent
+cd /Users/cola/Desktop/agent/ae-wiki-agent
 bun scripts/sync-codex-skills.ts --clean
 ```
 
@@ -53,7 +53,7 @@ bun scripts/sync-codex-skills.ts --clean
 bun scripts/sync-codex-skills.ts --only ae-research-ingest,ae-enrich --clean
 ```
 
-如果要安装到本机 Codex 自动发现目录：
+如果要安装到本仓库 Codex 自动发现目录：
 
 ```bash
 bun scripts/sync-codex-skills.ts --install --clean
@@ -71,5 +71,5 @@ bun scripts/sync-codex-skills.ts --install --clean
 2. 如需 Codex UI 元数据，在 `skills/<skill-name>/agents/openai.yaml` 写 `display_name`、`short_description`、`default_prompt`
 3. 若有对应执行脚本，放到仓库的 `scripts/` 下，并在 SKILL.md 中引用
 4. 如需兼容 Claude Code，再同步一份到 `.claude/commands/<skill-name>.md`
-5. 如需让本机 Codex 自动发现，再安装到 `~/.codex/skills/<skill-name>/`
+5. 如需让当前仓库的 Codex 自动发现，再安装到 `.agents/skills/<skill-name>/`
 6. 在本 README 的"现有 skill"表格中登记

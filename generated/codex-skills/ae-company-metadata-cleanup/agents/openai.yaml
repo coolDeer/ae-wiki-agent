@@ -1,0 +1,4 @@
+interface:
+  display_name: "AE Company Metadata Cleanup"
+  short_description: "Normalize company names, aliases, and verified tickers"
+  default_prompt: "Audit and clean ae-wiki company metadata: resolve duplicate identity blockers, fill canonical display names, improve aliases, verify public-company primary tickers from official sources, and repair canonical metadata after merges."

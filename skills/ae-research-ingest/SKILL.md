@@ -4,6 +4,7 @@ name: ae-research-ingest
 description: 把 raw_files 中待处理的研究素材 ingest 进 wiki。Triage 流程：peek → 三选一 (commit 深 source / brief 轻量前沿 / pass 噪声) → write → finalize。Agent 当 LLM，core 只做确定性落库。
 metadata:
   short-description: Triage + 三段式 ingest（agent 写 narrative）
+---
 
 # ae-research-ingest
 

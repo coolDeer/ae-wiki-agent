@@ -1,0 +1,4 @@
+interface:
+  display_name: "AE Wiki Maintain"
+  short_description: "Run ae-wiki nightly maintenance"
+  default_prompt: "Use $ae-wiki-maintain to run the ae-wiki maintenance loop."

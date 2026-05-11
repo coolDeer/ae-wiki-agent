@@ -1,0 +1,4 @@
+interface:
+  display_name: "Thesis Track"
+  short_description: "维护投资论点状态机：开仓 / 调 conviction / 标 catalyst / 关仓"
+  default_prompt: "Use $ae-thesis-track to review active theses and update conviction or close out positions."
