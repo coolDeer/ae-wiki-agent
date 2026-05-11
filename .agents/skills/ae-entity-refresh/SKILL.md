@@ -1,6 +1,10 @@
 ---
 name: ae-entity-refresh
-description: Refresh one existing entity page after ingest finds new structured evidence. The durable worker uses this for entity-refresh jobs: read the target entity, inspect new source/fact/timeline/signal evidence, and append a source-backed delta with enrich_save append mode.
+description: >
+  Refresh one existing entity page after ingest finds new structured evidence.
+  The durable worker uses this for entity-refresh jobs: read the target entity,
+  inspect new source/fact/timeline/signal evidence, and append a source-backed
+  delta with enrich_save append mode.
 metadata:
   short-description: LLM refresh for stale entity pages
 ---
