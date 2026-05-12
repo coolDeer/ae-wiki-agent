@@ -214,7 +214,7 @@ export async function runLint(opts: LintOptions = {}): Promise<LintReport> {
       .filter((row) => row.status === "fail")
       .map((row) => row.filename)
       .slice(0, sampleSize),
-    description: "wiki/output 下 daily-review / daily-summarize 未通过 deterministic output review",
+    description: "DB output pages 下 daily-review / daily-summarize 未通过 deterministic output review",
   });
 
   const staleEntities = await getEntityStaleReport({ staleDays: 1, limit: sampleSize });

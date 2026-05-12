@@ -82,6 +82,14 @@ function printHelp(): void {
   ae-wiki jobs:resume <job_id>
   ae-wiki jobs:cancel <job_id> [--reason "..."]
   ae-wiki jobs:retry <job_id>
+  ae-wiki schedules:list [--status S] [--limit N]
+  ae-wiki schedules:get <schedule_id>
+  ae-wiki schedules:add --name NAME --job-name JOB --data JSON (--at ISO|now [--interval-minutes N] | --daily-at HH:MM)
+  ae-wiki schedules:create-nightly [--daily-at HH:MM]
+  ae-wiki schedules:run-due [--limit N]
+  ae-wiki schedules:pause <schedule_id> [--reason "..."]
+  ae-wiki schedules:resume <schedule_id>
+  ae-wiki schedules:delete <schedule_id> [--reason "..."]
 
   ae-wiki enrich:list [--type T] [--limit N]    # 列出待 enrich 的红链 entity
   ae-wiki enrich:next [--type T] [--skip N]     # 取下一个红链 + backlink 上下文
@@ -130,10 +138,14 @@ function printHelp(): void {
   ae-wiki facts:re-extract <page_id>      # 重跑 Stage 5（针对单页）
   ae-wiki facts:coverage [--type source|brief|all] [--limit N] [--json]
                                           # 找看起来应有 fact、但结构化层覆盖偏弱的 source / brief 页
-  ae-wiki output:review <filename> [--json]
-                                          # 跑 deterministic output review，检查 wiki/output 下 daily-review / daily-summarize 的结构与引用
+  ae-wiki output:write --subtype daily-review|daily-summarize --date YYYY-MM-DD [--file path] [--json]
+                                          # 保存 daily output 到 DB pages（outputs/<subtype>-<date>）；不写 wiki/output 文件
+  ae-wiki output:review <slug|filename> [--json]
+                                          # 跑 deterministic output review，检查 DB output page 的结构与引用
   ae-wiki output:backlog [--subtype daily-review|daily-summarize|all] [--limit N] [--json]
                                           # 查看 output 质量 backlog，优先修 fail 的 daily outputs
+  ae-wiki daily:sources [--date YYYY-MM-DD] [--type source|brief|all] [--timezone TZ] [--limit N]
+                                          # 稳定列出某本地日 raw_files.create_time 对应的 source/brief，供 daily-review / PM brief 使用
   ae-wiki links:re-extract <page_id>      # 重跑 Stage 4（针对单页）
   ae-wiki page:review <page_id> [--json]  # 跑 deterministic page review，检查 schema / wikilink / provenance / blocks
   ae-wiki page:review-backlog [--status fail|pass|all] [--limit N] [--json]
@@ -485,6 +497,19 @@ async function main(): Promise<void> {
     case "jobs:retry": {
       const { runJobsCommand } = await import("./commands/jobs.ts");
       await runJobsCommand([cmd.slice("jobs:".length), ...args]);
+      break;
+    }
+
+    case "schedules:list":
+    case "schedules:get":
+    case "schedules:add":
+    case "schedules:create-nightly":
+    case "schedules:run-due":
+    case "schedules:pause":
+    case "schedules:resume":
+    case "schedules:delete": {
+      const { runSchedulesCommand } = await import("./commands/schedules.ts");
+      await runSchedulesCommand([cmd.slice("schedules:".length), ...args]);
       break;
     }
 
@@ -997,10 +1022,44 @@ async function main(): Promise<void> {
       break;
     }
 
+    case "output:write": {
+      const subtypeArg = getArg("--subtype");
+      const subtype =
+        subtypeArg === "daily-review" || subtypeArg === "daily-summarize"
+          ? subtypeArg
+          : undefined;
+      if (!subtype) {
+        console.error("output:write 需要 --subtype daily-review|daily-summarize");
+        process.exit(1);
+      }
+      const date = getArg("--date");
+      if (!date) {
+        console.error("output:write 需要 --date YYYY-MM-DD");
+        process.exit(1);
+      }
+
+      const filePath = getArg("--file");
+      const markdown = filePath ? await Bun.file(filePath).text() : await Bun.stdin.text();
+      if (!markdown.trim()) {
+        console.error(filePath ? `文件为空: ${filePath}` : "stdin 为空");
+        process.exit(1);
+      }
+
+      const { saveOutputPage } = await import("./skills/output/index.ts");
+      const result = await saveOutputPage(markdown, { subtype, date });
+      if (getFlag("--json")) console.log(jsonStringify(result));
+      else {
+        console.log(
+          `saved ${result.slug} page_id=${result.pageId} created=${result.created} chars=${result.contentChars}`
+        );
+      }
+      break;
+    }
+
     case "output:review": {
       const filename = args[0];
       if (!filename) {
-        console.error("output:review 需要 filename，例如 daily-review-2026-04-28.md");
+        console.error("output:review 需要 slug 或 filename，例如 outputs/daily-review-2026-04-28");
         process.exit(1);
       }
       const { formatOutputReview, reviewOutputFile } = await import(
@@ -1030,6 +1089,19 @@ async function main(): Promise<void> {
       });
       if (getFlag("--json")) console.log(jsonStringify(report));
       else console.log(formatOutputBacklog(report));
+      break;
+    }
+
+    case "daily:sources": {
+      const { dailySources } = await import("./mcp/queries.ts");
+      const limitStr = getArg("--limit");
+      const report = await dailySources({
+        date: getArg("--date"),
+        type: getArg("--type"),
+        timezone: getArg("--timezone"),
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+      });
+      console.log(jsonStringify(report));
       break;
     }
 

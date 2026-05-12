@@ -47,6 +47,7 @@ export type JobName =
   | "extract_facts"
   | "enrich_entity"
   | "entity-refresh"
+  | "entity_refresh_queue"
   | "detect_signals"
   | "agent_run"
   | "lint_run"

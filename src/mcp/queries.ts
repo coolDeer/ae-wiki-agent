@@ -9,6 +9,7 @@
 
 import { eq, and, desc, isNull, sql as drizzleSql, gte } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
+import { getEnv } from "~/core/env.ts";
 import { hybridSearch, type SearchOpts } from "~/core/search/hybrid.ts";
 import {
   isTableBundle,
@@ -37,6 +38,122 @@ export async function search(
     section_path: h.sectionPath,
     ...(h.debug ? { debug: h.debug } : {}),
   }));
+}
+
+// ============================================================================
+// 1.5 daily_sources — daily review / PM brief 的稳定 source discovery
+// 日期归属使用 raw_files.create_time，而不是 page.create_time / publish_date。
+// ============================================================================
+
+export interface DailySourcesArgs {
+  /** YYYY-MM-DD in the requested timezone. Defaults to today in WIKI_DISPLAY_TZ. */
+  date?: string;
+  /** source / brief / all. Defaults to all. */
+  type?: "source" | "brief" | "all" | string;
+  /** IANA timezone name. Defaults to WIKI_DISPLAY_TZ or Asia/Shanghai. */
+  timezone?: string;
+  limit?: number;
+}
+
+function todayInTimezone(timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const get = (type: string) => parts.find((part) => part.type === type)?.value;
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+export async function dailySources(args: DailySourcesArgs = {}): Promise<unknown> {
+  const timezone = args.timezone ?? getEnv().WIKI_DISPLAY_TZ ?? "Asia/Shanghai";
+  const date = args.date ?? todayInTimezone(timezone);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error("daily_sources.date must be YYYY-MM-DD");
+  }
+
+  const type = args.type ?? "all";
+  if (!["source", "brief", "all"].includes(type)) {
+    throw new Error("daily_sources.type must be source, brief, or all");
+  }
+  const limit = args.limit ?? 500;
+  const typeFilter =
+    type === "all"
+      ? drizzleSql`p.type IN ('source', 'brief')`
+      : drizzleSql`p.type = ${type}`;
+
+  const rows = await db.execute(drizzleSql`
+    WITH bounds AS (
+      SELECT
+        (${date}::date::timestamp AT TIME ZONE ${timezone}) AS start_at,
+        (((${date}::date + INTERVAL '1 day')::timestamp) AT TIME ZONE ${timezone}) AS end_at
+    )
+    SELECT
+      p.id,
+      p.slug,
+      p.type,
+      p.title,
+      p.frontmatter,
+      r.id AS raw_file_id,
+      r.create_time AS raw_file_create_time,
+      r.ingested_at,
+      p.create_time AS page_create_time,
+      p.update_time AS page_update_time,
+      p.ticker,
+      p.sector
+    FROM pages p
+    JOIN raw_files r
+      ON r.ingested_page_id = p.id
+     AND r.deleted = 0
+    CROSS JOIN bounds b
+    WHERE p.deleted = 0
+      AND ${typeFilter}
+      AND r.create_time >= b.start_at
+      AND r.create_time < b.end_at
+    ORDER BY r.create_time ASC, r.id ASC
+    LIMIT ${limit}
+  `);
+
+  const mapped = (rows as unknown as Array<Record<string, unknown>>).map((row) => {
+    const frontmatter =
+      row.frontmatter && typeof row.frontmatter === "object"
+        ? (row.frontmatter as Record<string, unknown>)
+        : {};
+    const rawViewSide =
+      typeof frontmatter.view_side === "string" ? frontmatter.view_side : "unknown";
+    const viewSide = ["buy_side", "sell_side", "neutral", "unknown"].includes(rawViewSide)
+      ? rawViewSide
+      : "unknown";
+    return {
+      page_id: String(row.id),
+      raw_file_id: row.raw_file_id == null ? null : String(row.raw_file_id),
+      slug: row.slug,
+      type: row.type,
+      title: row.title,
+      create_time: row.raw_file_create_time,
+      raw_file_create_time: row.raw_file_create_time,
+      ingested_at: row.ingested_at,
+      page_create_time: row.page_create_time,
+      page_update_time: row.page_update_time,
+      research_type: frontmatter.research_type ?? null,
+      publish_date: frontmatter.publish_date ?? null,
+      view_side: viewSide,
+      view_side_raw: rawViewSide,
+      time_horizon: frontmatter.time_horizon ?? null,
+      primary_entities: frontmatter.primary_entities ?? [],
+      ticker: row.ticker ?? null,
+      sector: row.sector ?? null,
+    };
+  });
+
+  return {
+    date,
+    timezone,
+    type,
+    count: mapped.length,
+    sources: mapped,
+  };
 }
 
 // ============================================================================

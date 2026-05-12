@@ -9,8 +9,8 @@
  *   GET /pages/:slug-or-id       page detail
  *   GET /theses?status=...       theses list
  *   GET /entities?...            entity filter
- *   GET /outputs                 list wiki/output/*.md
- *   GET /outputs/:filename       render one .md
+ *   GET /outputs                 list DB output pages
+ *   GET /outputs/:slugBase       render one DB output page
  *   GET /queue                   minion_jobs status
  *   GET /healthz                 plain "ok" for liveness
  */

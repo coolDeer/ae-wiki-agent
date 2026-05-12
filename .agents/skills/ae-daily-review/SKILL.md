@@ -1,13 +1,13 @@
 ---
 name: ae-daily-review
-description: 资深投资者视角的每日复盘。基于当日 ingest 完成的 source / brief / 实体页（从 Postgres 经 MCP 查询），针对 7 个标准问题逐一回答，输出 wiki/output/daily-review-{date}.md。问题覆盖：认知变化 / 反共识数据 / 跨板块串联 / 多头机会 / 空头机会 / 知识缺口 / 自我红队。问题集由 schema 固定，避免临场设计盲区。
+description: "资深投资者视角的每日复盘。基于当日 ingest 完成的 source / brief / 实体页（从 Postgres 经 MCP 查询），针对 7 个标准问题逐一回答，保存为 DB output page：outputs/daily-review-{date}。问题覆盖：认知变化 / 反共识数据 / 跨板块串联 / 多头机会 / 空头机会 / 知识缺口 / 自我红队。问题集由 schema 固定，避免临场设计盲区。"
 metadata:
   short-description: 生成 7 问结构化每日复盘
 ---
 
 # ae-daily-review
 
-资深投资者视角的每日复盘 skill。在 `$ae-fetch-reports` + `$ae-research-ingest` 完成后调用，对当天 ingest 进 Postgres 的内容做结构化提问，输出到 `wiki/output/daily-review-{date}.md`。**最终报告统一用英文。**
+资深投资者视角的每日复盘 skill。在 `$ae-fetch-reports` + `$ae-research-ingest` 完成后调用，对当天 ingest 进 Postgres 的内容做结构化提问，保存到 DB output page `outputs/daily-review-{date}`。**最终报告统一用英文。**
 
 ## 触发方式
 
@@ -28,7 +28,7 @@ metadata:
 
 | 需要 | 用什么 |
 |---|---|
-| 当日新 ingest 的 source / brief 页 | `recent_activity({days:1, kinds:['page']})` 然后筛 slug 前缀 `sources/` / `briefs/` |
+| 当日 source / brief 页 | `daily_sources({date:'YYYY-MM-DD', type:'all', timezone:'Asia/Shanghai', limit:500})`，日期按 `raw_files.create_time` 归属 |
 | 某 source 的完整 narrative | `get_page(slug)` 或 `get_page(pageId)` |
 | 最近 7 天 mental map（事件 / 信号 / 新页）| `recent_activity({days:7})` 默认含 event + signal + page |
 | 跨板块查相关公司 / 行业 | `search(query, {type, dateFrom, limit})` |
@@ -98,6 +98,7 @@ metadata:
 - 优先读取每个 source / brief 的 `frontmatter.view_side`
 - 只把 `view_side = sell_side` 计入 numerator
 - denominator 默认用今日全部 source / brief；同时单独报告 `unknown` 占比
+- `daily_sources` 会把非白名单 `view_side` 规范成 `unknown`，同时保留 `view_side_raw`；不要把 `macro` / `positive` / `negative` 现场重判成 sell-side
 - 若 `sell_side / total_sources >= 50%`，必须显式标注 `⚠️ sell-side 占比偏高（X%），结论可能 inherently positive`
 - 同时检查是否过度集中在某一家 house / 叙事来源
 - 如果个别页面缺少 `view_side`，按 `unknown` 处理，不要现场凭 researchType 重新猜
@@ -116,11 +117,11 @@ metadata:
 
 1. **解析日期** — `$ARGUMENTS` 为空 → 当天（Asia/Shanghai）；有值 → 直接用
 
-2. **拉今日 ingest 的 source / brief 列表**
+2. **拉今日 raw file 入库对应的 source / brief 列表**
    ```
-   recent_activity({days: 1, kinds: ['page']})
+   daily_sources({date: "YYYY-MM-DD", type: "all", timezone: "Asia/Shanghai", limit: 500})
    ```
-   筛 slug 前缀 `sources/` 或 `briefs/`。如返回为空 → 告诉用户"今日无 ingest 内容，建议先跑 `$ae-fetch-reports` + `$ae-research-ingest`"，**不出报告**。
+   只使用返回的 `sources` 列表；`daily_sources` 按 `raw_files.create_time` 切日，不按 `pages.create_time` 或 `frontmatter.publish_date`。不要用 `recent_activity({kinds:['page']})` 间接筛 source/brief，因为同批 ingest 生成的 company/industry/concept 红链会挤掉 source 页。如返回为空 → 告诉用户"今日无 raw file 对应的已 ingest 内容，建议先跑 `$ae-fetch-reports` + `$ae-research-ingest`"，**不出报告**。
 
 3. **建立 mental map**（最近 7 天上下文）
    ```
@@ -129,8 +130,8 @@ metadata:
    重点看：新 thesis（slug 前缀 `theses/`）、近 7 天 signals、跨日重复出现的 entity。
 
 4. **逐一 `get_page` 当日 source / brief**
-   提取：`## 关键要点` / `## 结构性观察` / `## 与现有知识的关系`（这三段是 ingest 时强制要求的）。
-   brief 页只读 `## 关键观察` + `## 投资视角`。
+   source 页重点提取当前 ingest 模板中的：`## Source Overview` / `## Factual Claims And Data` / `## Core Views` / `## Investment Mechanism` / `## Expectation Gap` / `## Investment Implications` / `## Relation To Existing Knowledge`。
+   brief 页重点提取：`## TL;DR` / `## Key Observations` / `## Investment View` / `## Links`。
    同时读取每页 frontmatter 里的 `view_side`，供 Q7 聚合。
 
 5. **识别高价值数表并做 comparison pass**
@@ -145,7 +146,7 @@ metadata:
    - 需要核原表时，再用 `get_table_artifact({identifier})`
 
 6. **可选：跨引用历史 source / entity**
-   - 当日 source 在"## 与现有知识的关系"提到某历史 source / entity → `get_page(slug)`
+   - 当日 source 在 `## Relation To Existing Knowledge` 提到某历史 source / entity → `get_page(slug)`
    - 需要某行业最新动态 → `search("行业名 关键趋势", {type:'industry', limit:5})`
    - 某公司的最新财务事实 → `query_facts({entity:'companies/X', currentOnly:true, limit:20})`
 
@@ -159,14 +160,19 @@ metadata:
    严格按上方"7 个标准问题"格式，每条断言带 source 引用。Q4/Q5 不许空话。Q7 两条硬指标必做。
    若某结论来自表格 comparison，正文里要明确写出比较维度（entity / metric / period），而不是只说“表格显示”。
 
-9. **写文件**
-   ```bash
-   mkdir -p wiki/output
-   # 写到 wiki/output/daily-review-{YYYY-MM-DD}.md
-   ```
+9. **保存到数据库**
+   - Runtime 内优先调用 `output_write({subtype:"daily-review", date:"YYYY-MM-DD", markdown:"<完整 markdown>"})`
+   - CLI fallback：
+     ```bash
+     bun src/cli.ts output:write --subtype daily-review --date YYYY-MM-DD <<'EOF'
+     <完整 markdown>
+     EOF
+     ```
+   - 最终 DB slug 必须是 `outputs/daily-review-YYYY-MM-DD`
+   - 不写 `wiki/output/` 文件
 
 10. **总结报告给用户**
-   - 文件路径
+   - DB output slug
    - 7 问的一行摘要
    - 是否触发了重大叙事修正（Q1 ≥3 条 ⚠️ 矛盾 → 提示考虑做 comparison 页归档）
 
@@ -228,7 +234,7 @@ last_updated: "YYYY-MM-DD"
 - **若 `compare_table_facts` 与 prose 摘要不一致，以表格 provenance 为准**，并在正文里指出 source narrative 可能压缩了信息
 - **当天 ingest = 0 → 不出报告**：先建议用户跑 fetch + ingest
 - **当天 ingest < 5 份**：可以正常做，但 Q3 跨板块串联可能写"低密度日，无显著串联"
-- **不修改任何已有 page**：daily-review 是只读综合，输出只到 `wiki/output/`
+- **不修改任何研究 page**：daily-review 是只读综合，只 upsert 自己的 DB output page `outputs/daily-review-{date}`
 
 ## 下一步建议
 

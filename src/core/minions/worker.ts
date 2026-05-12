@@ -15,6 +15,7 @@ import { embedBatch } from "~/core/embedding.ts";
 import { getEnv } from "~/core/env.ts";
 import { deriveFactSignal } from "~/core/extractors/signals.ts";
 import { addJob, completeJob, failJob } from "~/core/minions/queue.ts";
+import { enqueueDueSchedules } from "~/core/minions/schedules.ts";
 import { enrichLoadContext } from "~/skills/enrich/index.ts";
 
 const POLL_INTERVAL_MS = 2000;
@@ -54,6 +55,8 @@ async function runJob(job: typeof schema.minionJobs.$inferSelect): Promise<unkno
       return await runEnrichEntity(job);
     case "entity-refresh":
       return await runEntityRefresh(job);
+    case "entity_refresh_queue":
+      return await runEntityRefreshQueue(job);
     case "agent_run":
       return await runAgentJob(job);
     case "lint_run":
@@ -114,6 +117,26 @@ async function runWikiMaintainJob(
   const report = await runWikiMaintain(data);
   console.log(
     `  [wiki_maintain] lint=${report.summary.totalLintIssues} entity_refresh=${report.summary.entityRefreshApplied} enrich_jobs=${report.summary.enrichJobsQueued} thesis_jobs=${report.summary.thesisJobsQueued}`
+  );
+  return report as unknown as Record<string, unknown>;
+}
+
+async function runEntityRefreshQueue(
+  job: typeof schema.minionJobs.$inferSelect
+): Promise<Record<string, unknown>> {
+  const data = (job.data ?? {}) as {
+    type?: string;
+    limit?: number;
+    sourcePageId?: string;
+  };
+  const { queueEntityRefreshJobs } = await import("~/skills/entity-refresh/index.ts");
+  const report = await queueEntityRefreshJobs({
+    type: data.type,
+    limit: data.limit,
+    sourcePageId: data.sourcePageId,
+  });
+  console.log(
+    `  [entity_refresh_queue] candidates=${report.summary.candidates} queued=${report.summary.queued} skipped=${report.summary.skipped}`
   );
   return report as unknown as Record<string, unknown>;
 }
@@ -412,6 +435,15 @@ export async function runWorker(): Promise<void> {
   try {
     while (state.running) {
       try {
+        const schedules = await enqueueDueSchedules();
+        if (schedules.triggered.length > 0) {
+          console.log(
+            `[worker] schedules triggered=${schedules.triggered.length}: ` +
+              schedules.triggered
+                .map((row) => `${row.scheduleName}->job#${row.jobId}`)
+                .join(", ")
+          );
+        }
         const job = await pickOne();
         if (!job) {
           await Bun.sleep(POLL_INTERVAL_MS);

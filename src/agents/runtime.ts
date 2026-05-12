@@ -12,6 +12,7 @@ import type { AgentRunData } from "~/core/minions/types.ts";
 import { fetchRawMarkdown } from "~/core/raw-loader.ts";
 import {
   compareTableFacts,
+  dailySources,
   getPage,
   getTableArtifact,
   listEntities,
@@ -37,6 +38,7 @@ import {
   ingestPeek,
   ingestWriteNarrative,
 } from "~/skills/ingest/index.ts";
+import { saveOutputPage } from "~/skills/output/index.ts";
 import {
   thesisClose,
   thesisList,
@@ -905,6 +907,52 @@ function buildRuntimeTools(): RuntimeTool[] {
       execute: async (input) => getPage(String(input.identifier)),
     },
     {
+      name: "daily_sources",
+      description:
+        "Stable daily source discovery for daily-review / PM brief. Returns source/brief pages for one local calendar day.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          date: { type: "string" },
+          type: { type: "string" },
+          timezone: { type: "string" },
+          limit: { type: "integer" },
+        },
+      },
+      execute: async (input) =>
+        dailySources({
+          date: asOptionalString(input.date),
+          type: asOptionalString(input.type),
+          timezone: asOptionalString(input.timezone),
+          limit: asOptionalNumber(input.limit),
+        }),
+    },
+    {
+      name: "output_write",
+      description:
+        "Persist a daily-review or daily-summarize markdown report as a DB output page. Use this instead of writing wiki/output files.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          subtype: { type: "string" },
+          date: { type: "string" },
+          markdown: { type: "string" },
+        },
+        required: ["subtype", "date", "markdown"],
+      },
+      execute: async (input) => {
+        const subtype = String(input.subtype);
+        if (subtype !== "daily-review" && subtype !== "daily-summarize") {
+          throw new Error("subtype must be daily-review or daily-summarize");
+        }
+        return saveOutputPage(String(input.markdown), {
+          subtype,
+          date: String(input.date),
+          actor: Actor.agentRuntime,
+        });
+      },
+    },
+    {
       name: "query_facts",
       description: "Query structured facts by entity / metric / period.",
       inputSchema: {
@@ -1469,7 +1517,13 @@ function buildRuntimeTools(): RuntimeTool[] {
         required: ["path", "content"],
       },
       execute: async (input) => {
-        const filePath = resolveWorkspacePath(String(input.path), true);
+        const requestedPath = String(input.path);
+        if (/^wiki\/output\/daily-(review|summarize)-.+\.md$/.test(requestedPath)) {
+          throw new Error(
+            "daily-review and daily-summarize outputs must be saved with output_write, not wiki/output files"
+          );
+        }
+        const filePath = resolveWorkspacePath(requestedPath, true);
         await mkdir(path.dirname(filePath), { recursive: true });
         await writeFile(filePath, String(input.content), "utf-8");
         return { ok: true, path: filePath };

@@ -1,7 +1,7 @@
 /**
  * output review / backlog
  *
- * 针对 `wiki/output/*.md` 的 deterministic 质量检查。
+ * 针对 DB output pages（pages.type='output'）的 deterministic 质量检查。
  * 当前聚焦：
  *   - daily-review
  *   - daily-summarize
@@ -12,15 +12,15 @@
  *   - 引用与长度是否达最低标准
  */
 
-import fs from "node:fs/promises";
-import type { Dirent } from "node:fs";
-import path from "node:path";
-
+import { and, desc, eq, sql as drizzleSql } from "drizzle-orm";
 import matter from "gray-matter";
 
-import { getEnv } from "~/core/env.ts";
+import { db, schema } from "~/core/db.ts";
+import {
+  normalizeOutputIdentifier,
+  type OutputSubtype,
+} from "~/skills/output/index.ts";
 
-type OutputSubtype = "daily-review" | "daily-summarize";
 type ReviewStatus = "pass" | "fail";
 type ReviewSeverity = "error" | "warn";
 
@@ -52,6 +52,7 @@ export interface OutputReviewReport {
 
 export interface OutputBacklogRow {
   filename: string;
+  pageId: string;
   subtype: OutputSubtype;
   status: ReviewStatus;
   errors: number;
@@ -109,6 +110,7 @@ const PROFILE_BY_SUBTYPE: Record<OutputSubtype, ReviewProfile> = {
       "date",
       "sources",
       "active_thesis_count",
+      "portfolio_mode",
       "tags",
       "last_updated",
     ],
@@ -127,18 +129,23 @@ const PROFILE_BY_SUBTYPE: Record<OutputSubtype, ReviewProfile> = {
   },
 };
 
-export async function reviewOutputFile(filename: string): Promise<OutputReviewReport> {
-  const filePath = resolveOutputFile(filename);
-  const content = await fs.readFile(filePath, "utf8");
-  return reviewOutputContent(filename, content);
+export async function reviewOutputFile(identifier: string): Promise<OutputReviewReport> {
+  const page = await loadOutputPage(identifier);
+  return reviewOutputParsed(page.slug, asRecord(page.frontmatter), page.content ?? "");
 }
 
-export function reviewOutputContent(filename: string, content: string): OutputReviewReport {
+export function reviewOutputContent(identifier: string, content: string): OutputReviewReport {
   const parsed = matter(content);
-  const data = asRecord(parsed.data);
-  const subtype = inferSubtype(filename, data);
+  return reviewOutputParsed(identifier, asRecord(parsed.data), parsed.content);
+}
+
+function reviewOutputParsed(
+  identifier: string,
+  data: Record<string, unknown>,
+  body: string
+): OutputReviewReport {
+  const subtype = inferSubtype(identifier, data);
   const profile = PROFILE_BY_SUBTYPE[subtype];
-  const body = parsed.content;
   const sectionTitles = Array.from(body.matchAll(SECTION_HEADING_RE)).map((m) => m[1]!.trim());
   const sourceRefCount = (body.match(SOURCE_REF_RE) ?? []).length;
   const qRefCount = (body.match(/^##\s+Q\d|^##\s+\d+\./gm) ?? []).length;
@@ -211,9 +218,12 @@ export function reviewOutputContent(filename: string, content: string): OutputRe
       message: `Daily summarize should expose 9 numbered sections (found ${qRefCount})`,
     });
   }
+  if (subtype === "daily-summarize") {
+    addDailySummarizeChecks(data, body, issues);
+  }
 
   return {
-    filename,
+    filename: identifier,
     subtype,
     status: issues.some((issue) => issue.severity === "error") ? "fail" : "pass",
     generatedAt: new Date().toISOString(),
@@ -223,8 +233,134 @@ export function reviewOutputContent(filename: string, content: string): OutputRe
       sourceRefCount,
       qRefCount,
     },
-    issues,
+      issues,
   };
+}
+
+function addDailySummarizeChecks(
+  data: Record<string, unknown>,
+  body: string,
+  issues: OutputReviewIssue[]
+): void {
+  const activeThesisCount = parseCount(data.active_thesis_count);
+  const portfolioMode = typeof data.portfolio_mode === "string" ? data.portfolio_mode : null;
+  const sources = Array.isArray(data.sources) ? data.sources.map((item) => String(item)) : [];
+  const hasDailyReview = sources.some((source) => source.includes("daily-review-"));
+  const newPositions = getSectionBody(body, "4. New Positions");
+  const reduceHedge = getSectionBody(body, "5. Reduce / Hedge");
+
+  if (hasDailyReview) {
+    for (const q of [4, 5, 6]) {
+      if (!new RegExp(`\\bQ${q}\\b|§Q${q}\\b`, "i").test(body)) {
+        issues.push({
+          severity: "error",
+          code: "missing_daily_review_reuse",
+          message: `Daily summarize sources include daily-review, but Q${q} is not explicitly referenced or reused`,
+        });
+      }
+    }
+  }
+
+  if (activeThesisCount === 0) {
+    if (portfolioMode !== "watchlist") {
+      issues.push({
+        severity: "error",
+        code: "wrong_portfolio_mode",
+        message:
+          'active_thesis_count is 0, so frontmatter portfolio_mode should be "watchlist"',
+      });
+    }
+    if (!/watchlist|no active thesis|research brief/i.test(body)) {
+      issues.push({
+        severity: "error",
+        code: "missing_watchlist_disclaimer",
+        message:
+          "active_thesis_count is 0, so the brief must explicitly state watchlist / no-active-thesis mode",
+      });
+    }
+    if (/%\s*NAV|\bNAV\b|\bsizing\b|\bentry\b|\bstop\b|\btarget\b/i.test(newPositions)) {
+      issues.push({
+        severity: "error",
+        code: "watchlist_has_execution_fields",
+        message:
+          "watchlist mode should not include NAV sizing, entry, stop, or target fields in New Positions",
+      });
+    }
+    return;
+  }
+
+  if (activeThesisCount != null && activeThesisCount > 0 && portfolioMode && portfolioMode !== "active-thesis") {
+    issues.push({
+      severity: "error",
+      code: "wrong_portfolio_mode",
+      message:
+        'active_thesis_count is positive, so frontmatter portfolio_mode should be "active-thesis"',
+    });
+  }
+
+  if (!isNoActionSection(newPositions)) {
+    const required = [
+      ["sizing", /\bsizing\b|\bsize\b|% NAV|position size/i],
+      ["entry", /\bentry\b|limit price|market on open|入场/i],
+      ["stop", /\bstop\b|invalidation|止损/i],
+      ["target", /\btarget\b|base case|bull case|bear case|目标/i],
+      ["catalyst", /\bcatalyst\b|催化/i],
+      ["risk", /\brisk\b|风险/i],
+    ] as const;
+    for (const [field, pattern] of required) {
+      if (!pattern.test(newPositions)) {
+        issues.push({
+          severity: "error",
+          code: "incomplete_trade_sheet",
+          message: `New Positions section is missing executable trade-sheet field: ${field}`,
+        });
+      }
+    }
+  }
+
+  if (!isNoActionSection(reduceHedge)) {
+    const required = [
+      ["instrument/action", /\breduce\b|\bhedge\b|\btrim\b|\bshort\b|减仓|对冲/i],
+      ["sizing", /\bsizing\b|\bsize\b|% NAV|比例|notional/i],
+      ["rationale", /\brationale\b|\breason\b|why|理由/i],
+      ["priority", /\bpriority\b|urgent|monitor|优先|紧急/i],
+    ] as const;
+    for (const [field, pattern] of required) {
+      if (!pattern.test(reduceHedge)) {
+        issues.push({
+          severity: "error",
+          code: "incomplete_reduce_hedge",
+          message: `Reduce / Hedge section is missing executable field: ${field}`,
+        });
+      }
+    }
+  }
+}
+
+function parseCount(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function getSectionBody(body: string, sectionTitle: string): string {
+  const escaped = sectionTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`^##\\s+${escaped}\\s*$`, "m").exec(body);
+  if (!match || match.index == null) return "";
+  const start = match.index + match[0].length;
+  const rest = body.slice(start);
+  const next = /^##\s+/m.exec(rest);
+  return next && next.index != null ? rest.slice(0, next.index) : rest;
+}
+
+function isNoActionSection(section: string): boolean {
+  if (!section.trim()) return true;
+  return /no (new )?(position|trade|opportunit|action)|no need to|hold current|保持|not actionable|watchlist only|research task/i.test(
+    section
+  );
 }
 
 export async function reviewOutputBacklog(opts: {
@@ -233,12 +369,14 @@ export async function reviewOutputBacklog(opts: {
 } = {}): Promise<OutputBacklogReport> {
   const subtype = opts.subtype ?? "all";
   const limit = opts.limit ?? 30;
-  const files = await listOutputFiles();
-  const filtered = files.filter((file) => {
-    if (subtype === "all") return true;
-    return file.startsWith(`${subtype}-`) || file.includes(`${subtype}-`);
+  const pages = await listOutputPages({
+    subtype,
+    limit: Math.max(limit * 5, 100),
   });
-  const reports = await Promise.all(filtered.map((file) => reviewOutputFile(file)));
+  const reports = await Promise.all(
+    pages.map((page) => reviewOutputParsed(page.slug, asRecord(page.frontmatter), page.content ?? ""))
+  );
+  const pageIdBySlug = new Map(pages.map((page) => [page.slug, page.id.toString()]));
   const rows = reports
     .sort((a, b) => {
       if (a.status !== b.status) return a.status === "fail" ? -1 : 1;
@@ -247,6 +385,7 @@ export async function reviewOutputBacklog(opts: {
     .slice(0, limit)
     .map((report) => ({
       filename: report.filename,
+      pageId: pageIdBySlug.get(report.filename) ?? "",
       subtype: report.subtype,
       status: report.status,
       errors: report.issues.filter((i) => i.severity === "error").length,
@@ -293,42 +432,74 @@ export function formatOutputBacklog(report: OutputBacklogReport): string {
     "",
   ];
   if (report.rows.length === 0) {
-    lines.push("No output files found.");
+    lines.push("No output pages found.");
     return lines.join("\n");
   }
   for (const row of report.rows) {
     lines.push(
-      `  [${row.status.toUpperCase()}] ${row.filename} subtype=${row.subtype} errors=${row.errors} warnings=${row.warnings} chars=${row.charCount} refs=${row.sourceRefCount}`
+      `  [${row.status.toUpperCase()}] ${row.filename} page_id=${row.pageId} subtype=${row.subtype} errors=${row.errors} warnings=${row.warnings} chars=${row.charCount} refs=${row.sourceRefCount}`
     );
   }
   return lines.join("\n");
 }
 
-async function listOutputFiles(): Promise<string[]> {
-  const dir = path.resolve(getEnv().WORKSPACE_DIR, "wiki/output");
-  let entries: Dirent[];
-  try {
-    entries = await fs.readdir(dir, { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
+async function loadOutputPage(identifier: string): Promise<{
+  id: bigint;
+  slug: string;
+  content: string;
+  frontmatter: unknown;
+}> {
+  const normalized = normalizeOutputIdentifier(identifier);
+  const numericId = /^\d+$/.test(normalized) ? BigInt(normalized) : null;
+  const conditions = [
+    eq(schema.pages.deleted, 0),
+    eq(schema.pages.type, "output"),
+    numericId ? eq(schema.pages.id, numericId) : eq(schema.pages.slug, normalized),
+  ];
+
+  const [page] = await db
+    .select({
+      id: schema.pages.id,
+      slug: schema.pages.slug,
+      content: schema.pages.content,
+      frontmatter: schema.pages.frontmatter,
+    })
+    .from(schema.pages)
+    .where(and(...conditions))
+    .limit(1);
+
+  if (!page) throw new Error(`output page not found: ${identifier}`);
+  return page;
+}
+
+async function listOutputPages(opts: {
+  subtype: OutputSubtype | "all";
+  limit: number;
+}): Promise<Array<{ id: bigint; slug: string; content: string; frontmatter: unknown }>> {
+  const conditions = [eq(schema.pages.deleted, 0), eq(schema.pages.type, "output")];
+  if (opts.subtype !== "all") {
+    conditions.push(
+      drizzleSql`(${schema.pages.frontmatter}->>'subtype' = ${opts.subtype} OR ${schema.pages.slug} LIKE ${`outputs/${opts.subtype}-%`})`
+    );
   }
-  return entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-    .map((entry) => entry.name)
-    .sort()
-    .reverse();
+
+  return db
+    .select({
+      id: schema.pages.id,
+      slug: schema.pages.slug,
+      content: schema.pages.content,
+      frontmatter: schema.pages.frontmatter,
+    })
+    .from(schema.pages)
+    .where(and(...conditions))
+    .orderBy(desc(schema.pages.updateTime))
+    .limit(opts.limit);
 }
 
-function resolveOutputFile(filename: string): string {
-  const safe = path.basename(filename);
-  return path.resolve(getEnv().WORKSPACE_DIR, "wiki/output", safe);
-}
-
-function inferSubtype(filename: string, frontmatter: Record<string, unknown>): OutputSubtype {
+function inferSubtype(identifier: string, frontmatter: Record<string, unknown>): OutputSubtype {
   const subtype = frontmatter.subtype;
   if (subtype === "daily-review" || subtype === "daily-summarize") return subtype;
-  if (filename.startsWith("daily-review-")) return "daily-review";
+  if (identifier.includes("daily-review-")) return "daily-review";
   return "daily-summarize";
 }
 

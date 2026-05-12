@@ -2,7 +2,7 @@
 /**
  * ae-wiki MCP server
  *
- * 通过 stdio transport 暴露 5 个 wiki 查询工具给 Claude Code / 其他 MCP client。
+ * 通过 stdio transport 暴露 wiki 查询工具给 Claude Code / 其他 MCP client。
  *
  * 启动方式（Claude Code 通过 .mcp.json 自动 spawn）：
  *   bun run src/mcp/server.ts
@@ -16,6 +16,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   search,
+  dailySources,
   getPage,
   queryFacts,
   compareTableFacts,
@@ -84,6 +85,29 @@ const TOOLS = [
         },
       },
       required: ["identifier"],
+    },
+  },
+  {
+    name: "daily_sources",
+    description:
+      "Stable daily source discovery for daily-review / PM brief. Returns source/brief pages created within one local calendar day, without being crowded out by entity redlinks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        date: {
+          type: "string",
+          description: "YYYY-MM-DD in timezone. Defaults to today in WIKI_DISPLAY_TZ.",
+        },
+        type: {
+          type: "string",
+          description: "source / brief / all. Default all.",
+        },
+        timezone: {
+          type: "string",
+          description: "IANA timezone, e.g. Asia/Shanghai. Defaults to WIKI_DISPLAY_TZ or Asia/Shanghai.",
+        },
+        limit: { type: "number", description: "Max rows (default 500)" },
+      },
     },
   },
   {
@@ -340,6 +364,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         break;
       case "get_page":
         result = await getPage((args as { identifier: string }).identifier);
+        break;
+      case "daily_sources":
+        result = await dailySources({
+          date: (args as { date?: string }).date,
+          type: (args as { type?: string }).type,
+          timezone: (args as { timezone?: string }).timezone,
+          limit: (args as { limit?: number }).limit,
+        });
         break;
       case "query_facts":
         result = await queryFacts({
