@@ -197,9 +197,13 @@ function printHelp(): void {
                                           # 循环扫描并执行安全 page merge；默认 dry-run，--apply 才写库；可顺手 retire 低置信孤儿 stub
   ae-wiki page:retire <page_id> --reason "..." [--dry-run] [--force] [--max-content-chars N]
                                           # 保守归档无引用 entity page；阻止非 low confidence / 有实质内容 / 有结构化引用的 page
+  ae-wiki page:demote-candidates [--apply] [--type T] [--limit N] [--max-content-chars N] [--json]
+                                          # 把 legacy low-confidence / weak-mention-only entity page 迁回 entity_candidates；默认 dry-run
   ae-wiki company:metadata-audit [--limit N] [--confidence low|medium|high] [--include-ok] [--json]
                                           # 只读审计 company display_name / aliases / ticker 缺失、异常、重复
   ae-wiki facts:expire [--age N]          # 把 period_end 已过 N 天 (默认 90) 的 latest fact 标 valid_to
+  ae-wiki facts:backfill-links [--apply] [--limit N] [--json]
+                                          # 修复 facts.source_page_id/entity_page_id 缺失的 source->entity facts_block 强链接；默认 dry-run
 
   ae-wiki --help
 
@@ -1100,6 +1104,22 @@ async function main(): Promise<void> {
       break;
     }
 
+    case "facts:backfill-links": {
+      const {
+        backfillFactProvenanceLinks,
+        formatBackfillFactProvenanceLinksReport,
+      } = await import("./skills/facts/provenance-links.ts");
+      const limitStr = getArg("--limit");
+      const report = await backfillFactProvenanceLinks({
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+        dryRun: !getFlag("--apply") || getFlag("--dry-run"),
+        actor: getArg("--actor") ?? "agent:claude",
+      });
+      if (getFlag("--json")) console.log(jsonStringify(report));
+      else console.log(formatBackfillFactProvenanceLinksReport(report));
+      break;
+    }
+
     case "output:write": {
       const subtypeArg = getArg("--subtype");
       const subtype =
@@ -1384,6 +1404,28 @@ async function main(): Promise<void> {
         maxContentChars: maxContentChars ? parseInt(maxContentChars, 10) : undefined,
       });
       console.log(jsonStringify(report));
+      break;
+    }
+
+    case "page:demote-candidates": {
+      const {
+        demotePagesToCandidates,
+        formatDemotePagesToCandidatesReport,
+      } = await import("./skills/page-demote-candidates/index.ts");
+      const limitStr = getArg("--limit");
+      const maxContentChars = getArg("--max-content-chars");
+      const strongWeight = getArg("--strong-weight");
+      const report = await demotePagesToCandidates({
+        type: getArg("--type"),
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+        maxContentChars: maxContentChars ? parseInt(maxContentChars, 10) : undefined,
+        strongWeight: strongWeight ? parseFloat(strongWeight) : undefined,
+        actor: getArg("--actor") ?? "agent:claude",
+        dryRun: !getFlag("--apply") || getFlag("--dry-run"),
+        includeGenericPending: getFlag("--include-generic-pending"),
+      });
+      if (getFlag("--json")) console.log(jsonStringify(report));
+      else console.log(formatDemotePagesToCandidatesReport(report));
       break;
     }
 

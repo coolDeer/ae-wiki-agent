@@ -13,6 +13,7 @@
  *   4. dedupe + normalize（含 pct 自动归一 100→1）
  *   5. 同 (entity, metric, period) 旧 fact 标 valid_to=today（覆盖语义）
  *   6. INSERT 新 fact，metadata.extracted_by ∈ {tier_a, tier_b, tier_c}
+ *   7. 兜底写 source -> entity facts_block 强链接，保持 facts 与 graph 一致
  */
 
 import { eq, and, isNull, sql as drizzleSql } from "drizzle-orm";
@@ -98,6 +99,7 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
   let inserted = 0;
   let skipped = 0;
   let unchanged = 0;
+  let provenanceLinks = 0;
 
   for (const f of candidates) {
     const normalized = await normalize(f, ctx, f.extractedBy, page.content, factsSpec);
@@ -105,6 +107,11 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
       skipped++;
       continue;
     }
+    provenanceLinks += await ensureFactProvenanceLink(
+      ctx,
+      normalized.entity_page_id,
+      normalized.extracted_by
+    );
 
     // 真幂等：先查同 (entity, metric, period) valid_to=NULL 的 current fact，
     // 如果 value/unit 跟新 candidate 完全相同，跳过（不写新版本，不动老 fact）
@@ -195,8 +202,36 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
   }
 
   console.log(
-    `  [stage5] inserted=${inserted} unchanged=${unchanged} skipped=${skipped}`
+    `  [stage5] inserted=${inserted} unchanged=${unchanged} skipped=${skipped} provenance_links=${provenanceLinks}`
   );
+}
+
+async function ensureFactProvenanceLink(
+  ctx: IngestContext,
+  entityPageId: bigint,
+  extractedBy: ExtractedBy
+): Promise<number> {
+  if (ctx.pageId === entityPageId) return 0;
+  const inserted = await db
+    .insert(schema.links)
+    .values(
+      withCreateAudit(
+        {
+          fromPageId: ctx.pageId,
+          toPageId: entityPageId,
+          linkType: "mention",
+          context: `stage5 structured fact (${extractedBy})`,
+          linkSource: "extracted",
+          originPageId: ctx.pageId,
+          originField: "facts_block",
+          weight: "1.20",
+        },
+        ctx.actor
+      )
+    )
+    .onConflictDoNothing()
+    .returning({ id: schema.links.id });
+  return inserted.length;
 }
 
 /**
@@ -279,10 +314,14 @@ async function normalize(
   spec: FactsExtractorSpec
 ): Promise<NormalizedFact | null> {
   if (!f.entity || typeof f.entity !== "string") return null;
+  const entityType = slugToType(f.entity);
+  if (entityType !== "company" && entityType !== "concept" && entityType !== "industry") {
+    return null;
+  }
 
   const entityPageId = await resolveOrCreatePage(f.entity, {
     actor: ctx.actor,
-    autoCreate: slugToType(f.entity) === "company",
+    autoCreate: entityType === "company",
     sourcePageId: ctx.pageId,
   });
   if (!entityPageId) return null;
