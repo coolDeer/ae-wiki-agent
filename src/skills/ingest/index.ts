@@ -302,6 +302,11 @@ export async function ingestSkip(
       updateTime: new Date(),
     })
     .where(eq(schema.pages.id, pageId));
+  const [tagsDeleted, rawDataDeleted, chunksDeleted] = await Promise.all([
+    softDeletePageRows(schema.tags, pageId, actor),
+    softDeletePageRows(schema.rawData, pageId, actor),
+    softDeletePageRows(schema.contentChunks, pageId, actor),
+  ]);
 
   if (rawFileId !== null) {
     await db
@@ -321,7 +326,15 @@ export async function ingestSkip(
     action: "ingest_skip",
     entityType: "page",
     entityId: pageId,
-    payload: { reason, rawFileId: rawFileId?.toString() ?? null },
+    payload: {
+      reason,
+      rawFileId: rawFileId?.toString() ?? null,
+      softDeleted: {
+        tags: tagsDeleted,
+        rawData: rawDataDeleted,
+        contentChunks: chunksDeleted,
+      },
+    },
     createBy: actor,
     updateBy: actor,
   });
@@ -330,6 +343,23 @@ export async function ingestSkip(
     `✓ page #${pageId} skipped${rawFileId ? ` (raw_file #${rawFileId})` : ""}: ${reason}`
   );
   return { rawFileId };
+}
+
+async function softDeletePageRows(
+  table: typeof schema.tags | typeof schema.rawData | typeof schema.contentChunks,
+  pageId: bigint,
+  actor: string
+): Promise<number> {
+  const rows = await db
+    .update(table)
+    .set({
+      deleted: 1,
+      updateBy: actor,
+      updateTime: new Date(),
+    })
+    .where(and(eq(table.pageId, pageId), eq(table.deleted, 0)))
+    .returning({ id: table.id });
+  return rows.length;
 }
 
 /**

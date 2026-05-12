@@ -397,6 +397,15 @@ describe("ingest slug naming", () => {
     expect(normalizeSlugForLookup("companies/600519.SH")).toBe("companies/600519.sh");
   });
 
+  test("auto-created entity slugs use canonical lowercase kebab-case", async () => {
+    ensureTestEnv();
+    const { canonicalSlugForCreate } = await import("../src/skills/ingest/_helpers.ts");
+
+    expect(canonicalSlugForCreate("companies/Lenovo", "company")).toBe("companies/lenovo");
+    expect(canonicalSlugForCreate("companies/Samsung Electronics", "company")).toBe("companies/samsung-electronics");
+    expect(canonicalSlugForCreate("sources/Substack-ABC", "source")).toBe("sources/Substack-ABC");
+  });
+
   test("source slug uses research type plus full research id without date", async () => {
     ensureTestEnv();
     const { buildRawFilePageSlug } = await import("../src/skills/ingest/stage-1-skeleton.ts");

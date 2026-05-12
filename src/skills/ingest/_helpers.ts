@@ -39,7 +39,11 @@ export function normalizeSlugForLookup(slug: string): string {
   return `${dir.toLowerCase()}/${namePart
     .toLowerCase()
     .replace(/[\s_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")}`;
+      .replace(/^-+|-+$/g, "")}`;
+}
+
+export function canonicalSlugForCreate(slug: string, type: PageType | null): string {
+  return shouldCanonicalizeCreatedSlug(type) ? normalizeSlugForLookup(slug) : slug;
 }
 
 export interface ResolveOptions {
@@ -92,6 +96,8 @@ export async function resolveOrCreatePage(
   const inferredType = options.type ?? slugToType(slug);
   const namePart = slug.split("/").slice(1).join("/").trim();
   const normalizedSlug = normalizeSlugForLookup(slug);
+  const createSlug = canonicalSlugForCreate(slug, inferredType);
+  const createNamePart = createSlug.split("/").slice(1).join("/").trim();
 
   // 1. 智能查找（精确 slug → 大小写不敏感 → slug 规范化 → aliases 命中）
   //    type 已知就限定 type，避免跨 type 误命中
@@ -152,6 +158,7 @@ export async function resolveOrCreatePage(
   // 3. 自动建
   //    aliases 默认带上 namePart（保证下次同名不同 case 的 wikilink 能 alias 命中）
   const initialAliases = [
+    ...(createNamePart ? [createNamePart] : []),
     ...(namePart ? [namePart] : []),
     ...(options.initialAliases ?? []),
   ];
@@ -163,9 +170,9 @@ export async function resolveOrCreatePage(
       withCreateAudit(
         {
           sourceId,
-          slug,
+          slug: createSlug,
           type: inferredType,
-          title: slugToTitle(slug),
+          title: slugToTitle(createSlug),
           status: "active",
           confidence: "low", // 自动建的实体标 low，待 enrich
           aliases: aliases.length > 0 ? aliases : undefined,
@@ -181,14 +188,14 @@ export async function resolveOrCreatePage(
     .returning({ id: schema.pages.id });
 
   if (created) {
-    console.log(`  [resolve] 自动建 page: ${slug} (#${created.id}, type=${inferredType})`);
+    console.log(`  [resolve] 自动建 page: ${createSlug} (#${created.id}, type=${inferredType})`);
     // 注意：不在这里入队 enrich！现在改为 notability-gated，由 stage-4 等
     // 显式 backlink 写入后调 maybeEnqueueEnrichForBacklinkGrowth 决定。
     // enqueueEnrich=true 的旧 contract 现在等价于"如果 backlink 数已达阈值才入队"。
     if (enqueueEnrich) {
       await maybeEnqueueEnrichForBacklinkGrowth({
         pageId: created.id,
-        slug,
+        slug: createSlug,
         sourcePageId: options.sourcePageId,
         actor: options.actor,
       });
@@ -201,10 +208,14 @@ export async function resolveOrCreatePage(
     .select({ id: schema.pages.id })
     .from(schema.pages)
     .where(
-      and(eq(schema.pages.sourceId, sourceId), eq(schema.pages.slug, slug))
+      and(eq(schema.pages.sourceId, sourceId), eq(schema.pages.slug, createSlug))
     )
     .limit(1);
   return recheck[0]?.id ?? null;
+}
+
+function shouldCanonicalizeCreatedSlug(type: PageType | null): boolean {
+  return type === "company" || type === "industry" || type === "concept";
 }
 
 function mergeAliases(existing: string[], candidates: string[]): string[] {
