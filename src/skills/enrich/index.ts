@@ -1,7 +1,7 @@
 /**
  * enrich skill
  *
- * 功能：把 Stage 4 自动创建的红链 entity（confidence='low'）补全成正式 wiki 页。
+ * 功能：把 Stage 4 自动创建或 candidate promote 出来的 entity stub 补全成正式 wiki 页。
  *
  * 三段式（同 ingest 思想）：
  *   1. enrich:next   — 选下一个待补全 entity，附带所有 backlink source 的上下文
@@ -14,6 +14,7 @@
 import { eq, and, count, desc, ne, sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { withAudit, withCreateAudit, Actor } from "~/core/audit.ts";
+import { isEntityStateAwaitingEnrich } from "~/core/entity-state.ts";
 import { effectiveBacklinkPredicate } from "~/core/links/policy.ts";
 import type { PageType } from "~/core/schema/pages.ts";
 
@@ -101,6 +102,7 @@ export interface RedlinkContext {
   title: string;
   displayName: string | null;
   ticker: string | null;
+  entityState: string;
   confidence: string | null;
   /** 指向此 page 的 backlink 来源（source 页等）的简要信息 */
   backlinks: Array<{
@@ -124,6 +126,7 @@ async function loadRedlinkContextByPageId(
       title: schema.pages.title,
       displayName: schema.pages.displayName,
       ticker: schema.pages.ticker,
+      entityState: schema.pages.entityState,
       confidence: schema.pages.confidence,
     })
     .from(schema.pages)
@@ -132,7 +135,7 @@ async function loadRedlinkContextByPageId(
 
   if (!target) return null;
   if (target.type === "source") return null;
-  if (!opts.allowNonLow && target.confidence !== "low") return null;
+  if (!opts.allowNonLow && !isEntityStateAwaitingEnrich(target.entityState)) return null;
 
   const backlinkSources = await db
     .select({
@@ -164,6 +167,7 @@ async function loadRedlinkContextByPageId(
     title: target.title,
     displayName: target.displayName,
     ticker: target.ticker,
+    entityState: target.entityState,
     confidence: target.confidence,
     backlinks: backlinkSources.map((b) => ({
       sourcePageId: b.pageId,
@@ -203,10 +207,10 @@ async function hasInFlightEnrichJob(pageId: bigint): Promise<boolean> {
 }
 
 /**
- * 选下一个待 enrich 的红链 page，附带 backlink 上下文。
+ * 选下一个待 enrich 的 entity page，附带 backlink 上下文。
  *
  * 选择策略：
- *   1. confidence='low' 的 entity（Stage 4 自动建的就是 low）
+ *   1. entity_state in ('stub', 'candidate_promoted')
  *   2. 优先 backlink 多的（被频繁提及说明值得补全）
  *   3. 排除 source 类型本身（source 不需要 enrich）
  */
@@ -217,7 +221,7 @@ export async function enrichPrepareNext(opts: {
 } = {}): Promise<RedlinkContext | null> {
   const skip = opts.skip ?? 0;
 
-  // 找候选：confidence='low' 且非 source。这里只做一次粗排，随后再排除已经 in-flight 的 enrich。
+  // 找候选：entity_state 仍待首次 enrich。这里只做一次粗排，随后再排除 in-flight。
   const candidates = await db
     .select({
       id: schema.pages.id,
@@ -225,6 +229,7 @@ export async function enrichPrepareNext(opts: {
       type: schema.pages.type,
       title: schema.pages.title,
       ticker: schema.pages.ticker,
+      entityState: schema.pages.entityState,
       backlinkCount: count(schema.links.id).as("backlink_count"),
     })
     .from(schema.pages)
@@ -238,7 +243,7 @@ export async function enrichPrepareNext(opts: {
     )
     .where(
       and(
-        eq(schema.pages.confidence, "low"),
+        drizzleSql`${schema.pages.entityState} IN ('stub', 'candidate_promoted')`,
         eq(schema.pages.deleted, 0),
         opts.type ? eq(schema.pages.type, opts.type) : undefined,
         opts.type ? undefined : ne(schema.pages.type, "source")
@@ -415,6 +420,7 @@ export async function enrichSave(
       slug: schema.pages.slug,
       type: schema.pages.type,
       displayName: schema.pages.displayName,
+      entityState: schema.pages.entityState,
       confidence: schema.pages.confidence,
     })
     .from(schema.pages)
@@ -495,6 +501,7 @@ export async function enrichSave(
   // 由 stage3AppendNarrative 内部更新（含 page_versions 快照）。
   const updateSet: Record<string, unknown> = {
     frontmatter: mergedFrontmatter,
+    entityState: "compiled",
   };
   const confidenceUpdate = nextEnrichConfidence(existing.confidence, opts.confidence);
   if (confidenceUpdate !== undefined) updateSet.confidence = confidenceUpdate;
@@ -594,6 +601,7 @@ export async function enrichSave(
       plannedConfidence: confidenceUpdate ?? null,
       reviewBlockedConfidenceBump,
       reviewStatus: review.status,
+      entityState: "compiled",
       fieldsSet: Object.keys(opts).filter((k) => opts[k as keyof EnrichSaveOpts] !== undefined),
       aliasesAction,
       aliasesAfter: nextAliases ?? null,
@@ -616,7 +624,7 @@ export async function enrichSave(
       ? `, review=${review.status} kept confidence=${finalConfidenceUpdate}`
       : `, review=${review.status}`;
   console.log(
-    `[enrich:save] page #${pageId} narrative ${narrative.length} chars, confidence=${finalConfidenceUpdate ?? existing.confidence ?? "(unchanged)"}${aliasLog}${scoreLog}${reviewLog}`
+    `[enrich:save] page #${pageId} narrative ${narrative.length} chars, entity_state=compiled, confidence=${finalConfidenceUpdate ?? existing.confidence ?? "(unchanged)"}${aliasLog}${scoreLog}${reviewLog}`
   );
   console.log(formatPageReviewReport(review));
 }
@@ -800,6 +808,7 @@ export async function enrichList(opts: {
   slug: string;
   type: string;
   title: string;
+  entityState: string;
   backlinkCount: number;
 }>> {
   const rows = await db
@@ -808,6 +817,7 @@ export async function enrichList(opts: {
       slug: schema.pages.slug,
       type: schema.pages.type,
       title: schema.pages.title,
+      entityState: schema.pages.entityState,
       backlinkCount: count(schema.links.id).as("backlink_count"),
     })
     .from(schema.pages)
@@ -821,7 +831,7 @@ export async function enrichList(opts: {
     )
     .where(
       and(
-        eq(schema.pages.confidence, "low"),
+        drizzleSql`${schema.pages.entityState} IN ('stub', 'candidate_promoted')`,
         eq(schema.pages.deleted, 0),
         opts.type ? eq(schema.pages.type, opts.type) : undefined
       )
@@ -835,6 +845,7 @@ export async function enrichList(opts: {
     slug: r.slug,
     type: r.type,
     title: r.title,
+    entityState: r.entityState,
     backlinkCount: Number(r.backlinkCount),
   }));
 }

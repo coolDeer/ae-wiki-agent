@@ -2,7 +2,7 @@
  * enrich backlog
  *
  * 把 enrich pipeline 的待处理页收敛成一个运营视图：
- *   - low confidence stub
+ *   - entity stubs awaiting first enrich
  *   - completeness 低
  *   - backlink 多
  *   - 最近有新增 backlinks
@@ -11,6 +11,7 @@
 
 import { sql } from "drizzle-orm";
 
+import { isEntityStateAwaitingEnrich } from "~/core/entity-state.ts";
 import { db } from "~/core/db.ts";
 import { effectiveBacklinkPredicate } from "~/core/links/policy.ts";
 
@@ -21,6 +22,7 @@ export interface EnrichBacklogRow {
   slug: string;
   type: string;
   title: string;
+  entityState: string;
   confidence: string;
   completenessScore: number;
   backlinks: number;
@@ -51,6 +53,7 @@ export interface RawEnrichBacklogRow {
   slug: string;
   type: string;
   title: string;
+  entity_state: string;
   confidence: string;
   completeness_score: string;
   backlinks: number;
@@ -119,6 +122,7 @@ export async function getEnrichBacklog(opts: {
       p.slug,
       p.type,
       p.title,
+      p.entity_state,
       COALESCE(p.confidence, 'unknown') AS confidence,
       p.completeness_score::text AS completeness_score,
       COALESCE(bc.n, 0) AS backlinks,
@@ -137,7 +141,7 @@ export async function getEnrichBacklog(opts: {
       ${typeFilter}
       ${inFlightFilter}
       AND (
-        p.confidence = 'low'
+        p.entity_state IN ('stub', 'candidate_promoted')
         OR p.completeness_score::numeric < 0.6
         OR COALESCE(bc.n, 0) >= 3
       )
@@ -151,6 +155,7 @@ export async function getEnrichBacklog(opts: {
     slug: string;
     type: string;
     title: string;
+    entity_state: string;
     confidence: string;
     completeness_score: string;
     backlinks: number;
@@ -179,14 +184,15 @@ export async function getEnrichBacklog(opts: {
 
 export function mapEnrichBacklogRow(row: RawEnrichBacklogRow): EnrichBacklogRow {
   const completenessScore = parseFloat(row.completeness_score);
+  const awaitingFirstEnrich = isEntityStateAwaitingEnrich(row.entity_state);
   const recommendedAction =
-    row.confidence === "low" && row.backlinks >= 2
+    awaitingFirstEnrich && row.backlinks >= 2
       ? "enrich_now"
       : row.new_backlinks_since_enrich >= 2 || (row.backlinks >= 3 && completenessScore < 0.5)
         ? "retrigger"
         : "monitor";
   const priority =
-    (row.confidence === "low" ? 3 : 1) +
+    (awaitingFirstEnrich ? 3 : 1) +
     Math.min(row.backlinks, 10) +
     Math.max(0, Math.round((0.8 - completenessScore) * 10));
 
@@ -195,6 +201,7 @@ export function mapEnrichBacklogRow(row: RawEnrichBacklogRow): EnrichBacklogRow 
     slug: row.slug,
     type: row.type,
     title: row.title,
+    entityState: row.entity_state,
     confidence: row.confidence,
     completenessScore,
     backlinks: row.backlinks,
@@ -225,7 +232,7 @@ export function formatEnrichBacklog(report: EnrichBacklogReport): string {
       `  priority=${row.priority} action=${row.recommendedAction} [${row.type}] #${row.pageId} ${row.slug}`
     );
     lines.push(
-      `    conf=${row.confidence} score=${row.completenessScore.toFixed(2)} backlinks=${row.backlinks} new=${row.newBacklinksSinceEnrich} inflight=${row.inFlight}`
+      `    state=${row.entityState} conf=${row.confidence} score=${row.completenessScore.toFixed(2)} backlinks=${row.backlinks} new=${row.newBacklinksSinceEnrich} inflight=${row.inFlight}`
     );
   }
   return lines.join("\n");

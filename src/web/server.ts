@@ -289,6 +289,7 @@ export async function startWebServer(opts: ServeOpts = {}): Promise<void> {
                 type: url.searchParams.get("type") ?? undefined,
                 sector: url.searchParams.get("sector") ?? undefined,
                 ticker: url.searchParams.get("ticker") ?? undefined,
+                entityState: url.searchParams.get("entityState") ?? undefined,
                 confidence: url.searchParams.get("confidence") ?? undefined,
               },
               pageReq

@@ -26,7 +26,11 @@ import {
   normalizeFactUnit,
   type FactsExtractorSpec,
 } from "~/core/extractors/facts.ts";
-import { resolveOrCreatePage, slugToType } from "./_helpers.ts";
+import {
+  maybeEnqueueEnrichForBacklinkGrowth,
+  resolveOrCreatePage,
+  slugToType,
+} from "./_helpers.ts";
 import type { IngestContext } from "~/core/types.ts";
 import { extractTierA } from "./stage-5-tier-a.ts";
 import { extractTierBFromTables } from "./stage-5-tier-b.ts";
@@ -51,13 +55,14 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
   if (!page) return;
   const factsSpec = matchFactsSpec(page.type);
   const researchType = getResearchType(page.frontmatter);
+  const explicitFactsOnly = usesExplicitFactsOnly(page.type, researchType);
 
   const tierA: CandidateFact[] = extractTierA(page.content).map((fact) => ({
     ...fact,
     extractedBy: "tier_a" as const,
   }));
   const tierB: CandidateFact[] =
-    researchType === "meeting_minutes"
+    explicitFactsOnly
       ? []
       : (
           await extractTierBFromTables(ctx.pageId, page.content, factsSpec)
@@ -67,9 +72,9 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
   console.log(`  [stage5] tier B: ${tierB.length} candidate facts`);
 
   let tierC: CandidateFact[] = [];
-  if (researchType === "meeting_minutes") {
+  if (explicitFactsOnly) {
     console.log(
-      "  [stage5] tier B/C disabled for meeting_minutes; rely on explicit facts block only"
+      `  [stage5] tier B/C disabled for ${explicitFactsOnly}; rely on explicit facts block only`
     );
   } else {
     // Tier C：把 A+B 已有的 (entity, metric, period) 传过去，让 LLM 只补漏
@@ -151,6 +156,12 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
           .where(eq(schema.facts.id, current.id));
       }
       unchanged++;
+      await maybeEnqueueEnrichForBacklinkGrowth({
+        pageId: normalized.entity_page_id,
+        slug: f.entity,
+        sourcePageId: ctx.pageId,
+        actor: ctx.actor,
+      });
       continue;
     }
 
@@ -199,11 +210,26 @@ export async function stage5Facts(ctx: IngestContext): Promise<void> {
       )
     );
     inserted++;
+    await maybeEnqueueEnrichForBacklinkGrowth({
+      pageId: normalized.entity_page_id,
+      slug: f.entity,
+      sourcePageId: ctx.pageId,
+      actor: ctx.actor,
+    });
   }
 
   console.log(
     `  [stage5] inserted=${inserted} unchanged=${unchanged} skipped=${skipped} provenance_links=${provenanceLinks}`
   );
+}
+
+export function usesExplicitFactsOnly(
+  pageType: string,
+  researchType: string | null
+): "brief" | "meeting_minutes" | null {
+  if (pageType === "brief") return "brief";
+  if (researchType === "meeting_minutes") return "meeting_minutes";
+  return null;
 }
 
 async function ensureFactProvenanceLink(

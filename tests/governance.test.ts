@@ -102,6 +102,7 @@ function entityRow(overrides: Partial<import("../src/skills/entity-refresh/index
     slug: "companies/Micron",
     type: "company" as const,
     title: "Micron",
+    entityState: "compiled",
     confidence: "medium",
     completenessScore: 0.7,
     updatedAt: "2026-05-01T00:00:00.000Z",
@@ -387,6 +388,38 @@ describe("link weight policy", () => {
   });
 });
 
+describe("enrich evidence gate", () => {
+  test("structured facts and timeline evidence can trigger enrich without backlink threshold", async () => {
+    ensureTestEnv();
+    const { shouldEnqueueEnrichForEvidence } = await import("../src/skills/ingest/_helpers.ts");
+
+    expect(
+      shouldEnqueueEnrichForEvidence({
+        backlinkCount: 1,
+        factCount: 3,
+        timelineCount: 0,
+        backlinkThreshold: 3,
+      }).shouldEnqueue
+    ).toBe(true);
+    expect(
+      shouldEnqueueEnrichForEvidence({
+        backlinkCount: 0,
+        factCount: 0,
+        timelineCount: 1,
+        backlinkThreshold: 3,
+      }).shouldEnqueue
+    ).toBe(true);
+    expect(
+      shouldEnqueueEnrichForEvidence({
+        backlinkCount: 1,
+        factCount: 2,
+        timelineCount: 0,
+        backlinkThreshold: 3,
+      }).shouldEnqueue
+    ).toBe(false);
+  });
+});
+
 describe("ingest slug naming", () => {
   test("normalizes entity slugs for lookup without changing canonical storage", async () => {
     ensureTestEnv();
@@ -436,6 +469,15 @@ describe("ingest slug naming", () => {
 });
 
 describe("stage 5 fact values", () => {
+  test("brief and meeting minutes use explicit facts only", async () => {
+    ensureTestEnv();
+    const { usesExplicitFactsOnly } = await import("../src/skills/ingest/stage-5-facts.ts");
+
+    expect(usesExplicitFactsOnly("brief", "substack")).toBe("brief");
+    expect(usesExplicitFactsOnly("source", "meeting_minutes")).toBe("meeting_minutes");
+    expect(usesExplicitFactsOnly("source", "substack")).toBeNull();
+  });
+
   test("evidence context expands source quote with surrounding narrative", async () => {
     ensureTestEnv();
     const { buildEvidenceContext } = await import("../src/skills/ingest/stage-5-facts.ts");
@@ -762,7 +804,7 @@ describe("facts coverage", () => {
 });
 
 describe("enrich backlog", () => {
-  test("low confidence with backlinks is enrich_now", async () => {
+  test("entity stub with backlinks is enrich_now", async () => {
     ensureTestEnv();
     const { mapEnrichBacklogRow } = await import("../src/skills/enrich/backlog.ts");
     const row = mapEnrichBacklogRow({
@@ -770,6 +812,7 @@ describe("enrich backlog", () => {
       slug: "companies/Stub",
       type: "company",
       title: "Stub",
+      entity_state: "stub",
       confidence: "low",
       completeness_score: "0.20",
       backlinks: 3,
@@ -790,6 +833,7 @@ describe("enrich backlog", () => {
       slug: "companies/Known",
       type: "company",
       title: "Known",
+      entity_state: "compiled",
       confidence: "medium",
       completeness_score: "0.45",
       backlinks: 3,
@@ -799,6 +843,20 @@ describe("enrich backlog", () => {
     });
 
     expect(row.recommendedAction).toBe("retrigger");
+  });
+});
+
+describe("entity lifecycle state", () => {
+  test("separates first-enrich lifecycle from writing confidence", async () => {
+    ensureTestEnv();
+    const { isEntityStateAwaitingEnrich, normalizeEntityState } = await import(
+      "../src/core/entity-state.ts"
+    );
+
+    expect(isEntityStateAwaitingEnrich("stub")).toBe(true);
+    expect(isEntityStateAwaitingEnrich("candidate_promoted")).toBe(true);
+    expect(isEntityStateAwaitingEnrich("compiled")).toBe(false);
+    expect(normalizeEntityState("low")).toBe("compiled");
   });
 });
 

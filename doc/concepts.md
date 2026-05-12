@@ -229,7 +229,7 @@ ingest Stage 4 从 `pages.content` 抽出所有 wikilink slug：
 ```
 slug 已存在？─┬─是 → 拿 pageId
               └─否 → 自动建空壳 page
-                       confidence='low'           ← 红链标记
+                       entity_state='stub'        ← 红链生命周期状态
                        title=slug 末尾段
                        content=NULL               ← 等 enrich
                        入队 enrich_entity job     ← 后台补全
@@ -453,7 +453,7 @@ signals (
 | 1 | `ingest:commit` / `:brief` | 建 page 骨架（slug + type + frontmatter） | `pages` + events |
 | 2 | 同上 | V2 chunker → chunks; V2 table → sidecar | `content_chunks` + `raw_data` |
 | 3 | `ingest:write` | 落 narrative；`<!-- timeline -->` 切给 page.timeline；frontmatter 合并 | `pages.content` + `page_versions` |
-| 4 | `ingest:finalize` | wikilink → links + 自动建红链 + 入队 enrich | `links` + `pages` (低 confidence) + `minion_jobs` |
+| 4 | `ingest:finalize` | wikilink → links + 自动建红链 + 入队 enrich | `links` + `pages` (`entity_state='stub'`) + `minion_jobs` |
 | 5 | 同上 | 三层 fact 抽取（A YAML / B 表格 / C LLM） | `facts` |
 | 6 | 同上 | 入队 embed_chunks + detect_signals jobs | `minion_jobs` |
 | 7 | 同上 | timeline YAML → entries | `timeline_entries` |
@@ -567,7 +567,7 @@ query
 | 「光模块产业链有哪些公司」 | `pages` + `links` | MCP `search` + `get_page` |
 | 「我的多头论点状态」 | `theses` | `bun src/cli.ts thesis:list` 或 MCP `list_entities('thesis')` |
 | 「最近 7 天新 ingest 了什么」 | `events` + `pages` | MCP `recent_activity` |
-| 「哪些公司还没 enrich」 | `pages WHERE confidence='low'` | `bun src/cli.ts enrich:list` |
+| 「哪些公司还没 enrich」 | `pages WHERE entity_state IN ('stub','candidate_promoted')` | `bun src/cli.ts enrich:list` |
 | 「3/15 时 Arete 估的 NVDA FY27 EPS」 | `facts WHERE valid_from <= '2026-03-15' AND (valid_to IS NULL OR valid_to > '2026-03-15')` | 暂无 MCP，要扩展 |
 
 ---
@@ -623,7 +623,7 @@ Consumer 链 (读 + 生成)                                                     
 1. **万物皆 page** — 一种数据形态对齐 search / 反链 / 审计
 2. **三选一 triage** — `commit (深度)` / `brief (轻量)` / `pass (噪声)`
 3. **content_chunks 给搜索，raw_data 给精确取数** — 两条管道都从 V2 派生
-4. **Wikilink 自动长出红链 entity** — `confidence='low'` → 后台 enrich 升级
+4. **Wikilink 自动长出红链 entity** — `entity_state='stub'` → 后台 enrich 升级
 5. **facts 是时间旅行** — 旧值 `valid_to=today`，新值 `valid_to=NULL`
 6. **enrich 让 wiki 长出来，thesis-track 让 wiki 帮你做决策** — 一个填内容，一个跑状态机
 

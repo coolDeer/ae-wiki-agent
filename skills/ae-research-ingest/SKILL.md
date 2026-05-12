@@ -165,6 +165,7 @@ cd ae-wiki-agent && bun src/cli.ts ingest:commit <rawFileId>
 
 **Add a YAML frontmatter block at the top of every source narrative.** At minimum, include `tags`, `view_side`, `time_horizon`, and `primary_entities`.
 Immediately after frontmatter, add an `entity_plan` HTML comment. Treat it as the pre-write entity decision record: existing pages to reuse, strong-evidence new company candidates, soft concept / industry candidates, and noise mentions that should not enter the graph.
+`entity_plan` is a review/governance artifact only. It is not an execution input: writing `new_company_candidates` or `soft_candidates` there does not create pages, insert `entity_candidates`, or write links. The execution inputs are the actual wikilinks in the narrative, `frontmatter.primary_entities`, and explicit facts / timeline blocks.
 Before writing any wikilink or entity_plan slug, search/reuse existing wiki pages and copy the exact canonical slug. Do not Title Case slugs such as `industries/Precious Metals` when `industries/precious-metals` already exists.
 
 ```markdown
@@ -307,6 +308,7 @@ Additional rules for `meeting_minutes`:
 
 - Page review：source narrative 必须带 `<!-- entity_plan ... -->`
   - `entity_plan` 是 agent 写 narrative 前的实体分层草稿，用来区分已存在实体、强证据新公司、软边界 concept/industry、噪声 mention
+  - `entity_plan` 只用于 review / governance；不会自动进入 `entity_candidates`，也不会自动建 page。真正执行仍靠 narrative wikilink、`primary_entities`、facts block、timeline block
   - `primary_entities` 保持 company-first；缺失 concept/industry 不要靠 `primary_entities` 推进主库，先放在 `entity_plan.soft_candidates`
   - `page:review` 会对缺失 entity_plan、或 `primary_entities` 里出现 concept/industry 给 warning
   - 写 wikilink 前先 search 并复用 exact canonical slug；大小写/空格/短横线写错会变成 candidate 或弱边修复工作
@@ -442,7 +444,7 @@ platform: twitter
 | Wikilink 类型                                                   | 红链行为                                                                     | 你应该怎么做                   |
 | ------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------ |
 | 指向已有 `companies/` `concepts/` `industries/` page 的 wikilink | stage-4 写入 link；安全中文 display label 会 merge 到 aliases                   | 直接写，但先 search / 复用已有 slug |
-| 缺失 `company` 且出现在 `primary_entities`、facts block、timeline block | stage-4 允许 **自动建 company stub**（confidence='low'），后续 enrich / refresh 补全 | 只放真正核心或结构化证据主体           |
+| 缺失 `company` 且出现在 `primary_entities`、facts block、timeline block | stage-4 允许 **自动建 company stub**（`entity_state='stub'`），后续 enrich / refresh 补全 | 只放真正核心或结构化证据主体           |
 | 缺失 `concept` / `industry`，即使出现在 `primary_entities`、facts block、timeline block | stage-4 不建 page；写 unresolved event + `entity_candidates`，等待 promote / merge / reject | 先 candidate review，避免软边界 entity 膨胀 |
 | 普通正文里提到但找不到 page 的 `companies/` `concepts/` `industries/` | stage-4 不建 page；写 unresolved event + `entity_candidates` 候选池              | 可以写，但不要期待马上进入主图谱         |
 | `[[sources/X]]` `[[theses/X]]` `[[outputs/X]]` `[[briefs/X]]` | stage-4 **拒绝 auto-create**，只记 `events.action='wikilink_unresolved'`，链不入库 | **必须先验证存在**，否则改写成纯文本     |

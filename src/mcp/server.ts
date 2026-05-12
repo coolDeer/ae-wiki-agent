@@ -211,7 +211,11 @@ const TOOLS = [
         ticker: { type: "string" },
         confidence: {
           type: "string",
-          description: "high / medium / low (low = auto-created stubs)",
+          description: "agent writing confidence: high / medium / low",
+        },
+        entityState: {
+          type: "string",
+          description: "entity lifecycle state: stub / candidate_promoted / compiled",
         },
         limit: { type: "number" },
       },

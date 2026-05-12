@@ -4,12 +4,12 @@
  * 找出"应当被引用但没有任何入站 link"的实体页——也就是 Stage 4 自动建出来
  * 但没人接着指过去的孤儿 stub。是 red-link explosion 的可见表现：
  * narrative 提到了一个新公司 → 红链建空 stub → 那篇 source ingest 完之后
- * 再没人提到它 → 永远停在 confidence='low' 不会被 enrich pipeline 拣起来。
+ * 再没人提到它 → 永远停在 entity_state='stub' 不会被 enrich pipeline 拣起来。
  *
  * 设计参考 gbrain `gbrain orphans` 命令：
  *   - 仅检查"应当有反向链接"的 type（company / industry / concept / thesis）
  *   - 自动排除 source / brief / output（这些类型本来就是叶子页，不需要被反链）
- *   - 返回完整 page 元数据（slug + title + age + confidence），便于 agent 决策
+ *   - 返回完整 page 元数据（slug + title + age + entity_state），便于 agent 决策
  *   - 跟 lint:run 解耦：可以频繁调用且不写 events
  *
  * 跟 lint:run 的 `orphan_pages` 检查的关系：
@@ -18,6 +18,7 @@
  */
 
 import { sql } from "drizzle-orm";
+import type { PageEntityState } from "~/core/entity-state.ts";
 import { db } from "~/core/db.ts";
 
 /** 把 string[] 包成 SQL `IN (...)` 子句的内部 list（避开 `= ANY(${arr})` 在 drizzle template 里绑定不可靠的问题）*/
@@ -43,6 +44,7 @@ export interface OrphanRow {
   slug: string;
   type: string;
   title: string;
+  entityState: string;
   confidence: string;
   createTime: string;
   daysOld: number;
@@ -53,6 +55,8 @@ export interface OrphanFilters {
   type?: string;
   /** 限定 confidence；不传则查所有 */
   confidence?: "low" | "medium" | "high";
+  /** 限定 entity lifecycle state；不传则查所有 */
+  entityState?: PageEntityState;
   /** 仅返回 ≥ N 天的 page（避免误报刚建的）*/
   minAgeDays?: number;
   /** 最多返回 N 条；默认 50 */
@@ -64,6 +68,7 @@ export interface OrphanReport {
   filters: {
     type: string | null;
     confidence: string | null;
+    entityState: string | null;
     minAgeDays: number;
     limit: number;
     excludedTypes: string[];
@@ -96,6 +101,9 @@ export async function findOrphans(
   const confFilter = opts.confidence
     ? sql`AND p.confidence = ${opts.confidence}`
     : sql``;
+  const entityStateFilter = opts.entityState
+    ? sql`AND p.entity_state = ${opts.entityState}`
+    : sql``;
   const ageFilter =
     minAgeDays > 0
       ? sql`AND p.create_time < NOW() - (${minAgeDays}::int * INTERVAL '1 day')`
@@ -108,13 +116,15 @@ export async function findOrphans(
       p.slug,
       p.type,
       p.title,
-      p.confidence,
+      p.entity_state,
+      COALESCE(p.confidence, 'unknown') AS confidence,
       p.create_time,
       EXTRACT(DAY FROM (NOW() - p.create_time))::int AS days_old
     FROM pages p
     WHERE p.deleted = 0
       AND p.type IN (${inList(effectiveTypes)})
       ${confFilter}
+      ${entityStateFilter}
       ${ageFilter}
       AND NOT EXISTS (
         SELECT 1 FROM links l
@@ -127,6 +137,7 @@ export async function findOrphans(
     slug: string;
     type: string;
     title: string;
+    entity_state: string;
     confidence: string;
     create_time: Date | string;
     days_old: number;
@@ -139,6 +150,7 @@ export async function findOrphans(
     WHERE p.deleted = 0
       AND p.type IN (${inList(effectiveTypes)})
       ${confFilter}
+      ${entityStateFilter}
       ${ageFilter}
       AND NOT EXISTS (
         SELECT 1 FROM links l
@@ -153,6 +165,7 @@ export async function findOrphans(
     WHERE p.deleted = 0
       AND p.type IN (${inList(effectiveTypes)})
       ${confFilter}
+      ${entityStateFilter}
       ${ageFilter}
   `)) as Array<{ n: number }>;
 
@@ -166,6 +179,7 @@ export async function findOrphans(
     filters: {
       type: opts.type ?? null,
       confidence: opts.confidence ?? null,
+      entityState: opts.entityState ?? null,
       minAgeDays,
       limit,
       excludedTypes: Array.from(EXCLUDED_TYPES),
@@ -178,6 +192,7 @@ export async function findOrphans(
       slug: r.slug,
       type: r.type,
       title: r.title,
+      entityState: r.entity_state,
       confidence: r.confidence,
       createTime:
         r.create_time instanceof Date
@@ -197,14 +212,14 @@ export function formatOrphanTable(report: OrphanReport): string {
   if (orphans.length === 0) {
     return [
       `No orphans matching filter`,
-      `  type=${filters.type ?? "(all linkable)"}, confidence=${filters.confidence ?? "(any)"}, min_age=${filters.minAgeDays}d`,
+      `  type=${filters.type ?? "(all linkable)"}, entity_state=${filters.entityState ?? "(any)"}, confidence=${filters.confidence ?? "(any)"}, min_age=${filters.minAgeDays}d`,
       `  total_pages=${totalPages}, linkable=${totalLinkable}, orphans=${totalOrphans}`,
     ].join("\n");
   }
 
   const header = [
     `Orphans (${orphans.length}/${totalOrphans} shown; ${totalLinkable} linkable / ${totalPages} total active pages)`,
-    `  filter: type=${filters.type ?? "(all linkable)"}, confidence=${filters.confidence ?? "(any)"}, min_age=${filters.minAgeDays}d`,
+    `  filter: type=${filters.type ?? "(all linkable)"}, entity_state=${filters.entityState ?? "(any)"}, confidence=${filters.confidence ?? "(any)"}, min_age=${filters.minAgeDays}d`,
     "",
   ];
 
@@ -222,7 +237,7 @@ export function formatOrphanTable(report: OrphanReport): string {
     for (const r of rows) {
       const ageLabel = r.daysOld <= 0 ? "<1d" : `${r.daysOld}d`;
       lines.push(
-        `  #${r.pageId.padEnd(4)} ${r.slug.padEnd(50)}  ${r.confidence.padEnd(6)}  age=${ageLabel}`
+        `  #${r.pageId.padEnd(4)} ${r.slug.padEnd(50)}  ${r.entityState.padEnd(18)}  conf=${r.confidence.padEnd(6)}  age=${ageLabel}`
       );
     }
     lines.push("");

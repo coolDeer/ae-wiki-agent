@@ -43,7 +43,10 @@ export function fmtSh(
 /** 渲染 page.content（含 [[wikilink]] / <!-- facts/timeline -->） */
 export function renderMarkdown(
   content: string,
-  opts: { evidenceContexts?: Record<string, string> } = {}
+  opts: {
+    evidenceContexts?: Record<string, string>;
+    wikilinkLabels?: Record<string, string>;
+  } = {}
 ): string {
   // 删 <!-- facts --> / <!-- timeline --> block，给视图单独显示
   const stripped = content
@@ -52,14 +55,15 @@ export function renderMarkdown(
     // Escape lone ~ (approximation sign) so marked GFM doesn't treat it as <del>
     .replace(/(?<!~)~(?!~)/g, "\\~");
   // [[wikilinks]] → 带链接的 <a>
-  // 没有 pipe display 时，用 slug 的 name 部分（"companies/catl" → "catl"）
-  // 而非完整 slug，更接近 display_name 形态。如果想要品牌大写，agent 应写
+  // 没有 pipe display 时，优先用调用方传入的 label；否则回退到 slug 的 name
+  // 部分（"companies/catl" → "catl"）。如果想要固定展示，agent 应写
   // `[[companies/catl|CATL]]` 显式指定。
   const linked = stripped.replace(
     /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
     (_m, slug, text) => {
-      const display = text || slug.split("/").pop() || slug;
-      return `<a href="${pageHref(slug)}" class="wikilink">${escape(display)}</a>`;
+      const target = String(slug).trim();
+      const display = text || opts.wikilinkLabels?.[target] || target.split("/").pop() || target;
+      return `<a href="${pageHref(target)}" class="wikilink" title="${escape(target)}">${escape(display)}</a>`;
     }
   );
   return enhanceFactualClaimsQuotes(marked.parse(linked) as string, opts.evidenceContexts ?? {});
@@ -236,6 +240,10 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
 .tag.confidence-low { color: var(--negative); border-color: var(--negative); }
 .tag.confidence-medium { color: var(--warning); border-color: var(--warning); }
 .tag.confidence-high { color: var(--positive); border-color: var(--positive); }
+.tag.entity-state-stub { color: var(--negative); border-color: var(--negative); }
+.tag.entity-state-candidate_promoted { color: var(--warning); border-color: var(--warning); }
+.tag.entity-state-compiled { color: var(--positive); border-color: var(--positive); }
+.tag.entity-state-awaiting_enrich { color: var(--warning); border-color: var(--warning); }
 .tag.severity-info { color: var(--accent); border-color: var(--accent); }
 .tag.severity-warning { color: var(--warning); border-color: var(--warning); }
 .tag.severity-critical { color: var(--negative); border-color: var(--negative); }
@@ -722,7 +730,7 @@ export function layout({ title, body, query = "", flash }: LayoutOpts): string {
     <nav>
       <a href="/chat">Chat</a>
       <a href="/theses">Theses</a>
-      <a href="/entities?confidence=low">Red Links</a>
+      <a href="/entities?entityState=awaiting_enrich">Awaiting enrich</a>
       <a href="/entities">Entities</a>
       <a href="/outputs">Outputs</a>
       <a href="/queue">Queue</a>
@@ -751,6 +759,20 @@ export function pageTag(type: string): string {
 export function confidenceTag(c: string | null): string {
   if (!c) return "";
   return `<span class="tag confidence-${escape(c)}">${escape(c)}</span>`;
+}
+
+export function entityStateLabel(state: string | null | undefined): string {
+  if (state === "candidate_promoted") return "candidate promoted";
+  if (state === "awaiting_enrich") return "awaiting enrich";
+  if (state === "stub") return "stub";
+  if (state === "compiled") return "compiled";
+  return "";
+}
+
+export function entityStateTag(state: string | null | undefined): string {
+  const label = entityStateLabel(state);
+  if (!label || !state) return "";
+  return `<span class="tag entity-state-${escape(state)}">${escape(label)}</span>`;
 }
 
 /**

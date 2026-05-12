@@ -2,6 +2,7 @@ import { and, eq, gt, inArray, sql } from "drizzle-orm";
 
 import { Actor, withCreateAudit } from "~/core/audit.ts";
 import { db, schema } from "~/core/db.ts";
+import { isEntityStateAwaitingEnrich } from "~/core/entity-state.ts";
 import { getEnv } from "~/core/env.ts";
 import { addJob } from "~/core/minions/queue.ts";
 
@@ -41,6 +42,7 @@ export interface EntityRow {
   slug: string;
   type: EligibleType;
   title: string;
+  entityState: string;
   confidence: string | null;
   completenessScore: number;
   updatedAt: string;
@@ -477,12 +479,14 @@ async function loadEntityRows(type: string | undefined, limit: number): Promise<
         p.slug,
         p.type,
         p.title,
+        p.entity_state,
         p.confidence,
         p.completeness_score,
         p.update_time
       FROM pages p
       WHERE p.deleted = 0
         AND p.type IN (${sql.join(ELIGIBLE_TYPES.map((v) => sql`${v}`), sql`, `)})
+        AND p.entity_state = 'compiled'
         ${typeFilter}
     ),
     source_evidence AS (
@@ -554,6 +558,7 @@ async function loadEntityRows(type: string | undefined, limit: number): Promise<
       ep.slug,
       ep.type,
       ep.title,
+      ep.entity_state,
       ep.confidence,
       COALESCE(ep.completeness_score::text, '0') AS completeness_score,
       ep.update_time,
@@ -579,6 +584,7 @@ async function loadEntityRows(type: string | undefined, limit: number): Promise<
     slug: string;
     type: EligibleType;
     title: string;
+    entity_state: string;
     confidence: string | null;
     completeness_score: string;
     update_time: Date | string;
@@ -612,6 +618,7 @@ async function loadEntityRows(type: string | undefined, limit: number): Promise<
         slug: row.slug,
         type: row.type,
         title: row.title,
+        entityState: row.entity_state,
         confidence: row.confidence,
         completenessScore: parseFloat(row.completeness_score),
         updatedAt: updatedAtIso,
@@ -891,6 +898,7 @@ async function getEntityRefreshSkipReason(pageId: string): Promise<string | null
   const [page] = await db
     .select({
       type: schema.pages.type,
+      entityState: schema.pages.entityState,
       confidence: schema.pages.confidence,
       displayName: schema.pages.displayName,
       content: schema.pages.content,
@@ -901,7 +909,9 @@ async function getEntityRefreshSkipReason(pageId: string): Promise<string | null
   if (!page) return "page-not-found";
 
   if (await hasInFlightEnrichJob(pageId)) return "enrich-in-flight";
-  if (page.confidence === "low") return "needs-enrich-confidence-low";
+  if (isEntityStateAwaitingEnrich(page.entityState)) {
+    return `needs-enrich-entity-state-${page.entityState}`;
+  }
   if ((page.content ?? "").trim().length < MIN_REFRESHABLE_CONTENT_CHARS) {
     return "needs-enrich-short-content";
   }
@@ -947,7 +957,7 @@ function buildEntityRefreshJobPrompt(
 ): string {
   return [
     `Run an entity refresh for [[${row.slug}|${row.title}]] (#${row.pageId}).`,
-    `Entity type=${row.type}, confidence=${row.confidence ?? "unknown"}, completeness=${row.completenessScore.toFixed(2)}.`,
+    `Entity type=${row.type}, state=${row.entityState}, confidence=${row.confidence ?? "unknown"}, completeness=${row.completenessScore.toFixed(2)}.`,
     `Trigger source page id=${opts.sourcePageId ?? "unknown"}; recommended_action=${row.recommendedAction}.`,
     `Evidence counts since the compiled page update: sources=${row.newSources}, facts=${row.newFacts}, timeline=${row.newTimelineEntries}, signals=${row.newSignals}, lag_days=${row.daysBehind}.`,
     `Reasons: ${row.reasons.join("; ") || "new structured evidence"}.`,

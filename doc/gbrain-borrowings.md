@@ -179,7 +179,7 @@
 
 ### ⬜ 9. Notability gate（防止脏 entity 入库）
 
-**当前状态**：Stage 4 任何 wikilink 都建 page（confidence='low'）。9 entity 里有 1-2 个是脏的（如 "Texas Instruments" 因为一句感谢就建了）。
+**历史状态**：Stage 4 曾经任何 wikilink 都建 page（旧语义用 `confidence='low'` 标记红链）。9 entity 里有 1-2 个是脏的（如 "Texas Instruments" 因为一句感谢就建了）。当前已改为 strong-evidence auto-create + `entity_state='stub'`。
 
 **gbrain 实现**：`demo/gbrain/skills/_brain-filing-rules.md`
 

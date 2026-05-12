@@ -90,7 +90,11 @@ CREATE TABLE IF NOT EXISTS pages (
 
   -- 状态
   status       TEXT        NOT NULL DEFAULT 'active',           -- 'active' | 'draft' | 'archived'
-  confidence   TEXT,                                            -- 'high' | 'medium' | 'low'
+  entity_state TEXT        NOT NULL DEFAULT 'compiled' CHECK (entity_state IN ('stub','candidate_promoted','compiled')),
+                                                                 -- stub lifecycle, separate from writing confidence
+  confidence   TEXT,                                            -- agent writing confidence: 'high' | 'medium' | 'low'
+  tier         SMALLINT    NOT NULL DEFAULT 3,                   -- enrich cost tier: 1 core / 3 tail
+  completeness_score NUMERIC(4, 3) NOT NULL DEFAULT 0,           -- deterministic page completeness score
 
   -- 标准审计字段
   extend       JSONB,
@@ -595,6 +599,7 @@ CREATE INDEX IF NOT EXISTS idx_pages_frontmatter ON pages USING GIN (frontmatter
 CREATE INDEX IF NOT EXISTS idx_pages_sector      ON pages (sector) WHERE sector IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_pages_tsv         ON pages USING GIN (tsv);
 CREATE INDEX IF NOT EXISTS idx_pages_embedding   ON pages USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_pages_entity_state ON pages (entity_state, type, update_time DESC) WHERE deleted = 0;
 CREATE INDEX IF NOT EXISTS idx_pages_updated     ON pages (update_time DESC);
 CREATE INDEX IF NOT EXISTS idx_pages_title_trgm  ON pages USING GIN (title gin_trgm_ops) WHERE deleted = 0;
 CREATE INDEX IF NOT EXISTS idx_pages_slug_trgm   ON pages USING GIN (slug  gin_trgm_ops) WHERE deleted = 0;

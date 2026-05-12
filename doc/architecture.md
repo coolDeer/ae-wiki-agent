@@ -1068,7 +1068,7 @@ ON CONFLICT (id) DO NOTHING;
     │   ingest:write <pageId>  (stdin 落 narrative + page_versions 快照)
     │       ↓
     │   ingest:finalize <pageId>
-    │       ├─ Stage 4 链接抽取：[[wikilink]] → links；红链自动建 page (confidence='low')
+    │       ├─ Stage 4 链接抽取：[[wikilink]] → links；红链自动建 page (entity_state='stub')
     │       │           红链同时入队 minion_jobs(name='enrich_entity')
     │       ├─ Stage 5 facts：Tier A YAML 直读（已上线）/ Tier B 正则（已跳过）/ Tier C LLM（TODO，决策跳 B 直 C）
     │       ├─ Stage 6 jobs：minion_jobs(embed_chunks, detect_signals) 入队
@@ -1236,7 +1236,7 @@ ae-research-ingest (peek/commit/brief/pass → write → finalize)
     ├→ pages (source/brief)
     ├→ content_chunks
     ├→ facts (Tier A YAML)
-    ├→ links + 红链 pages (confidence='low') → minion_jobs(enrich_entity)
+    ├→ links + 红链 pages (entity_state='stub') → minion_jobs(enrich_entity)
     ├→ timeline_entries
     └→ signals (Stage 8 命中 active thesis)
          ↓
@@ -1439,7 +1439,7 @@ gbrain 有但我们暂不做的：
 | Thin Harness, Fat Skill | core 不调 LLM；推理 push 到 `SKILL.md` | ✅ 已落地 |
 | Fact 抽取策略  | Tier A YAML 直读已上；Tier B 正则跳过；Tier C LLM 待补 | 🟡 部分 |
 | Triage     | ingest 入口三分（commit / brief / pass） | ✅ 已落地（v2.4 + v2.5.1） |
-| Entity 自动建 | 自动 + `confidence='low'` 标记 + Stage 4 入队 enrich_entity job | ✅ 已落地 |
+| Entity 自动建 | 自动 + `entity_state='stub'` 标记 + evidence gate 入队 enrich_entity job | ✅ 已落地 |
 | Thesis 维护  | 半自动（ingest Stage 8 + worker detect_signals 写 signal）+ PM/agent CLI 走状态机 | ✅ 已落地 |
 | Agent runtime | 双轨：Claude Code 主会话 + OpenAI gpt-5-mini durable runtime（同一份 SKILL.md）| ✅ 已落地（v2.6.0） |
 | 异步队列     | Postgres `minion_jobs` (FOR UPDATE SKIP LOCKED) | ✅ 已落地 |

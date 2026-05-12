@@ -530,6 +530,7 @@ async function loadPage(ident: string): Promise<{
   id: bigint;
   slug: string;
   type: string;
+  entityState: string;
   aliases: string[] | null;
 } | null> {
   const isId = /^\d+$/.test(ident);
@@ -538,6 +539,7 @@ async function loadPage(ident: string): Promise<{
       id: schema.pages.id,
       slug: schema.pages.slug,
       type: schema.pages.type,
+      entityState: schema.pages.entityState,
       aliases: schema.pages.aliases,
     })
     .from(schema.pages)
@@ -553,7 +555,15 @@ async function loadPage(ident: string): Promise<{
 
 async function ensureCandidatePage(candidate: EntityCandidateRow, actor: string): Promise<bigint> {
   const existing = await loadPage(candidate.proposedSlug);
-  if (existing) return existing.id;
+  if (existing) {
+    if (existing.entityState === "stub") {
+      await db
+        .update(schema.pages)
+        .set(withAudit({ entityState: "candidate_promoted" }, actor))
+        .where(eq(schema.pages.id, existing.id));
+    }
+    return existing.id;
+  }
   const [created] = await db
     .insert(schema.pages)
     .values(
@@ -565,7 +575,7 @@ async function ensureCandidatePage(candidate: EntityCandidateRow, actor: string)
           title: candidate.displayName ?? slugToTitle(candidate.proposedSlug),
           displayName: candidate.displayName,
           status: "active",
-          confidence: "low",
+          entityState: "candidate_promoted",
           aliases: candidate.aliases.length > 0 ? candidate.aliases : undefined,
         },
         actor

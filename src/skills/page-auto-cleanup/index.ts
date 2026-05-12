@@ -6,7 +6,7 @@
  *   2. dry-run each candidate through page:merge
  *   3. apply only candidates that still pass the safety gate
  *   4. rescan until stable or maxPasses is reached
- *   5. optionally retire low-confidence orphan stubs after merge convergence
+ *   5. optionally retire orphan entity stubs after merge convergence
  */
 
 import {
@@ -467,13 +467,13 @@ async function runRetirements(
     opts.type && RETIRABLE_TYPES.has(opts.type) ? opts.type : undefined;
   const orphanReport = await findOrphans({
     type: orphanType,
-    confidence: "low",
+    entityState: "stub",
     minAgeDays: opts.orphanMinAgeDays,
     limit: opts.orphanLimit,
   });
 
   for (const orphan of orphanReport.orphans) {
-    const reason = `page auto-cleanup: low-confidence orphan stub (${orphan.daysOld}d old)`;
+    const reason = `page auto-cleanup: orphan entity stub (${orphan.daysOld}d old)`;
     try {
       const dryRunReport = await retirePage(BigInt(orphan.pageId), {
         reason,
@@ -550,7 +550,7 @@ async function fillRemainingDiagnostics(
     }),
     findOrphans({
       type: opts.type && RETIRABLE_TYPES.has(opts.type) ? opts.type : undefined,
-      confidence: "low",
+      entityState: "stub",
       minAgeDays: opts.orphanMinAgeDays,
       limit: opts.orphanLimit,
     }),

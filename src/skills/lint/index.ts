@@ -115,7 +115,7 @@ export async function runLint(opts: LintOptions = {}): Promise<LintReport> {
     SELECT id::text AS id
     FROM pages
     WHERE deleted = 0
-      AND confidence = 'low'
+      AND entity_state IN ('stub', 'candidate_promoted')
     ORDER BY create_time DESC
     LIMIT ${sampleSize + 1}
   `)) as Array<{ id: string }>;
@@ -123,14 +123,14 @@ export async function runLint(opts: LintOptions = {}): Promise<LintReport> {
   const redLinkCountRow = (await db.execute(sql`
     SELECT COUNT(*)::int AS n
     FROM pages
-    WHERE deleted = 0 AND confidence = 'low'
+    WHERE deleted = 0 AND entity_state IN ('stub', 'candidate_promoted')
   `)) as Array<{ n: number }>;
 
   checks.push({
     name: "unenriched_red_links",
     count: redLinkCountRow[0]?.n ?? 0,
     sampleIds: redLinkRows.slice(0, sampleSize).map((r) => r.id),
-    description: "confidence='low' 的红链 entity 还没 enrich",
+    description: "entity_state=stub/candidate_promoted 的 entity 还没 enrich",
   });
 
   const pendingRawRows = (await db.execute(sql`

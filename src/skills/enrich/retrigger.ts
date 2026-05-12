@@ -1,7 +1,7 @@
 /**
  * enrich:retrigger —— 找"该重 enrich 的实体"批量重新入队。
  *
- * 解决 NVIDIA 永久 conf=low 类问题：
+ * 解决 compiled page 长期 low confidence / low completeness 类问题：
  *   首次 enrich 时只有 1 个 backlink，agent 按规矩留 low confidence；
  *   后续 N 篇 source 又提到 NVIDIA，backlink 累积到 5+，但没机制让它重 enrich。
  *
@@ -14,7 +14,7 @@
  *   4. 没有 in-flight enrich job
  *   5. type ∈ {company, industry, concept, thesis}
  *
- * 入队优先级 80（高于默认 50）：让"已被多次引用但 conf 低"的核心实体优先处理。
+ * 入队优先级 80（高于默认 50）：让"已被多次引用但内容仍薄"的核心实体优先处理。
  *
  * 使用：
  *   bun src/cli.ts enrich:retrigger                       # 跑（默认阈值）

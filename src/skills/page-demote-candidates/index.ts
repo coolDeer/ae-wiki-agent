@@ -1,7 +1,7 @@
 /**
  * page-demote-candidates
  *
- * Move legacy low-confidence entity pages back into entity_candidates when the
+ * Move legacy entity stubs back into entity_candidates when the
  * page only exists because old ingest promoted weak mentions directly.
  */
 
@@ -325,7 +325,7 @@ function eligiblePagesQuery(
     WHERE p.deleted = 0
       AND p.type IN ('company', 'concept', 'industry')
       ${typeClause}
-      AND p.confidence = 'low'
+      AND p.entity_state IN ('stub', 'candidate_promoted')
       AND p.ticker IS NULL
       AND p.exchange IS NULL
       AND LENGTH(COALESCE(p.content, '')) <= ${maxContentChars}

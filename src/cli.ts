@@ -107,9 +107,9 @@ function printHelp(): void {
   ae-wiki enrich:retrigger [--min-score N=0.5] [--min-backlinks N=3] [--min-new-backlinks N=2]
                        [--type T] [--limit N=30] [--dry-run] [--json]
                                                 # 找完整度低 + backlink 多 + 新增 backlink 多的 page 重 enqueue
-                                                # 解决"NVIDIA 永久 conf=low"问题
+                                                # 解决已 compiled 但低信心/低完整度实体的复 enrich 问题
   ae-wiki enrich:backlog [--type T] [--limit N] [--json] [--include-in-flight]
-                                                # enrich pipeline 待处理队列：low confidence / low completeness / backlink growth
+                                                # enrich pipeline 待处理队列：entity_state stub / low completeness / backlink growth
 
   ae-wiki thesis:list [--status S] [--direction D]                   # 列论点
   ae-wiki thesis:show <page_id>                                      # 单论点诊断（含 facts/signals）
@@ -137,7 +137,7 @@ function printHelp(): void {
   ae-wiki entity:candidates [--status pending|rejected|merged|promoted] [--type T] [--limit N] [--json]
                                                 # Stage 4 未解析实体候选池；普通 mention 不再直接建 page
   ae-wiki entity:candidate:promote <candidate_id|slug> [--dry-run] [--actor X]
-                                                # 将 pending candidate 提升为 low-confidence entity page，并回填 source links
+                                                # 将 pending candidate 提升为 entity_state=candidate_promoted page，并回填 source links
   ae-wiki entity:candidate:merge <candidate_id|slug> --target <slug|id> [--dry-run] [--actor X]
                                                 # 将 candidate 合并到已有 page alias，并回填 source links
   ae-wiki entity:candidate:reject <candidate_id|slug> --reason "..." [--dry-run] [--actor X]
@@ -180,7 +180,7 @@ function printHelp(): void {
                                           # 默认不改页面/事实/队列，显式 flag 才做安全写入或入队；--queue 作为 wiki_maintain job 跑
   ae-wiki lint:run [--stale-days N] [--raw-age-days N] [--fact-age-days N] [--sample N]
                                           # 跑健康检查（orphans / stale thesis / red links / pending raw / expired facts / review failures / alias conflicts）
-  ae-wiki orphans [--type T] [--confidence low|medium|high] [--min-age-days N] [--limit N] [--json]
+  ae-wiki orphans [--type T] [--entity-state stub|candidate_promoted|compiled] [--confidence low|medium|high] [--min-age-days N] [--limit N] [--json]
                                           # 列出无入站 link 的实体页（red-link explosion 诊断）
                                           # 默认 type ∈ {company,industry,concept,thesis}，--json 输出结构化数据
   ae-wiki duplicates [--type T] [--min-sim 0.7] [--limit N] [--json]
@@ -194,11 +194,11 @@ function printHelp(): void {
                                           # 把 duplicate entity page 合并进 canonical；必要时只迁结构化引用，不自动融合 narrative
   ae-wiki page:auto-cleanup [--apply] [--include-structure-only] [--include-human-review-identity]
                              [--type T] [--limit N] [--max-passes N] [--orphan-limit N] [--orphan-min-age-days N] [--no-retire] [--json]
-                                          # 循环扫描并执行安全 page merge；默认 dry-run，--apply 才写库；可顺手 retire 低置信孤儿 stub
+                                          # 循环扫描并执行安全 page merge；默认 dry-run，--apply 才写库；可顺手 retire 孤儿 entity stub
   ae-wiki page:retire <page_id> --reason "..." [--dry-run] [--force] [--max-content-chars N]
-                                          # 保守归档无引用 entity page；阻止非 low confidence / 有实质内容 / 有结构化引用的 page
+                                          # 保守归档无引用 entity page；阻止已 compiled / 有实质内容 / 有结构化引用的 page
   ae-wiki page:demote-candidates [--apply] [--type T] [--limit N] [--max-content-chars N] [--json]
-                                          # 把 legacy low-confidence / weak-mention-only entity page 迁回 entity_candidates；默认 dry-run
+                                          # 把 legacy stub / weak-mention-only entity page 迁回 entity_candidates；默认 dry-run
   ae-wiki company:metadata-audit [--limit N] [--confidence low|medium|high] [--include-ok] [--json]
                                           # 只读审计 company display_name / aliases / ticker 缺失、异常、重复
   ae-wiki facts:expire [--age N]          # 把 period_end 已过 N 天 (默认 90) 的 latest fact 标 valid_to
@@ -558,7 +558,7 @@ async function main(): Promise<void> {
         skip: skipStr ? parseInt(skipStr, 10) : 0,
       });
       if (!ctx) {
-        console.log("(没有 confidence='low' 的待 enrich 红链)");
+        console.log("(没有 entity_state=stub/candidate_promoted 的待 enrich entity)");
         process.exit(0);
       }
       console.log(
@@ -567,6 +567,7 @@ async function main(): Promise<void> {
           slug: ctx.slug,
           type: ctx.type,
           title: ctx.title,
+          entityState: ctx.entityState,
           ticker: ctx.ticker,
           backlinks: ctx.backlinks.map((backlink) => ({
             ...backlink,
@@ -1289,6 +1290,11 @@ async function main(): Promise<void> {
         confArg === "low" || confArg === "medium" || confArg === "high"
           ? confArg
           : undefined;
+      const stateArg = getArg("--entity-state");
+      const entityState =
+        stateArg === "stub" || stateArg === "candidate_promoted" || stateArg === "compiled"
+          ? stateArg
+          : undefined;
       const minAgeStr = getArg("--min-age-days");
       const limitStr = getArg("--limit");
       const asJson = args.includes("--json");
@@ -1296,6 +1302,7 @@ async function main(): Promise<void> {
         const report = await findOrphans({
           type: getArg("--type"),
           confidence,
+          entityState,
           minAgeDays: minAgeStr ? parseInt(minAgeStr, 10) : undefined,
           limit: limitStr ? parseInt(limitStr, 10) : undefined,
         });
@@ -1385,7 +1392,7 @@ async function main(): Promise<void> {
       if (!pageIdStr) {
         console.error("page:retire 需要 page_id");
         console.error(
-          '示例: bun src/cli.ts page:retire 1743 --reason "orphan low-confidence noise page" --dry-run'
+          '示例: bun src/cli.ts page:retire 1743 --reason "orphan entity stub noise page" --dry-run'
         );
         process.exit(1);
       }

@@ -1,6 +1,6 @@
 ---
 name: ae-page-cleanup
-description: Clean and govern ae-wiki generated pages. Use when the user asks to reduce useless pages, clean redlink/page explosion, find duplicate pages, merge duplicate company/industry/concept/thesis entities, retire noisy low-confidence entity pages, repair wrong page types, or audit page hygiene after ingest/enrich runs. For company display names, aliases, and ticker cleanup, use ae-company-metadata-cleanup instead.
+description: Clean and govern ae-wiki generated pages. Use when the user asks to reduce useless pages, clean redlink/page explosion, find duplicate pages, merge duplicate company/industry/concept/thesis entities, retire noisy entity stubs, repair wrong page types, or audit page hygiene after ingest/enrich runs. For company display names, aliases, and ticker cleanup, use ae-company-metadata-cleanup instead.
 ---
 
 # ae-page-cleanup
@@ -50,8 +50,8 @@ Assign every candidate one action:
 | `structure_only_merge` | Same entity, but duplicate narrative is medium-risk or already has updates | `page:merge --skip-narrative-fusion` |
 | `retype` | Page is real but wrong namespace/type, e.g. `companies/Trainium` | `enrich:retype` |
 | `alias_repair` | Shared alias is ambiguous or wrong, but pages are distinct entities | `enrich:save --aliases-remove ...` |
-| `enrich` | Low-confidence page is real and has backlinks | `enrich:next` / `enrich:save` |
-| `retire` | Low-confidence orphan stub has no useful content or active references | `page:retire` |
+| `enrich` | Entity stub is real and has backlinks | `enrich:next` / `enrich:save` |
+| `retire` | Orphan entity stub has no useful content or active references | `page:retire` |
 | `keep` | Ambiguous term, standalone concept, or insufficient evidence | no write |
 
 Canonical page choice for merges:
@@ -143,7 +143,7 @@ If the target entity page lacks `display_name`, include `--display-name "<canoni
 Only retire pages that satisfy all of these:
 
 - `type` is `company`, `industry`, `concept`, or `thesis`.
-- `confidence='low'`.
+- `entity_state='stub'` or `entity_state='candidate_promoted'`.
 - Orphan report shows no inbound backlinks.
 - The page is an obvious stub/noise page, not a real investable entity.
 - Dry-run `page:retire` shows no blockers.
@@ -152,7 +152,7 @@ Dry-run first:
 
 ```bash
 bun src/cli.ts page:retire <page_id> \
-  --reason "page cleanup: low-confidence orphan noise page" \
+  --reason "page cleanup: orphan entity stub noise page" \
   --dry-run
 ```
 
@@ -160,7 +160,7 @@ Apply only if `blockers` is empty:
 
 ```bash
 bun src/cli.ts page:retire <page_id> \
-  --reason "page cleanup: low-confidence orphan noise page"
+  --reason "page cleanup: orphan entity stub noise page"
 ```
 
 Use `--force` only after manual review. It can bypass confidence/content-length blockers, but it still must not bypass active reference blockers.

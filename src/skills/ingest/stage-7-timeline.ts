@@ -27,7 +27,10 @@ import {
   parseTimelineYaml,
   type YamlTimelineEntry as YamlTimeline,
 } from "~/core/extractors/timeline.ts";
-import { resolveOrCreatePage } from "./_helpers.ts";
+import {
+  maybeEnqueueEnrichForBacklinkGrowth,
+  resolveOrCreatePage,
+} from "./_helpers.ts";
 import type { IngestContext } from "~/core/types.ts";
 
 export async function stage7Timeline(ctx: IngestContext): Promise<void> {
@@ -88,8 +91,19 @@ export async function stage7Timeline(ctx: IngestContext): Promise<void> {
       .onConflictDoNothing()
       .returning({ id: schema.timelineEntries.id });
 
-    if (result.length > 0) inserted++;
-    else skipped++;
+    if (result.length > 0) {
+      inserted++;
+      if (entityPageId && e.entity) {
+        await maybeEnqueueEnrichForBacklinkGrowth({
+          pageId: entityPageId,
+          slug: e.entity,
+          sourcePageId: ctx.pageId,
+          actor: ctx.actor,
+        });
+      }
+    } else {
+      skipped++;
+    }
   }
 
   console.log(`  [stage7] inserted=${inserted} skipped=${skipped}`);

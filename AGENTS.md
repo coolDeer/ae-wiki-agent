@@ -117,7 +117,7 @@ ae-wiki-agent/                # 项目根
 |---|---|---|
 | `$ae-fetch-reports` | 早 / 用户说"拉今天研报" | mongo → raw_files |
 | `$ae-research-ingest` | fetch 后 / "ingest 一下" | raw → pages + facts + signals |
-| `$ae-enrich` | 红链多了 / "补全 X" | confidence='low' entity → 正式 wiki 页 |
+| `$ae-enrich` | 红链多了 / "补全 X" | entity_state='stub' / 'candidate_promoted' entity → 正式 wiki 页 |
 | `$ae-thesis-track` | PM 表态 / "看下论点" | 开仓 / 改 conviction / 关仓 |
 
 外加两个**消费者**：
@@ -474,7 +474,7 @@ ingest:finalize     → 重新 fetch markdown_url，跑 Stage 4 链接 / 5 facts
 1. 检查**孤立页面** — 无入站链接的页面（query: `pages` 里没出现在 `links.to_page_id` 的）
 2. 检查**过时信息** — 超过 30 天未更新的 active thesis（query: `theses WHERE status='active' AND update_time < NOW() - 30d`）
 3. 检查**页面间矛盾** — 不同页面对同一事实的不一致描述
-4. 检查**红链** — `pages WHERE confidence='low'` 还没 enrich 的
+4. 检查**红链** — `pages WHERE entity_state IN ('stub','candidate_promoted')` 还没 enrich 的
 5. 检查**标签一致性** — `tags` 表 group by 看拼写是否统一
 6. 检查**来源覆盖** — `raw_files WHERE ingested_at IS NULL`
 7. 检查**财务数据时效** — `facts WHERE valid_to IS NULL AND period_end < CURRENT_DATE - 90d`

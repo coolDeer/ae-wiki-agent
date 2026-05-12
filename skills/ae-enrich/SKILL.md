@@ -1,6 +1,6 @@
 ---
 name: ae-enrich
-description: 把 ingest Stage 4 强证据自动建的 company、或从 entity_candidates promote 出来的低置信 entity（confidence='low'）补全成正式 wiki 页。读 backlink source 提取相关信息，按 schema 模板写 narrative 落库。core 不调 LLM，agent 自己当 LLM。
+description: 把 ingest Stage 4 强证据自动建的 company、或从 entity_candidates promote 出来的 entity stub（entity_state='stub' / 'candidate_promoted'）补全成正式 wiki 页。读 backlink source 提取相关信息，按 schema 模板写 narrative 落库。core 不调 LLM，agent 自己当 LLM。
 metadata:
   short-description: 补全红链 entity 的元数据 + narrative
 ---
@@ -9,14 +9,14 @@ metadata:
 
 ## 用途
 
-ingest 跑完后会留下一些 `confidence='low'` 的红链 entity——它们来自 `primary_entities` / facts / timeline 等强证据自动建的 company，或由 `entity_candidates` 人工/维护流程 promote 出来的 concept / industry / company，但 `content=''`，没有 narrative，没有 ticker / sector / aliases。
+ingest 跑完后会留下一些 `entity_state='stub'` / `entity_state='candidate_promoted'` 的红链 entity——它们来自 `primary_entities` / facts / timeline 等强证据自动建的 company，或由 `entity_candidates` 人工/维护流程 promote 出来的 concept / industry / company，但 `content=''`，没有 narrative，没有 ticker / sector / aliases。
 
 `$ae-enrich` 把这些补全：
 0. **Type triage**：先判断当前 type 对不对（companies/Trainium → concepts/Trainium 这种纠错）
 1. 选一个红链 entity
 2. 读所有 backlink source 找出关于它的信息
 3. 按 wiki schema（公司 / 行业 / 概念）写 narrative
-4. 落库 + 按信息完整度更新 confidence
+4. 落库 + 把 `entity_state` 置为 `compiled`，并按信息完整度更新 confidence
 
 ## 触发方式
 
@@ -183,7 +183,7 @@ skill 本身就是模板源，不依赖额外 `templates/` 文件。
 - **首次提及实体加 wikilink**：`[[companies/X|X]]`
 - **每个数据点标注来源**：`（来源：[[sources/...]]）`
 - **不编造**：信息只来自 backlink source 或公开 web；agent 脑补的不算
-- **整页信心单独判断**：源码少、信息碎时可以保留 `confidence='low'`，不要为了“完成 enrich”硬 bump 到 `medium`
+- **整页信心单独判断**：`confidence` 是已写页面的主观写作信心，不是 stub 状态。源码少、信息碎时可以保留 `confidence='low'`，但页面保存后仍会变成 `entity_state='compiled'`
 
 #### 写作边界
 
@@ -259,7 +259,8 @@ cd ae-wiki-agent && bun src/cli.ts enrich:save <pageId> --append --append-source
 | `--allow-alias-conflict` | 绕过自动 alias 冲突检查（罕见，仅合法双归属用） |
 
 默认行为：
-- `confidence` 默认从 `'low'` bump 到 `'medium'`
+- `entity_state` 写为 `'compiled'`
+- `confidence` 默认从 `null` / `'low'` bump 到 `'medium'`
 - entity 页如果当前 `display_name` 为空且命令没有传 `--display-name`，`enrich:save` 会拒绝写入；display name 必须由 enrich skill 显式生成
 - 写一份 page_versions 快照（reason='enrich' / 'enrich:append'）
 - 写一条 events 记录
@@ -440,7 +441,7 @@ bun src/cli.ts enrich:save 249 \
 
 | 症状 | 原因 | 解决 |
 |---|---|---|
-| `enrich:next` 返回 null | 没有 confidence='low' 的 page | OK，全部已 enrich；或当前候选都不是值得补的 entity |
+| `enrich:next` 返回 null | 没有 `entity_state='stub'` / `candidate_promoted` 的 page | OK，全部已 enrich；或当前候选都不是值得补的 entity |
 | backlink 数量为 0 | entity 是用户手动建的、不是 ingest 自动建 | 跳过或用 web search 找信息 |
 | 同一份 source 反复出现 | 这个 entity 只被一份 source 提过 | 信息不足时如实标 confidence='low'，留 TODO |
 | 写完发现关键信息缺失（如 ticker） | source 没说 | 留空。enrich 不必一次完美，未来 ingest 新 source 提到时再补 |

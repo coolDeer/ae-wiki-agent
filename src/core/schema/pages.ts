@@ -70,6 +70,12 @@ export const pages = pgTable(
 
     // 状态
     status: text("status").notNull().default("active"),
+    /**
+     * Entity lifecycle state. This is intentionally separate from confidence:
+     * confidence is the agent's writing confidence after a page has narrative,
+     * while entity_state says whether an entity still needs first enrich.
+     */
+    entityState: text("entity_state").notNull().default("compiled"),
     confidence: text("confidence"),
     /**
      * 成本档（1=最重要 / 用大模型 enrich，3=tail / 用 mini 模型）。默认 3。
@@ -92,6 +98,11 @@ export const pages = pgTable(
     typeIdx: index("idx_pages_type").on(t.type),
     tickerIdx: index("idx_pages_ticker").on(t.ticker),
     sectorIdx: index("idx_pages_sector").on(t.sector),
+    entityStateIdx: index("idx_pages_entity_state").on(
+      t.entityState,
+      t.type,
+      sql`${t.updateTime} DESC`
+    ),
     updatedIdx: index("idx_pages_updated").on(sql`${t.updateTime} DESC`),
     orgIdx: index("idx_pages_org").on(t.orgCode),
   })
@@ -112,3 +123,4 @@ export type PageType =
 export type PageStatus = "active" | "draft" | "archived";
 
 export type PageConfidence = "high" | "medium" | "low";
+export type PageEntityState = "stub" | "candidate_promoted" | "compiled";

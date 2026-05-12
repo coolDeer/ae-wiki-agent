@@ -222,6 +222,7 @@ export async function getPage(
     country: page.country,
     org_code: page.orgCode,
     status: page.status,
+    entity_state: page.entityState,
     confidence: page.confidence,
     create_time: page.createTime,
     update_time: page.updateTime,
@@ -590,6 +591,7 @@ export interface ListEntitiesArgs {
   type?: string;
   sector?: string;
   ticker?: string;
+  entityState?: string;
   confidence?: string;
   limit?: number;
 }
@@ -602,6 +604,7 @@ export async function listEntities(args: ListEntitiesArgs = {}): Promise<unknown
   if (args.type) conditions.push(eq(schema.pages.type, args.type));
   if (args.sector) conditions.push(eq(schema.pages.sector, args.sector));
   if (args.ticker) conditions.push(eq(schema.pages.ticker, args.ticker));
+  if (args.entityState) conditions.push(eq(schema.pages.entityState, args.entityState));
   if (args.confidence) conditions.push(eq(schema.pages.confidence, args.confidence));
 
   const rows = await db
@@ -612,6 +615,7 @@ export async function listEntities(args: ListEntitiesArgs = {}): Promise<unknown
       title: schema.pages.title,
       ticker: schema.pages.ticker,
       sector: schema.pages.sector,
+      entityState: schema.pages.entityState,
       confidence: schema.pages.confidence,
       updateTime: schema.pages.updateTime,
     })
@@ -627,6 +631,7 @@ export async function listEntities(args: ListEntitiesArgs = {}): Promise<unknown
     title: r.title,
     ticker: r.ticker,
     sector: r.sector,
+    entity_state: r.entityState,
     confidence: r.confidence,
     update_time: r.updateTime,
   }));
@@ -662,7 +667,7 @@ export async function resolveWikilink(
   //   - word_similarity() 适合 hint 是 title 子串（H200 channel check ⊂ 长 title）
   // 不再依赖 % 操作符（默认阈值 0.3 会漏掉合理候选），手动按 minSim 过滤。
   const rows = await db.execute(drizzleSql`
-    SELECT id, slug, type, title, ticker, confidence,
+    SELECT id, slug, type, title, ticker, entity_state, confidence,
            similarity(slug, ${args.hint}) AS slug_sim,
            similarity(title, ${args.hint}) AS title_sim,
            word_similarity(${args.hint}, title) AS word_sim,
@@ -690,6 +695,7 @@ export async function resolveWikilink(
       type: r.type as string,
       title: r.title as string,
       ticker: r.ticker as string | null,
+      entity_state: r.entity_state as string | null,
       confidence: r.confidence as string | null,
       similarity:
         typeof r.sim === "string" ? parseFloat(r.sim) : (r.sim as number),
@@ -1023,6 +1029,7 @@ export async function entityPulse(args: EntityPulseArgs): Promise<unknown> {
       type: page.type,
       ticker: page.ticker,
       sector: page.sector,
+      entity_state: page.entityState,
       confidence: page.confidence,
     },
     link_breakdown: {

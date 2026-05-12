@@ -7,8 +7,12 @@
 import { eq, and, sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { withAudit, withCreateAudit } from "~/core/audit.ts";
+import { isEntityStateAwaitingEnrich } from "~/core/entity-state.ts";
 import { effectiveBacklinkPredicate } from "~/core/links/policy.ts";
 import type { PageType } from "~/core/schema/pages.ts";
+
+const FACT_EVIDENCE_ENRICH_THRESHOLD = 3;
+const TIMELINE_EVIDENCE_ENRICH_THRESHOLD = 1;
 
 const SLUG_TO_TYPE: Record<string, PageType> = {
   companies: "company",
@@ -68,12 +72,11 @@ export interface ResolveOptions {
 }
 
 /**
- * 找或建 page。建时 confidence='low'，create_by 标 auto-create actor。
+ * 找或建 page。建时 entity_state='stub'，create_by 标 auto-create actor。
  *
- * 自动建出的红链同时入队 `enrich_entity` minion job（除非 `enqueueEnrich:false`），
- * 让 worker 调度 `ae-enrich` skill 把空壳补全。这一行为之前只在 stage 4 显式做，
- * 导致 stage 5 / 7 等通过 fact / timeline entity slug 触发自动建的红链永远不会
- * 被 enrich —— 现在统一在 helper 里处理。
+ * 自动建出的红链会经过 notability/evidence gate 判断是否入队 `enrich_entity`
+ * minion job（除非 `enqueueEnrich:false`）。单次弱 mention 不会立刻消耗 enrich
+ * 成本，但强 backlink、结构化 facts、timeline 证据会推动 stub 进入 enrich。
  *
  * **查找策略（case-insensitive + alias-aware）**：
  *   1. 精确 slug 匹配（最优先）
@@ -174,7 +177,7 @@ export async function resolveOrCreatePage(
           type: inferredType,
           title: slugToTitle(createSlug),
           status: "active",
-          confidence: "low", // 自动建的实体标 low，待 enrich
+          entityState: initialEntityStateForCreate(inferredType),
           aliases: aliases.length > 0 ? aliases : undefined,
         },
         options.actor
@@ -216,6 +219,15 @@ export async function resolveOrCreatePage(
 
 function shouldCanonicalizeCreatedSlug(type: PageType | null): boolean {
   return type === "company" || type === "industry" || type === "concept";
+}
+
+function initialEntityStateForCreate(type: PageType): "stub" | "compiled" {
+  return type === "company" ||
+    type === "industry" ||
+    type === "concept" ||
+    type === "thesis"
+    ? "stub"
+    : "compiled";
 }
 
 function mergeAliases(existing: string[], candidates: string[]): string[] {
@@ -293,21 +305,29 @@ async function hasInFlightEnrichForPage(pageId: bigint): Promise<boolean> {
  * `waiting` / `active` 状态。已有就跳过；`completed` 状态的不算（重 enqueue 等价
  * 于 retrigger 行为）。
  *
- * 同时也防 stale stub：如果 page 自己 confidence 已经是 medium/high，说明 enrich
- * 跑过了，不再自动入队（让 enrich:retrigger 处理这种"长期 medium 但需更新"的）。
+ * 同时也防 stale compiled page：如果 entity_state 已经是 compiled，说明首次
+ * enrich 跑过了，不再自动入队（让 enrich:retrigger 处理后续更新）。
  */
 export async function maybeEnqueueEnrichForBacklinkGrowth(opts: {
   pageId: bigint;
   slug: string;
   sourcePageId?: bigint;
   actor: string;
-}): Promise<{ enqueued: boolean; reason: string; backlinkCount: number }> {
-  // 1. 拿当前 page 的 confidence + backlink count
+}): Promise<{
+  enqueued: boolean;
+  reason: string;
+  backlinkCount: number;
+  factCount: number;
+  timelineCount: number;
+}> {
+  // 1. 拿当前 page 的 confidence + slug
   const { getEnv } = await import("~/core/env.ts");
   const threshold = getEnv().WIKI_ENRICH_NOTABILITY_THRESHOLD;
 
   const [pageRow] = await db
     .select({
+      slug: schema.pages.slug,
+      entityState: schema.pages.entityState,
       confidence: schema.pages.confidence,
       type: schema.pages.type,
     })
@@ -316,10 +336,16 @@ export async function maybeEnqueueEnrichForBacklinkGrowth(opts: {
     .limit(1);
 
   if (!pageRow) {
-    return { enqueued: false, reason: "page-not-found", backlinkCount: 0 };
+    return {
+      enqueued: false,
+      reason: "page-not-found",
+      backlinkCount: 0,
+      factCount: 0,
+      timelineCount: 0,
+    };
   }
 
-  // 2. 算有效 backlink 数
+  // 2. 算有效 backlink / structured evidence 数
   const [bl] = (await db.execute(drizzleSql`
     SELECT COUNT(*)::int AS n
     FROM links
@@ -328,6 +354,7 @@ export async function maybeEnqueueEnrichForBacklinkGrowth(opts: {
       AND ${effectiveBacklinkPredicate("links")}
   `)) as Array<{ n: number }>;
   const backlinkCount = bl?.n ?? 0;
+  const { factCount, timelineCount } = await countStructuredEvidence(opts.pageId);
 
   // 3. 已有 in-flight enrich job → 跳。
   //    同时覆盖 wrapper job (`enrich_entity`) 和真正执行中的 `agent_run(ae-enrich)`。
@@ -336,35 +363,108 @@ export async function maybeEnqueueEnrichForBacklinkGrowth(opts: {
       enqueued: false,
       reason: "already-in-flight",
       backlinkCount,
+      factCount,
+      timelineCount,
     };
   }
 
-  // 4. 已经 enrich 过（confidence != 'low'）→ 跳。retrigger 走另一个路径。
-  if (pageRow.confidence && pageRow.confidence !== "low") {
+  // 4. 已经 compiled → 跳。retrigger 走另一个路径。
+  if (!isEntityStateAwaitingEnrich(pageRow.entityState)) {
     return {
       enqueued: false,
-      reason: `already-enriched-confidence=${pageRow.confidence}`,
+      reason: `already-compiled-entity-state=${pageRow.entityState}`,
       backlinkCount,
+      factCount,
+      timelineCount,
     };
   }
+
+  const gate = shouldEnqueueEnrichForEvidence({
+    backlinkCount,
+    factCount,
+    timelineCount,
+    backlinkThreshold: threshold,
+  });
 
   // 5. 没到阈值 → 跳
-  if (backlinkCount < threshold) {
+  if (!gate.shouldEnqueue) {
     return {
       enqueued: false,
-      reason: `below-threshold ${backlinkCount} < ${threshold}`,
+      reason: gate.reason,
       backlinkCount,
+      factCount,
+      timelineCount,
     };
   }
 
   // 6. 入队
-  await enqueueEnrichEntity(opts.pageId, opts.slug, opts.sourcePageId, opts.actor);
+  const jobSlug = pageRow.slug ?? opts.slug;
+  await enqueueEnrichEntity(opts.pageId, jobSlug, opts.sourcePageId, opts.actor);
   console.log(
-    `  [enrich-gate] enqueued enrich_entity for ${opts.slug} (#${opts.pageId}, effective_backlinks=${backlinkCount} ≥ ${threshold})`
+    `  [enrich-gate] enqueued enrich_entity for ${jobSlug} (#${opts.pageId}, ${gate.reason})`
   );
   return {
     enqueued: true,
-    reason: `threshold-met ${backlinkCount} ≥ ${threshold}`,
+    reason: gate.reason,
     backlinkCount,
+    factCount,
+    timelineCount,
+  };
+}
+
+export function shouldEnqueueEnrichForEvidence(input: {
+  backlinkCount: number;
+  factCount: number;
+  timelineCount: number;
+  backlinkThreshold: number;
+}): { shouldEnqueue: boolean; reason: string } {
+  if (input.backlinkCount >= input.backlinkThreshold) {
+    return {
+      shouldEnqueue: true,
+      reason: `backlink-threshold-met ${input.backlinkCount} ≥ ${input.backlinkThreshold}`,
+    };
+  }
+  if (input.factCount >= FACT_EVIDENCE_ENRICH_THRESHOLD) {
+    return {
+      shouldEnqueue: true,
+      reason: `fact-threshold-met ${input.factCount} ≥ ${FACT_EVIDENCE_ENRICH_THRESHOLD}`,
+    };
+  }
+  if (input.timelineCount >= TIMELINE_EVIDENCE_ENRICH_THRESHOLD) {
+    return {
+      shouldEnqueue: true,
+      reason: `timeline-threshold-met ${input.timelineCount} ≥ ${TIMELINE_EVIDENCE_ENRICH_THRESHOLD}`,
+    };
+  }
+  return {
+    shouldEnqueue: false,
+    reason:
+      `below-threshold backlinks=${input.backlinkCount}/${input.backlinkThreshold}, ` +
+      `facts=${input.factCount}/${FACT_EVIDENCE_ENRICH_THRESHOLD}, ` +
+      `timeline=${input.timelineCount}/${TIMELINE_EVIDENCE_ENRICH_THRESHOLD}`,
+  };
+}
+
+async function countStructuredEvidence(
+  pageId: bigint
+): Promise<{ factCount: number; timelineCount: number }> {
+  const [facts] = (await db.execute(drizzleSql`
+    SELECT COUNT(*)::int AS n
+    FROM facts
+    WHERE deleted = 0
+      AND entity_page_id = ${pageId}
+      AND source_page_id IS NOT NULL
+      AND valid_to IS NULL
+  `)) as Array<{ n: number }>;
+  const [timeline] = (await db.execute(drizzleSql`
+    SELECT COUNT(*)::int AS n
+    FROM timeline_entries
+    WHERE deleted = 0
+      AND entity_page_id = ${pageId}
+      AND source_page_id IS NOT NULL
+  `)) as Array<{ n: number }>;
+  return {
+    factCount: facts?.n ?? 0,
+    timelineCount: timeline?.n ?? 0,
   };
 }

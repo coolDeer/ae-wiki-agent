@@ -10,6 +10,7 @@ import { and, eq, sql } from "drizzle-orm";
 
 import { withAudit, withCreateAudit } from "~/core/audit.ts";
 import { db, schema } from "~/core/db.ts";
+import { isEntityStateAwaitingEnrich } from "~/core/entity-state.ts";
 
 const RETIRABLE_TYPES = new Set(["company", "industry", "concept", "thesis"]);
 const DEFAULT_MAX_CONTENT_CHARS = 300;
@@ -28,6 +29,7 @@ export interface RetirePageReport {
     slug: string;
     type: string;
     title: string;
+    entityState: string;
     confidence: string | null;
     contentChars: number;
   };
@@ -76,6 +78,7 @@ export async function retirePage(
       slug: schema.pages.slug,
       type: schema.pages.type,
       title: schema.pages.title,
+      entityState: schema.pages.entityState,
       confidence: schema.pages.confidence,
       content: schema.pages.content,
       deleted: schema.pages.deleted,
@@ -91,6 +94,7 @@ export async function retirePage(
   const counts = await collectReferenceCounts(pageId);
   const blockers = buildBlockers({
     type: page.type,
+    entityState: page.entityState,
     confidence: page.confidence,
     contentChars,
     maxContentChars,
@@ -104,6 +108,7 @@ export async function retirePage(
       slug: page.slug,
       type: page.type,
       title: page.title,
+      entityState: page.entityState,
       confidence: page.confidence,
       contentChars,
     },
@@ -239,6 +244,7 @@ async function collectReferenceCounts(pageId: bigint): Promise<RetirePageReport[
 
 function buildBlockers(opts: {
   type: string;
+  entityState: string;
   confidence: string | null;
   contentChars: number;
   maxContentChars: number;
@@ -251,8 +257,10 @@ function buildBlockers(opts: {
       `type='${opts.type}' 不支持 page:retire；source/brief 走 ingest:pass 或 ingest:skip，output 不应自动清理`
     );
   }
-  if (!opts.force && opts.confidence !== "low") {
-    blockers.push(`confidence='${opts.confidence ?? "null"}' 不是 low；高/中置信页面需人工确认或 --force`);
+  if (!opts.force && !isEntityStateAwaitingEnrich(opts.entityState)) {
+    blockers.push(
+      `entity_state='${opts.entityState}' 不是 stub/candidate_promoted；已 compiled 页面需人工确认或 --force`
+    );
   }
   if (!opts.force && opts.contentChars > opts.maxContentChars) {
     blockers.push(

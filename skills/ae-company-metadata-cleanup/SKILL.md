@@ -19,7 +19,7 @@ Do not declare cleanup complete after filling `display_name` alone. For every to
 - Use `enrich:save --append` for writes so page_versions, events, alias conflict checks, and review still run.
 - If metadata issues reveal duplicate pages, switch to `$ae-page-cleanup` first and merge/retype before repairing metadata.
 - After a page merge, immediately re-run metadata audit for the canonical page. Fill canonical `display_name`, `ticker`, `exchange`, and aliases before calling the merged entity done.
-- Avoid metadata-only writes to near-empty low-confidence stubs unless the user explicitly wants that tradeoff. `enrich:save --append` falls back to initial write for pages with tiny content, which can create page-review failures; prefer full `$ae-enrich` or `$ae-page-cleanup` for those.
+- Avoid metadata-only writes to near-empty entity stubs unless the user explicitly wants that tradeoff. `enrich:save --append` falls back to initial write for pages with tiny content, which can create page-review failures; prefer full `$ae-enrich` or `$ae-page-cleanup` for those.
 
 ## Workflow
 
@@ -74,7 +74,7 @@ Fix in this order:
 3. Medium/high-confidence pages with missing `display_name`.
 4. Public company pages with missing or non-normalized ticker.
 5. High-backlink pages with sparse aliases.
-6. Low-confidence stubs only when their identity is clear and content is already substantive; otherwise leave for enrich or page cleanup.
+6. Entity stubs only when their identity is clear and content is already substantive; otherwise leave for enrich or page cleanup.
 
 For a user-specified company, do all applicable steps in one pass: resolve duplicate candidates, update canonical metadata, verify ticker if public, then re-run page review and audit.
 

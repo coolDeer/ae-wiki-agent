@@ -26,6 +26,8 @@ import { listPageComments, type PageCommentRow } from "./comments.ts";
 
 import {
   confidenceTag,
+  entityStateLabel,
+  entityStateTag,
   escape,
   fmtSh,
   highlightSnippet,
@@ -230,7 +232,7 @@ export async function viewHome(): Promise<string> {
   const counts = await db.execute(sql`
     SELECT
       (SELECT COUNT(*)::int FROM pages WHERE deleted=0 AND type IN ('source','brief')) AS source_brief,
-      (SELECT COUNT(*)::int FROM pages WHERE deleted=0 AND confidence='low') AS red_links,
+      (SELECT COUNT(*)::int FROM pages WHERE deleted=0 AND entity_state IN ('stub','candidate_promoted')) AS red_links,
       (SELECT COUNT(*)::int FROM theses WHERE deleted=0 AND status='active') AS active_theses,
       (SELECT COUNT(*)::int FROM facts WHERE deleted=0 AND valid_to IS NULL) AS current_facts,
       (SELECT COUNT(*)::int FROM signals WHERE deleted=0) AS total_signals,
@@ -247,7 +249,7 @@ export async function viewHome(): Promise<string> {
     <div class="kv">
       <div class="k">Source / Brief pages</div><div>${c.source_brief ?? 0}</div>
       <div class="k">Active theses</div><div><a href="/theses">${c.active_theses ?? 0}</a></div>
-      <div class="k">Red links (confidence=low)</div><div><a href="/entities?confidence=low">${c.red_links ?? 0}</a></div>
+      <div class="k">Entity stubs</div><div><a href="/entities?entityState=awaiting_enrich">${c.red_links ?? 0}</a></div>
       <div class="k">Current facts</div><div>${c.current_facts ?? 0}</div>
       <div class="k">Signals</div><div>${c.total_signals ?? 0}</div>
       <div class="k">Jobs waiting</div><div><a href="/queue">${c.jobs_waiting ?? 0}</a></div>
@@ -440,6 +442,10 @@ ${slice.length === 0
         .map((h) => {
           const m = meta.get(h.slug);
           const confidenceBadge = m?.confidence ? confidenceTag(m.confidence) : "";
+          const lifecycleBadge =
+            m && isEntityType(m.type) && m.entityState !== "compiled"
+              ? entityStateTag(m.entityState)
+              : "";
           const timeBadge = m?.createTime
             ? `<time datetime="${m.createTime.toISOString()}">${fmtSh(m.createTime, "date")}</time>`
             : "";
@@ -470,7 +476,7 @@ ${slice.length === 0
           return `<tr>
             <td>
               <a href="${pageHref(h.slug)}">${escape(h.title)}</a>
-              <span class="hit-meta">${confidenceBadge}${timeBadge}</span>
+              <span class="hit-meta">${lifecycleBadge}${confidenceBadge}${timeBadge}</span>
               ${crumb}
               ${snippetHtml}
               ${debugBlock}
@@ -491,6 +497,8 @@ ${allHits.length === POOL ? `<p class="muted">候选池上限 ${POOL}，更深�
 }
 
 interface HitMeta {
+  type: string | null;
+  entityState: string | null;
   confidence: string | null;
   createTime: Date | null;
 }
@@ -537,12 +545,12 @@ async function fetchSuggestions(query: string): Promise<Suggestion[]> {
   });
 }
 
-/** 一次 SQL 拉本页 slice 的 confidence + create_time。slice 通常 ≤ 25。 */
+/** 一次 SQL 拉本页 slice 的 lifecycle / confidence / create_time。slice 通常 ≤ 25。 */
 async function fetchHitMeta(slugs: string[]): Promise<Map<string, HitMeta>> {
   const out = new Map<string, HitMeta>();
   if (slugs.length === 0) return out;
   const rows = await db.execute(sql`
-    SELECT slug, confidence, create_time
+    SELECT slug, type, entity_state, confidence, create_time
     FROM pages
     WHERE deleted = 0 AND slug IN (${sql.join(
       slugs.map((s) => sql`${s}`),
@@ -551,11 +559,17 @@ async function fetchHitMeta(slugs: string[]): Promise<Map<string, HitMeta>> {
   `);
   for (const r of rows as unknown as Array<Record<string, unknown>>) {
     out.set(String(r.slug), {
+      type: (r.type as string | null) ?? null,
+      entityState: (r.entity_state as string | null) ?? null,
       confidence: (r.confidence as string | null) ?? null,
       createTime: r.create_time ? new Date(String(r.create_time)) : null,
     });
   }
   return out;
+}
+
+function isEntityType(type: string | null | undefined): boolean {
+  return type === "company" || type === "industry" || type === "concept";
 }
 
 // ============================================================================
@@ -574,6 +588,7 @@ export async function viewPage(identifier: string): Promise<string> {
         frontmatter: Record<string, unknown>;
         ticker: string | null;
         sector: string | null;
+        entity_state: string | null;
         confidence: string | null;
         aliases: string[] | null;
         create_time: string;
@@ -671,7 +686,7 @@ export async function viewPage(identifier: string): Promise<string> {
   );
 
   const meta = page.frontmatter ?? {};
-  const isEntity = ["company", "industry", "concept"].includes(page.type);
+  const isEntity = isEntityType(page.type);
 
   // entity 页才拉 PM dashboard 数据：typed-edge breakdown + top consensus metrics
   let entityDashboard: Record<string, unknown> | null = null;
@@ -783,6 +798,7 @@ export async function viewPage(identifier: string): Promise<string> {
 <h2>
   ${pageTag(page.type)}
   ${escape((page as Record<string, unknown>).display_name as string | undefined ?? page.title)}
+  ${isEntity ? entityStateTag(page.entity_state) : ""}
   ${confidenceTag(page.confidence)}
 </h2>
 <div class="muted score">${escape(page.slug)} · #${escape(page.id)}${inlineSourceBtn}</div>
@@ -853,6 +869,7 @@ type PageForMetadata = {
   type: string;
   ticker: string | null;
   sector: string | null;
+  entity_state: string | null;
   confidence: string | null;
   aliases: string[] | null;
   create_time: string;
@@ -911,6 +928,9 @@ function renderPageMetadataCard(
   page: PageForMetadata,
   meta: Record<string, unknown>
 ): string {
+  const lifecycleStat = isEntityType(page.type)
+    ? `<div><strong>${escape(entityStateLabel(page.entity_state) || "n/a")}</strong><span>Lifecycle</span></div>`
+    : "";
   const sourceRows = [
     meta.research_id ? metaRow("Research ID", String(meta.research_id), { mono: true }) : "",
     meta.research_type ? metaRow("Research type", String(meta.research_type)) : "",
@@ -951,6 +971,7 @@ function renderPageMetadataCard(
     <div class="meta-stats">
       <div><strong>${escape(String(page.inbound_effective_links_count ?? page.inbound_links_count))}/${escape(String(page.inbound_links_count))}</strong><span>Effective / Inbound</span></div>
       <div><strong>${escape(String(page.outbound_effective_links_count ?? page.outbound_links_count))}/${escape(String(page.outbound_links_count))}</strong><span>Effective / Outbound</span></div>
+      ${lifecycleStat}
       <div><strong>${escape(page.confidence ?? "n/a")}</strong><span>Confidence</span></div>
     </div>
     <p class="muted card-note">Effective links drive enrich/search ranking; weak markdown mentions remain visible but do not count as strong evidence. Weak inbound: ${escape(String(page.inbound_weak_links_count ?? 0))}; weak outbound: ${escape(String(page.outbound_weak_links_count ?? 0))}.</p>
@@ -2078,20 +2099,31 @@ export async function viewEntities(
     type?: string;
     sector?: string;
     ticker?: string;
+    entityState?: string;
     confidence?: string;
   },
   pageReq: PageRequest
 ): Promise<string> {
   const SORT = pickSortField(
     pageReq,
-    ["title", "update_time", "create_time", "ticker", "sector", "confidence", "type", "effective_links", "weak_links", "total_links"] as const,
-    opts.confidence === "low" ? "effective_links" : "update_time"
+    ["title", "update_time", "create_time", "ticker", "sector", "confidence", "entity_state", "type", "effective_links", "weak_links", "total_links"] as const,
+    opts.entityState === "awaiting_enrich" ||
+      opts.entityState === "stub" ||
+      opts.entityState === "candidate_promoted" ||
+      opts.confidence === "low"
+      ? "effective_links"
+      : "update_time"
   );
 
   const conds = [sql`p.deleted = 0`, sql`p.status != 'archived'`, sql`p.type IN ('company','industry','concept')`];
   if (opts.type) conds.push(sql`p.type = ${opts.type}`);
   if (opts.sector) conds.push(sql`p.sector = ${opts.sector}`);
   if (opts.ticker) conds.push(sql`p.ticker = ${opts.ticker}`);
+  if (opts.entityState === "awaiting_enrich") {
+    conds.push(sql`p.entity_state IN ('stub','candidate_promoted')`);
+  } else if (opts.entityState) {
+    conds.push(sql`p.entity_state = ${opts.entityState}`);
+  }
   if (opts.confidence) conds.push(sql`p.confidence = ${opts.confidence}`);
 
   // 用 join 拼 WHERE 子句
@@ -2111,6 +2143,7 @@ export async function viewEntities(
     SORT.field === "ticker" ? sql`p.ticker` :
     SORT.field === "sector" ? sql`p.sector` :
     SORT.field === "confidence" ? sql`p.confidence` :
+    SORT.field === "entity_state" ? sql`p.entity_state` :
     SORT.field === "type" ? sql`p.type` :
     SORT.field === "effective_links" ? sql`link_stats.effective_links` :
     SORT.field === "weak_links" ? sql`link_stats.weak_links` :
@@ -2120,7 +2153,7 @@ export async function viewEntities(
 
   const rows = await db.execute(sql`
     SELECT p.id::text AS id, p.slug, p.type, p.title, p.display_name,
-           p.ticker, p.sector, p.confidence,
+           p.ticker, p.sector, p.entity_state, p.confidence,
            COALESCE(link_stats.total_links, 0)::int AS total_links,
            COALESCE(link_stats.effective_links, 0)::int AS effective_links,
            COALESCE(link_stats.weak_links, 0)::int AS weak_links
@@ -2144,6 +2177,7 @@ export async function viewEntities(
     type: opts.type,
     sector: opts.sector,
     ticker: opts.ticker,
+    entityState: opts.entityState,
     confidence: opts.confidence,
     sortField: pageReq.sortField,
     sortOrder: pageReq.sortOrder,
@@ -2152,6 +2186,7 @@ export async function viewEntities(
     type: opts.type,
     sector: opts.sector,
     ticker: opts.ticker,
+    entityState: opts.entityState,
     confidence: opts.confidence,
     pageSize: String(pageReq.pageSize),
   };
@@ -2181,6 +2216,12 @@ export async function viewEntities(
       .map((c) => `<option value="${c}"${opts.confidence === c ? " selected" : ""}>${c}</option>`)
       .join("")}
   </select>
+  <select name="entityState">
+    <option value="">all states</option>
+    ${["awaiting_enrich", "stub", "candidate_promoted", "compiled"]
+      .map((s) => `<option value="${s}"${opts.entityState === s ? " selected" : ""}>${s}</option>`)
+      .join("")}
+  </select>
   <input type="text" name="ticker" placeholder="ticker" value="${escape(opts.ticker ?? "")}">
   <input type="text" name="sector" placeholder="sector" value="${escape(opts.sector ?? "")}">
   <button class="btn" type="submit">filter</button>
@@ -2194,6 +2235,7 @@ ${rows.length === 0
         ${sortHeader("Ticker", "ticker")}
         ${sortHeader("Sector", "sector")}
         ${sortHeader("Confidence", "confidence")}
+        ${sortHeader("State", "entity_state")}
         ${sortHeader("Links", "effective_links")}
       </tr></thead>
       <tbody>
@@ -2205,6 +2247,7 @@ ${rows.length === 0
             <td>${escape(String(r.ticker ?? ""))}</td>
             <td>${escape(String(r.sector ?? ""))}</td>
             <td>${confidenceTag(r.confidence as string | null)}</td>
+            <td>${entityStateTag(r.entity_state as string | null)}</td>
             <td>
               <span class="link-count-main">${escape(String(r.effective_links ?? 0))}</span><span class="muted">/${escape(String(r.total_links ?? 0))}</span>
               ${Number(r.weak_links ?? 0) > 0 ? `<div class="muted score">${escape(String(r.weak_links))} weak</div>` : ""}
@@ -2296,18 +2339,56 @@ export async function viewOutputFile(filename: string): Promise<string> {
       body: `<div class="empty">output page not found: ${escape(slug)}</div>`,
     });
   }
+  const wikilinkLabels = await fetchWikilinkLabels(page.content ?? "");
   const body = `
 <div class="row">
   <div class="grow"><h2 style="border:none;margin-bottom:0;">${escape(page.title)}</h2><p class="muted">${escape(page.slug)} · ${escape(fmtSh(page.updateTime))}</p></div>
   <a class="btn" href="/outputs">← all outputs</a>
 </div>
-<div class="content page-content">${renderMarkdown(page.content)}</div>
+<div class="content page-content">${renderMarkdown(page.content, { wikilinkLabels })}</div>
 `;
   return layout({ title: page.title, body });
 }
 
 function outputSlugName(slug: string): string {
   return slug.startsWith("outputs/") ? slug.slice("outputs/".length) : slug;
+}
+
+async function fetchWikilinkLabels(content: string): Promise<Record<string, string>> {
+  const slugs = extractWikilinkSlugs(content).filter((slug) => !slug.startsWith("outputs/"));
+  if (slugs.length === 0) return {};
+
+  const rows = await db.execute(sql`
+    SELECT
+      p.slug,
+      CASE
+        WHEN p.type IN ('source', 'brief') THEN COALESCE(NULLIF(rf.title, ''), NULLIF(p.display_name, ''), NULLIF(p.title, ''), p.slug)
+        ELSE COALESCE(NULLIF(p.display_name, ''), NULLIF(p.title, ''), p.slug)
+      END AS label
+    FROM pages p
+    LEFT JOIN raw_files rf ON rf.ingested_page_id = p.id AND rf.deleted = 0
+    WHERE p.deleted = 0
+      AND p.slug IN (${sql.join(
+        slugs.map((s) => sql`${s}`),
+        sql`, `
+      )})
+  `);
+
+  const labels: Record<string, string> = {};
+  for (const row of rows as unknown as Array<{ slug: string; label: string | null }>) {
+    if (row.slug && row.label) labels[row.slug] = row.label;
+  }
+  return labels;
+}
+
+function extractWikilinkSlugs(content: string): string[] {
+  const out = new Set<string>();
+  const re = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
+  for (const match of content.matchAll(re)) {
+    const slug = match[1]?.trim();
+    if (slug) out.add(slug);
+  }
+  return [...out];
 }
 
 // ============================================================================

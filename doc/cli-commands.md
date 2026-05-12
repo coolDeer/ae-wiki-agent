@@ -297,7 +297,7 @@ ae-wiki jobs:retry <job_id>
 
 ### `enrich:list`
 
-列出待 enrich 的 low-confidence 实体。
+列出待 enrich 的 entity stubs（`entity_state='stub'` / `candidate_promoted`）。
 
 ```bash
 ae-wiki enrich:list [--type T] [--limit N]
