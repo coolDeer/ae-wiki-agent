@@ -119,6 +119,7 @@ const PAGE_REVIEW_VERSION = 1;
 const SECTION_HEADING_RE = /^(#{2,3})\s+(.+?)\s*$/;
 const WIKILINK_RE = /\[\[[^[\]]+\]\]/g;
 const TIMELINE_MARKER_RE = /<!--\s*timeline(?:\s*-->)?/i;
+const ENTITY_PLAN_RE = /<!--\s*entity_plan\b([\s\S]*?)-->/i;
 const RELATION_SUBSECTION_GROUPS = [
   ["New Information"],
   ["Confirms Existing View"],
@@ -603,9 +604,11 @@ export function buildReviewReport(page: PageMeta, narrative: string): PageReview
 }
 
 function validateSourceCustomRules(ctx: ReviewValidationContext): ReviewIssue[] {
-  if (!isMeetingMinutesResearchType(ctx.mergedFrontmatter)) return [];
+  const issues: ReviewIssue[] = [
+    ...validateSourceEntityGovernance(ctx),
+  ];
+  if (!isMeetingMinutesResearchType(ctx.mergedFrontmatter)) return issues;
 
-  const issues: ReviewIssue[] = [];
   const requiredMeetingSections = [
     "Meeting Context",
     "Management Claims vs Analyst Inference",
@@ -632,6 +635,108 @@ function validateSourceCustomRules(ctx: ReviewValidationContext): ReviewIssue[] 
       message: "meeting_minutes source has no explicit facts block",
       suggestion:
         "For meeting minutes, only structured facts explicitly stated by management or the note should be added to the facts block.",
+    });
+  }
+
+  return issues;
+}
+
+function validateSourceEntityGovernance(ctx: ReviewValidationContext): ReviewIssue[] {
+  const issues: ReviewIssue[] = [];
+  const primaryEntities = readStringArray(ctx.mergedFrontmatter.primary_entities);
+  const softPrimaryEntities = primaryEntities.filter((slug) =>
+    /^(concepts|industries)\//.test(slug)
+  );
+
+  if (softPrimaryEntities.length > 0) {
+    issues.push({
+      severity: "warn",
+      code: "primary_entities_soft_entity",
+      message:
+        `primary_entities includes concept/industry entries: ${softPrimaryEntities.join(", ")}`,
+      suggestion:
+        "Keep primary_entities company-first; only include concept/industry when it is already canonical and central. New concept/industry proposals should stay in entity_plan.soft_candidates.",
+    });
+  }
+
+  const entityPlanMatch = ctx.rawBody.match(ENTITY_PLAN_RE);
+  if (!entityPlanMatch) {
+    issues.push({
+      severity: "warn",
+      code: "missing_entity_plan",
+      message: "Missing <!-- entity_plan ... --> governance block",
+      suggestion:
+        "Add an entity_plan block before the source sections to separate existing pages, new company candidates, soft concept/industry candidates, and noise mentions.",
+    });
+    return issues;
+  }
+
+  const entityPlanYaml = (entityPlanMatch[1] ?? "").trim();
+  if (entityPlanYaml.length === 0) {
+    issues.push({
+      severity: "warn",
+      code: "empty_entity_plan",
+      message: "entity_plan block is present but empty",
+      suggestion:
+        "Fill entity_plan with existing, new_company_candidates, soft_candidates, and noise_mentions lists.",
+    });
+    return issues;
+  }
+
+  let entityPlan: unknown;
+  try {
+    entityPlan = YAML.parse(entityPlanYaml);
+  } catch {
+    issues.push({
+      severity: "warn",
+      code: "invalid_entity_plan_yaml",
+      message: "entity_plan block is not valid YAML",
+      suggestion:
+        "Use plain YAML lists under existing, new_company_candidates, soft_candidates, and noise_mentions.",
+    });
+    return issues;
+  }
+
+  if (!isPlainRecord(entityPlan)) {
+    issues.push({
+      severity: "warn",
+      code: "invalid_entity_plan_shape",
+      message: "entity_plan block must parse to a YAML object",
+      suggestion:
+        "Use keys like existing, new_company_candidates, soft_candidates, and noise_mentions instead of a scalar or bare list.",
+    });
+    return issues;
+  }
+
+  const newCompanyCandidates = readRecordArray(entityPlan.new_company_candidates);
+  const invalidCompanyCandidates = newCompanyCandidates
+    .map((entry) => entry.proposed_slug)
+    .filter((slug): slug is string => typeof slug === "string" && !slug.startsWith("companies/"));
+  if (invalidCompanyCandidates.length > 0) {
+    issues.push({
+      severity: "warn",
+      code: "invalid_entity_plan_company_candidate",
+      message:
+        `new_company_candidates contains non-company slugs: ${invalidCompanyCandidates.join(", ")}`,
+      suggestion:
+        "Only strong company evidence belongs in new_company_candidates; concept/industry proposals belong in soft_candidates.",
+    });
+  }
+
+  const softCandidates = readRecordArray(entityPlan.soft_candidates);
+  const invalidSoftCandidates = softCandidates
+    .map((entry) => entry.type)
+    .filter(
+      (type): type is string =>
+        typeof type === "string" && type !== "concept" && type !== "industry"
+    );
+  if (invalidSoftCandidates.length > 0) {
+    issues.push({
+      severity: "warn",
+      code: "invalid_entity_plan_soft_candidate",
+      message:
+        `soft_candidates contains unsupported types: ${Array.from(new Set(invalidSoftCandidates)).join(", ")}`,
+      suggestion: "soft_candidates should only describe concept or industry candidates.",
     });
   }
 
@@ -829,6 +934,20 @@ function asRecord(value: unknown): Record<string, unknown> {
     return value as Record<string, unknown>;
   }
   return {};
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function readRecordArray(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isPlainRecord);
 }
 
 function sha256(value: string): string {

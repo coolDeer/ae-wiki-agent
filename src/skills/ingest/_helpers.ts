@@ -7,6 +7,7 @@
 import { eq, and, sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { withAudit, withCreateAudit } from "~/core/audit.ts";
+import { effectiveBacklinkPredicate } from "~/core/links/policy.ts";
 import type { PageType } from "~/core/schema/pages.ts";
 
 const SLUG_TO_TYPE: Record<string, PageType> = {
@@ -28,6 +29,17 @@ export function slugToTitle(slug: string): string {
   // 'companies/Western Digital' → 'Western Digital'
   const last = slug.split("/").pop();
   return last ?? slug;
+}
+
+export function normalizeSlugForLookup(slug: string): string {
+  const trimmed = slug.trim();
+  const [dir, ...rest] = trimmed.split("/");
+  const namePart = rest.join("/").trim();
+  if (!dir || !namePart) return trimmed.toLowerCase();
+  return `${dir.toLowerCase()}/${namePart
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")}`;
 }
 
 export interface ResolveOptions {
@@ -62,7 +74,8 @@ export interface ResolveOptions {
  * **查找策略（case-insensitive + alias-aware）**：
  *   1. 精确 slug 匹配（最优先）
  *   2. 大小写不敏感 slug 匹配（处理 `industries/Hog-Farming` vs `industries/hog-farming`）
- *   3. aliases 数组内容匹配（处理 `[[companies/Coherent]]` 命中已有 II-VI Coherent 的 aliases）
+ *   3. slug 规范化匹配（处理 `industries/Precious Metals` vs `industries/precious-metals`）
+ *   4. aliases 数组内容匹配（处理 `[[companies/Coherent]]` 命中已有 II-VI Coherent 的 aliases）
  *
  * 这套查找住在 helper 里以确保 stage-4 / stage-5 (facts) / stage-7 (timeline) 三个
  * 调用点行为一致——之前只有 stage-4 自己实现了，stage-5/7 走老的精确匹配，
@@ -78,8 +91,9 @@ export async function resolveOrCreatePage(
   const enqueueEnrich = options.enqueueEnrich ?? true;
   const inferredType = options.type ?? slugToType(slug);
   const namePart = slug.split("/").slice(1).join("/").trim();
+  const normalizedSlug = normalizeSlugForLookup(slug);
 
-  // 1. 智能查找（精确 slug → 大小写不敏感 → aliases 命中）
+  // 1. 智能查找（精确 slug → 大小写不敏感 → slug 规范化 → aliases 命中）
   //    type 已知就限定 type，避免跨 type 误命中
   const typeClause = inferredType
     ? drizzleSql`AND type = ${inferredType}`
@@ -94,6 +108,7 @@ export async function resolveOrCreatePage(
       AND (
         slug = ${slug}
         OR LOWER(slug) = LOWER(${slug})
+        OR regexp_replace(lower(trim(slug)), '[\\s_-]+', '-', 'g') = ${normalizedSlug}
         OR (
           ${namePart === "" ? drizzleSql`FALSE` : drizzleSql`EXISTS (
             SELECT 1 FROM unnest(COALESCE(aliases, ARRAY[]::text[])) AS a
@@ -104,6 +119,7 @@ export async function resolveOrCreatePage(
     ORDER BY
       (slug = ${slug}) DESC,
       (LOWER(slug) = LOWER(${slug})) DESC,
+      (regexp_replace(lower(trim(slug)), '[\\s_-]+', '-', 'g') = ${normalizedSlug}) DESC,
       id ASC
     LIMIT 1
   `);
@@ -255,8 +271,9 @@ async function hasInFlightEnrichForPage(pageId: bigint): Promise<boolean> {
 }
 
 /**
- * Notability gate：只在累积 backlink ≥ `WIKI_ENRICH_NOTABILITY_THRESHOLD` 时入队
- * enrich_entity job。借鉴 gbrain 的 mention-count-based tier escalation 思路。
+ * Notability gate：只在累积 effective backlink ≥
+ * `WIKI_ENRICH_NOTABILITY_THRESHOLD` 时入队 enrich_entity job。
+ * 普通正文 mention 不再等价于强证据，避免 link 噪声放大到 enrich 队列。
  *
  * 调用方：stage-4 写完一条 link 之后；resolveOrCreatePage 建出新 stub 后；
  *        stage-5 / stage-7 通过 fact / timeline 创建实体后。
@@ -291,11 +308,13 @@ export async function maybeEnqueueEnrichForBacklinkGrowth(opts: {
     return { enqueued: false, reason: "page-not-found", backlinkCount: 0 };
   }
 
-  // 2. 算 backlink 数
+  // 2. 算有效 backlink 数
   const [bl] = (await db.execute(drizzleSql`
     SELECT COUNT(*)::int AS n
     FROM links
-    WHERE deleted = 0 AND to_page_id = ${opts.pageId}
+    WHERE deleted = 0
+      AND to_page_id = ${opts.pageId}
+      AND ${effectiveBacklinkPredicate("links")}
   `)) as Array<{ n: number }>;
   const backlinkCount = bl?.n ?? 0;
 
@@ -330,7 +349,7 @@ export async function maybeEnqueueEnrichForBacklinkGrowth(opts: {
   // 6. 入队
   await enqueueEnrichEntity(opts.pageId, opts.slug, opts.sourcePageId, opts.actor);
   console.log(
-    `  [enrich-gate] enqueued enrich_entity for ${opts.slug} (#${opts.pageId}, backlinks=${backlinkCount} ≥ ${threshold})`
+    `  [enrich-gate] enqueued enrich_entity for ${opts.slug} (#${opts.pageId}, effective_backlinks=${backlinkCount} ≥ ${threshold})`
   );
   return {
     enqueued: true,

@@ -163,6 +163,8 @@ cd ae-wiki-agent && bun src/cli.ts ingest:commit <rawFileId>
 **Write the final narrative in English.** Keep ticker symbols, accounting terms, and product names in their standard English forms. Chinese may appear only inside direct quotes, aliases, or source titles when necessary.
 
 **Add a YAML frontmatter block at the top of every source narrative.** At minimum, include `tags`, `view_side`, `time_horizon`, and `primary_entities`.
+Immediately after frontmatter, add an `entity_plan` HTML comment. Treat it as the pre-write entity decision record: existing pages to reuse, strong-evidence new company candidates, soft concept / industry candidates, and noise mentions that should not enter the graph.
+Before writing any wikilink or entity_plan slug, search/reuse existing wiki pages and copy the exact canonical slug. Do not Title Case slugs such as `industries/Precious Metals` when `industries/precious-metals` already exists.
 
 ```markdown
 ---
@@ -171,8 +173,24 @@ view_side: neutral
 time_horizon: near_term | medium_term | long_term | mixed
 primary_entities:
   - companies/<slug>
-  - industries/<slug>
 ---
+
+<!-- entity_plan
+existing:
+  - slug: companies/<slug>
+    role: primary_company | material_supplier | customer | competitor
+    evidence: existing wiki page reused after search
+new_company_candidates:
+  - proposed_slug: companies/<slug>
+    display_name: <Company Name>
+    evidence_quote: "Exact source quote proving this is a real company."
+soft_candidates:
+  - type: concept | industry
+    label: <label from source>
+    reason: why this may deserve a candidate, not a promoted page yet
+noise_mentions:
+  - <generic category, loose product name, one-off phrase, or unverified mention>
+-->
 
 ## Source Overview
 One paragraph: what this source is, who / what it covers, and why it matters now.
@@ -191,6 +209,7 @@ Use a table whenever possible.
 | [[companies/<slug>|Name]] | revenue | FY2027E | 123 | usd_m | "..." | Explains estimate revision / margin risk / demand inflection. |
 
 If the source has no useful numeric data, list the hard non-numeric facts as bullet points with source quotes.
+If this section contains numeric metrics, allocations, returns, estimates, valuation, or guidance tied to a resolvable existing company / industry / concept page, mirror the high-signal rows in the `<!-- facts ... -->` block. Do not rely on the prose table alone for structured facts.
 
 ## Core Views
 - View:
@@ -285,14 +304,24 @@ Additional rules for `meeting_minutes`:
 
 以下内容不是“风格建议”，而是下游 deterministic stages 的输入契约：
 
+- Page review：source narrative 必须带 `<!-- entity_plan ... -->`
+  - `entity_plan` 是 agent 写 narrative 前的实体分层草稿，用来区分已存在实体、强证据新公司、软边界 concept/industry、噪声 mention
+  - `primary_entities` 保持 company-first；缺失 concept/industry 不要靠 `primary_entities` 推进主库，先放在 `entity_plan.soft_candidates`
+  - `page:review` 会对缺失 entity_plan、或 `primary_entities` 里出现 concept/industry 给 warning
+  - 写 wikilink 前先 search 并复用 exact canonical slug；大小写/空格/短横线写错会变成 candidate 或弱边修复工作
+
 - Stage 4 links：`extractors/links/source-default.yaml`
   - 首次提及的重要实体优先写成 `[[wikilink]]`
-  - `primary_entities` 会被当成显式 entity source
-  - `facts` / `timeline` 里的 `entity:` 也会被 Stage 4 收进图
+  - resolver 会兜底识别大小写、空格、下划线、短横线等价 slug（如 `industries/Precious Metals` → `industries/precious-metals`），但 agent 仍应主动写 canonical slug
+  - `primary_entities` 会被当成显式 entity source；只有缺失 `company` 可在强证据下 auto-create，缺失 `concept` / `industry` 一律进入 `entity_candidates`
+  - `facts` / `timeline` 里的 `entity:` 也会被 Stage 4 收进图，属于强证据来源
+  - 普通正文 markdown wikilink 会保留为弱边；只有 `primary_entities`、facts/timeline entity、typed wikilink 等强边会驱动 enrich gate / search backlink boost
+  - 普通正文 markdown wikilink 找不到已有 page 时不会直接建 entity，会写 `events.action='wikilink_unresolved'` 并 upsert `entity_candidates`
 
 - Stage 5 facts：`extractors/facts/source-finance-default.yaml`
   - `metric / period / unit` 会按 spec 归一
   - facts 只写 source 明确给出的数值或可验证 claim，不要把推断写进 block
+  - `## Factual Claims And Data` 里有可落到既有实体页的数字时，必须补 `<!-- facts ... -->`，否则 `page:review` 会保留 missing_facts_block warning
   - 表格 header 尽量贴近 `Entity / Metric / Period / Value / Unit`
 
 - Stage 7 timeline：`extractors/timeline/source-default.yaml`
@@ -406,12 +435,15 @@ platform: twitter
 
 写 narrative 时所有 `[[dir/slug]]` 都会被 stage-4 抽取入 `links` 表。**slug 写错的代价不对称**——选错前缀会污染图。
 
-### 1. 红链分两类：能 auto-create 的 vs 不能的
+### 1. 红链分三类：已有 page / company 强证据 auto-create / candidate gate
 
 
 | Wikilink 类型                                                   | 红链行为                                                                     | 你应该怎么做                   |
 | ------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------ |
-| `[[companies/X]]` `[[concepts/X]]` `[[industries/X]]`         | stage-4 **自动建 stub**（confidence='low'），enrich 队列后续补                      | 直接写。新实体被发现是 enrich 流程的入口 |
+| 指向已有 `companies/` `concepts/` `industries/` page 的 wikilink | stage-4 写入 link；安全中文 display label 会 merge 到 aliases                   | 直接写，但先 search / 复用已有 slug |
+| 缺失 `company` 且出现在 `primary_entities`、facts block、timeline block | stage-4 允许 **自动建 company stub**（confidence='low'），后续 enrich / refresh 补全 | 只放真正核心或结构化证据主体           |
+| 缺失 `concept` / `industry`，即使出现在 `primary_entities`、facts block、timeline block | stage-4 不建 page；写 unresolved event + `entity_candidates`，等待 promote / merge / reject | 先 candidate review，避免软边界 entity 膨胀 |
+| 普通正文里提到但找不到 page 的 `companies/` `concepts/` `industries/` | stage-4 不建 page；写 unresolved event + `entity_candidates` 候选池              | 可以写，但不要期待马上进入主图谱         |
 | `[[sources/X]]` `[[theses/X]]` `[[outputs/X]]` `[[briefs/X]]` | stage-4 **拒绝 auto-create**，只记 `events.action='wikilink_unresolved'`，链不入库 | **必须先验证存在**，否则改写成纯文本     |
 
 
@@ -509,7 +541,7 @@ narrative 内不能这样：
 
 显示用大写写 `[[companies/catl|CATL]]`（slug 仍 lowercase，display 自由）。`pages.title` 列存品牌原写法（"CATL"），slug 是机器友好的标识。
 
-**中国公司中文名必须进入 aliases**：只要 source 里能确认某个中国公司的中文官方名 / 常用中文名，就必须在后续 enrich 时写进 `--aliases`。在 source narrative 中首次提到中国公司时，优先写成 `[[companies/muxi|沐曦]]` 这类带中文 display 的 wikilink；Stage 4 会把安全的中文 display label 自动预填进红链 aliases。不要把 `中际旭创/新易盛` 这种并称整段当 alias。
+**中国公司中文名必须进入 aliases**：只要 source 里能确认某个中国公司的中文官方名 / 常用中文名，就必须在后续 enrich 时写进 `--aliases`。在 source narrative 中首次提到中国公司时，优先写成 `[[companies/muxi|沐曦]]` 这类带中文 display 的 wikilink；Stage 4 会把安全的中文 display label 自动预填进已有 entity aliases 或 `entity_candidates.aliases`。不要把 `中际旭创/新易盛` 这种并称整段当 alias。
 
 **ticker 的归宿**：
 - enrich:save 时通过 `--ticker 300750.SZ` 写到 `pages.ticker` 列
@@ -608,7 +640,7 @@ forecast]]).
 | `tags`          | agent           | 主题标签数组（小写英文，短横线分隔）                                                               | 同时被 web UI 和 search 消费                                                           |
 | `view_side`     | agent           | 观点位置标签：`buy_side`, `sell_side`, `neutral`, `unknown`                                 | **必填**；供 daily-review Q7 聚合偏见结构使用                                                |
 | `time_horizon`  | agent           | 时间维度标签：`near_term`, `medium_term`, `long_term`, `mixed`                         | **必填**；帮助 daily / thesis 读 source 时理解观点时效性                                      |
-| `primary_entities` | agent        | 当前 source 最核心的 entity slug 列表（如 `companies/...`, `industries/...`）                 | **必填**；links extractor 会从 `frontmatter.primary_entities` 读取核心实体                         |
+| `primary_entities` | agent        | 当前 source 最核心的正式 entity slug 列表，默认只放 `companies/...`；已存在且真正核心的 `industries/...` / `concepts/...` 才可放入 | **必填**；links extractor 会从 `frontmatter.primary_entities` 读取核心实体；新的 concept / industry 先放 `entity_plan.soft_candidates` |
 | `research_id`   | **stage-1 自动写** | 上游 mongo `_id`                                                                   | agent 不要重写                                                                       |
 | `research_type` | **stage-1 自动写** | 上游 type（`acecamp_article` / `merit` / `meeting_minutes` / `semi_analysis` / ...） | agent 不要重写；web UI 读这个字段渲染                                                        |
 | `markdown_url`  | **stage-1 自动写** | 解析后 markdown S3 直链                                                               | agent 不要重写；fetch raw 用                                                           |
@@ -714,7 +746,7 @@ cd ae-wiki-agent && bun src/cli.ts ingest:finalize <pageId>
 
 跑：
 
-- Stage 4 链接抽取（wikilinks → links 表，红链自动建 entity page）
+- Stage 4 链接抽取（wikilinks → links 表；强证据 company 红链可自动建 page；缺失 concept/industry 与普通未解析 mention 进入 entity_candidates）
 - Stage 5 facts 抽取（直读末尾 YAML 块）
 - Stage 6 异步 jobs 入队（embed_chunks / detect_signals）
 - Stage 7 timeline 抽取（读取 `pages.timeline`，解析 `<!-- timeline -->` 之后的 YAML 数组）
@@ -777,7 +809,7 @@ bun src/cli.ts ingest:finalize <pageId> --from 4    # 全量重跑
    bun src/cli.ts ingest:write 21 < /tmp/brief-21.md
 
 6. bun src/cli.ts ingest:finalize 21
-   → 4 个红链自动建 (Jeffrey Emanuel / Anthropic / industries/AI 编程工具 / concepts/...)
+   → 缺失 company 强证据可自动建；缺失 industries/concepts 进入 entity_candidates
 ```
 
 ### 范例 B：Meeting minutes 深 ingest
@@ -881,7 +913,7 @@ bun src/cli.ts ingest:finalize <pageId>
 | Stage 5 抽 0 fact（source 页）     | `facts` block 漏写或格式错                    | 检查 `<!-- facts` 是否在新行开头、是否是 YAML 数组                                                         |
 | Stage 7 抽 0 timeline（source 页） | `timeline` 写成旧的 comment block，或根本没有明确事件 | 检查是否用了 `<!-- timeline -->` sentinel；没有明确离散事件时 0 timeline 也可能正常                              |
 | Stage 5 抽 0 fact（brief 页）      | **正常**                                  | brief 不强制 YAML，0 fact 符合预期                                                                  |
-| Stage 4 创建一堆红链 entity          | wikilink slug 写错 / 还没建过                 | autoCreate=true，红链 confidence='low'，靠 enrich 补全                                             |
+| Stage 4 产生大量 entity_candidates / 少量红链 entity | 普通 mention 找不到已有 page；或缺失 concept/industry 进入 promote gate | 候选先用 `entity:candidates` 看；company 核心证据才会自动建页；噪声用 `entity:candidate:reject` |
 | 不确定 commit 还是 brief            | 灰区                                      | 默认 brief（轻量、低成本）                                                                            |
 
 

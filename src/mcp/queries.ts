@@ -11,6 +11,7 @@ import { eq, and, desc, isNull, sql as drizzleSql, gte } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { getEnv } from "~/core/env.ts";
 import { hybridSearch, type SearchOpts } from "~/core/search/hybrid.ts";
+import { effectiveBacklinkPredicate } from "~/core/links/policy.ts";
 import {
   isTableBundle,
   type TableArtifact,
@@ -187,33 +188,22 @@ export async function getPage(
     .from(schema.tags)
     .where(and(eq(schema.tags.pageId, page.id), eq(schema.tags.deleted, 0)));
 
-  const inboundLinks = await db
-    .select({
-      fromPageId: schema.links.fromPageId,
-      linkType: schema.links.linkType,
-    })
-    .from(schema.links)
-    .where(
-      and(
-        eq(schema.links.toPageId, page.id),
-        eq(schema.links.deleted, 0)
-      )
-    )
-    .limit(50);
-
-  const outboundLinks = await db
-    .select({
-      toPageId: schema.links.toPageId,
-      linkType: schema.links.linkType,
-    })
-    .from(schema.links)
-    .where(
-      and(
-        eq(schema.links.fromPageId, page.id),
-        eq(schema.links.deleted, 0)
-      )
-    )
-    .limit(50);
+  const [linkStats] = (await db.execute(drizzleSql`
+    SELECT
+      (SELECT COUNT(*)::int FROM links l WHERE l.deleted = 0 AND l.to_page_id = ${page.id}) AS inbound_total,
+      (SELECT COUNT(*)::int FROM links l WHERE l.deleted = 0 AND l.to_page_id = ${page.id} AND ${effectiveBacklinkPredicate("l")}) AS inbound_effective,
+      (SELECT COUNT(*)::int FROM links l WHERE l.deleted = 0 AND l.to_page_id = ${page.id} AND NOT (${effectiveBacklinkPredicate("l")})) AS inbound_weak,
+      (SELECT COUNT(*)::int FROM links l WHERE l.deleted = 0 AND l.from_page_id = ${page.id}) AS outbound_total,
+      (SELECT COUNT(*)::int FROM links l WHERE l.deleted = 0 AND l.from_page_id = ${page.id} AND ${effectiveBacklinkPredicate("l")}) AS outbound_effective,
+      (SELECT COUNT(*)::int FROM links l WHERE l.deleted = 0 AND l.from_page_id = ${page.id} AND NOT (${effectiveBacklinkPredicate("l")})) AS outbound_weak
+  `)) as Array<{
+    inbound_total: number;
+    inbound_effective: number;
+    inbound_weak: number;
+    outbound_total: number;
+    outbound_effective: number;
+    outbound_weak: number;
+  }>;
 
   return {
     id: page.id.toString(),
@@ -236,8 +226,12 @@ export async function getPage(
     create_time: page.createTime,
     update_time: page.updateTime,
     tags: tags.map((t) => t.tag),
-    inbound_links_count: inboundLinks.length,
-    outbound_links_count: outboundLinks.length,
+    inbound_links_count: linkStats?.inbound_total ?? 0,
+    outbound_links_count: linkStats?.outbound_total ?? 0,
+    inbound_effective_links_count: linkStats?.inbound_effective ?? 0,
+    outbound_effective_links_count: linkStats?.outbound_effective ?? 0,
+    inbound_weak_links_count: linkStats?.inbound_weak ?? 0,
+    outbound_weak_links_count: linkStats?.outbound_weak ?? 0,
   };
 }
 
@@ -935,27 +929,36 @@ export async function entityPulse(args: EntityPulseArgs): Promise<unknown> {
   const [inboundDist, outboundDist, recentInbound, factSummary, latestFacts] =
     await Promise.all([
       db.execute(drizzleSql`
-        SELECT link_type, COUNT(*)::int AS c
+        SELECT link_type,
+               COUNT(*)::int AS c,
+               (COUNT(*) FILTER (WHERE ${effectiveBacklinkPredicate("links")}))::int AS effective_c,
+               (COUNT(*) FILTER (WHERE NOT (${effectiveBacklinkPredicate("links")})))::int AS weak_c,
+               COALESCE(SUM(weight), 0)::float AS weight_sum
         FROM links
         WHERE deleted = 0 AND to_page_id = ${page.id}
         GROUP BY 1 ORDER BY c DESC
       `),
       db.execute(drizzleSql`
-        SELECT link_type, COUNT(*)::int AS c
+        SELECT link_type,
+               COUNT(*)::int AS c,
+               (COUNT(*) FILTER (WHERE ${effectiveBacklinkPredicate("links")}))::int AS effective_c,
+               (COUNT(*) FILTER (WHERE NOT (${effectiveBacklinkPredicate("links")})))::int AS weak_c,
+               COALESCE(SUM(weight), 0)::float AS weight_sum
         FROM links
         WHERE deleted = 0 AND from_page_id = ${page.id}
         GROUP BY 1 ORDER BY c DESC
       `),
       recentLimit > 0
         ? db.execute(drizzleSql`
-            SELECT l.link_type, l.context,
+            SELECT l.link_type, l.context, l.weight::float AS weight,
+                   (${effectiveBacklinkPredicate("l")}) AS is_effective,
                    p.slug AS from_slug, p.title AS from_title, p.type AS from_type,
                    p.create_time::text AS source_date
             FROM links l
             JOIN pages p ON p.id = l.from_page_id
             WHERE l.deleted = 0 AND l.to_page_id = ${page.id}
               AND p.deleted = 0
-            ORDER BY p.create_time DESC
+            ORDER BY (${effectiveBacklinkPredicate("l")}) DESC, l.weight DESC, p.create_time DESC
             LIMIT ${recentLimit}
           `)
         : Promise.resolve([] as unknown as Awaited<ReturnType<typeof db.execute>>),
@@ -981,14 +984,36 @@ export async function entityPulse(args: EntityPulseArgs): Promise<unknown> {
     ]);
 
   // 5. 共识强度：confirms - contradicts 比例
-  const inboundDistTyped = inboundDist as unknown as Array<{ link_type: string; c: number }>;
-  const outboundDistTyped = outboundDist as unknown as Array<{ link_type: string; c: number }>;
+  const inboundDistTyped = inboundDist as unknown as Array<{
+    link_type: string;
+    c: number;
+    effective_c: number;
+    weak_c: number;
+    weight_sum: number | string;
+  }>;
+  const outboundDistTyped = outboundDist as unknown as Array<{
+    link_type: string;
+    c: number;
+    effective_c: number;
+    weak_c: number;
+    weight_sum: number | string;
+  }>;
   const confirmCount = inboundDistTyped.find((r) => r.link_type === "confirms")?.c ?? 0;
   const contradictCount = inboundDistTyped.find((r) => r.link_type === "contradicts")?.c ?? 0;
   const consensusStrength =
     confirmCount + contradictCount === 0
       ? null
       : (confirmCount - contradictCount) / (confirmCount + contradictCount);
+  const linkSummary = {
+    inbound_total: inboundDistTyped.reduce((sum, r) => sum + Number(r.c ?? 0), 0),
+    inbound_effective: inboundDistTyped.reduce((sum, r) => sum + Number(r.effective_c ?? 0), 0),
+    inbound_weak: inboundDistTyped.reduce((sum, r) => sum + Number(r.weak_c ?? 0), 0),
+    inbound_weight_sum: inboundDistTyped.reduce((sum, r) => sum + Number(r.weight_sum ?? 0), 0),
+    outbound_total: outboundDistTyped.reduce((sum, r) => sum + Number(r.c ?? 0), 0),
+    outbound_effective: outboundDistTyped.reduce((sum, r) => sum + Number(r.effective_c ?? 0), 0),
+    outbound_weak: outboundDistTyped.reduce((sum, r) => sum + Number(r.weak_c ?? 0), 0),
+    outbound_weight_sum: outboundDistTyped.reduce((sum, r) => sum + Number(r.weight_sum ?? 0), 0),
+  };
 
   return {
     page: {
@@ -1003,6 +1028,9 @@ export async function entityPulse(args: EntityPulseArgs): Promise<unknown> {
     link_breakdown: {
       inbound: Object.fromEntries(inboundDistTyped.map((r) => [r.link_type, r.c])),
       outbound: Object.fromEntries(outboundDistTyped.map((r) => [r.link_type, r.c])),
+      inbound_effective: Object.fromEntries(inboundDistTyped.map((r) => [r.link_type, r.effective_c])),
+      outbound_effective: Object.fromEntries(outboundDistTyped.map((r) => [r.link_type, r.effective_c])),
+      summary: linkSummary,
       consensus_strength: consensusStrength, // -1..1，越高越被确认；null=没 typed-edge
     },
     recent_inbound: recentInbound,

@@ -45,6 +45,14 @@ export const links = pgTable(
       .where(sql`deleted = 0`),
     fromIdx: index("idx_links_from").on(t.fromPageId),
     toIdx: index("idx_links_to").on(t.toPageId),
+    effectiveToIdx: index("idx_links_effective_to")
+      .on(t.toPageId)
+      .where(sql`${t.deleted} = 0 AND (
+        ${t.weight}::numeric >= 0.9
+        OR ${t.linkType} <> 'mention'
+        OR (${t.linkSource} = 'frontmatter' AND ${t.originField} = 'primary_entities')
+        OR ${t.originField} IN ('facts_block', 'timeline_block')
+      )`),
     typeIdx: index("idx_links_type").on(t.linkType),
     sourceIdx: index("idx_links_source").on(t.linkSource),
   })

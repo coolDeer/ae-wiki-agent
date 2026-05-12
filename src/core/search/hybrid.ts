@@ -19,6 +19,7 @@ import { autoDetectDetail, detailToMaxPerPage } from "./intent.ts";
 import { expandQuery } from "./expansion.ts";
 import { searchKeyword } from "./keyword.ts";
 import { searchVector } from "./vector.ts";
+import { effectiveBacklinkPredicate } from "~/core/links/policy.ts";
 import {
   bestChunkPerPage,
   dedupChunks,
@@ -284,13 +285,15 @@ function rrfFusion(
 }
 
 /**
- * Backlink count fetcher：单查询拉所有候选 page 的入站链接数（去 deleted）。
+ * Backlink count fetcher：单查询拉所有候选 page 的有效入站链接数（去 deleted）。
+ * 弱 markdown mention 不参与 search boost，避免噪声链接放大 ranking。
  */
 async function fetchBacklinkCounts(slugs: string[]): Promise<Map<string, number>> {
   if (slugs.length === 0) return new Map();
   const slugLits = slugs.map((s) => drizzleSql`${s}`);
   const rows = await db.execute(drizzleSql`
-    SELECT p.slug AS slug, COUNT(l.id) AS cnt
+    SELECT p.slug AS slug,
+           COUNT(l.id) FILTER (WHERE ${effectiveBacklinkPredicate("l")}) AS cnt
     FROM pages p
     LEFT JOIN links l ON l.to_page_id = p.id AND l.deleted = 0
     WHERE p.slug IN (${drizzleSql.join(slugLits, drizzleSql`, `)})

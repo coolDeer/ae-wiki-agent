@@ -363,6 +363,13 @@ tr:last-child td { border-bottom: none; }
 }
 .tag.evidence-tag, .tag.link-type-high { color: var(--positive); border-color: var(--positive); }
 .tag.link-type-mention { color: var(--muted); border-color: var(--border); }
+.tag.link-strength-effective { color: var(--positive); border-color: var(--positive); }
+.tag.link-strength-weak { color: var(--muted); border-color: var(--border); border-style: dashed; }
+.tag.link-weight { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.link-count-main {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+}
 .empty { color: var(--muted); padding: 24px; text-align: center; font-style: italic; }
 .content {
   max-width: 760px; line-height: 1.7;

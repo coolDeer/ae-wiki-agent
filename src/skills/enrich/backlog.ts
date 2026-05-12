@@ -12,6 +12,7 @@
 import { sql } from "drizzle-orm";
 
 import { db } from "~/core/db.ts";
+import { effectiveBacklinkPredicate } from "~/core/links/policy.ts";
 
 const ELIGIBLE_TYPES = ["company", "industry", "concept", "thesis"];
 
@@ -93,7 +94,8 @@ export async function getEnrichBacklog(opts: {
       GROUP BY entity_id
     ),
     backlink_counts AS (
-      SELECT to_page_id, COUNT(*)::int AS n
+      SELECT to_page_id,
+             (COUNT(*) FILTER (WHERE ${effectiveBacklinkPredicate("links")}))::int AS n
       FROM links
       WHERE deleted = 0
       GROUP BY to_page_id
@@ -122,7 +124,7 @@ export async function getEnrichBacklog(opts: {
       COALESCE(bc.n, 0) AS backlinks,
       le.last_at AS last_enrich_at,
       COALESCE(
-        (SELECT COUNT(*)::int FROM links l
+        (SELECT (COUNT(*) FILTER (WHERE ${effectiveBacklinkPredicate("l")}))::int FROM links l
           WHERE l.deleted = 0 AND l.to_page_id = p.id
             AND (le.last_at IS NULL OR l.create_time > le.last_at)),
         0

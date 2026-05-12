@@ -10,6 +10,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 
 import { db, schema } from "~/core/db.ts";
 import { getEnv } from "~/core/env.ts";
+import { effectiveBacklinkPredicate } from "~/core/links/policy.ts";
 import {
   search as mcpSearch,
   getPage,
@@ -460,7 +461,7 @@ ${slice.length === 0
                     <tr><td>rrf_boost</td><td>${h.debug.rrfBoost.toFixed(2)}</td></tr>
                     <tr><td>cosine</td><td>${h.debug.cosine == null ? "<em class='muted'>no embedding (fallback 0.5)</em>" : h.debug.cosine.toFixed(4)}</td></tr>
                     <tr><td>blended (0.7·rrf+0.3·cos)</td><td>${h.debug.blendedScore.toFixed(4)}</td></tr>
-                    <tr><td>backlink_count</td><td>${h.debug.backlinkCount}</td></tr>
+                    <tr><td>effective_backlink_count</td><td>${h.debug.backlinkCount}</td></tr>
                     <tr><td>backlink_boost</td><td>${h.debug.backlinkBoost.toFixed(3)}</td></tr>
                     <tr><td>final_score</td><td>${h.debug.finalScore.toFixed(4)}</td></tr>
                   </table>
@@ -579,6 +580,10 @@ export async function viewPage(identifier: string): Promise<string> {
         update_time: string;
         inbound_links_count: number;
         outbound_links_count: number;
+        inbound_effective_links_count: number;
+        outbound_effective_links_count: number;
+        inbound_weak_links_count: number;
+        outbound_weak_links_count: number;
         tags: string[];
       })
     | null;
@@ -625,20 +630,26 @@ export async function viewPage(identifier: string): Promise<string> {
 
   const inLinks = await db.execute(sql`
     SELECT p.slug, p.title, p.display_name, p.type,
-           l.link_type, l.context, l.link_source, l.origin_field
+           l.link_type, l.context, l.link_source, l.origin_field,
+           l.weight::float AS weight,
+           (${effectiveBacklinkPredicate("l")}) AS is_effective
     FROM links l JOIN pages p ON p.id = l.from_page_id
     WHERE l.to_page_id = ${BigInt(page.id)}
       AND l.deleted = 0 AND p.deleted = 0
-    ORDER BY p.create_time DESC LIMIT 20
+    ORDER BY (${effectiveBacklinkPredicate("l")}) DESC, l.weight DESC, p.create_time DESC
+    LIMIT 30
   `);
 
   const outLinks = await db.execute(sql`
     SELECT p.id, p.slug, p.title, p.display_name, p.type,
-           l.link_type, l.context, l.link_source, l.origin_field
+           l.link_type, l.context, l.link_source, l.origin_field,
+           l.weight::float AS weight,
+           (${effectiveBacklinkPredicate("l")}) AS is_effective
     FROM links l JOIN pages p ON p.id = l.to_page_id
     WHERE l.from_page_id = ${BigInt(page.id)}
       AND l.deleted = 0 AND p.deleted = 0
-    ORDER BY l.id LIMIT 30
+    ORDER BY (${effectiveBacklinkPredicate("l")}) DESC, l.weight DESC, l.id
+    LIMIT 40
   `);
 
   const timelineRows = await db.execute(sql`
@@ -812,7 +823,7 @@ ${groupedOutLinks.length > 0
     <ul class="plain">${groupedOutLinks
       .map(
         (l) =>
-          `<li><a href="${pageHref(String(l.slug ?? ""))}">${escape(outboundLinkDisplayName(l))}</a> ${pageTag(String(l.type ?? ""))} ${linkTypeTag(String(l.link_type ?? "mention"))} ${renderProvenanceBadges(l.provenance)}</li>`
+          `<li><a href="${pageHref(String(l.slug ?? ""))}">${escape(outboundLinkDisplayName(l))}</a> ${pageTag(String(l.type ?? ""))} ${linkTypeTag(String(l.link_type ?? "mention"))} ${renderLinkStrengthBadges(l)} ${renderProvenanceBadges(l.provenance)}</li>`
       )
       .join("")}</ul>`
   : ""
@@ -823,7 +834,7 @@ ${groupedInLinks.length > 0
     <ul class="plain">${groupedInLinks
       .map(
         (l) =>
-          `<li><a href="${pageHref(String(l.slug ?? ""))}">${escape(pageDisplayName(l))}</a> ${pageTag(String(l.type ?? ""))} ${linkTypeTag(String(l.link_type ?? "mention"))} ${renderProvenanceBadges(l.provenance)}</li>`
+          `<li><a href="${pageHref(String(l.slug ?? ""))}">${escape(pageDisplayName(l))}</a> ${pageTag(String(l.type ?? ""))} ${linkTypeTag(String(l.link_type ?? "mention"))} ${renderLinkStrengthBadges(l)} ${renderProvenanceBadges(l.provenance)}</li>`
       )
       .join("")}</ul>`
   : ""
@@ -848,6 +859,10 @@ type PageForMetadata = {
   update_time: string;
   inbound_links_count: number;
   outbound_links_count: number;
+  inbound_effective_links_count?: number;
+  outbound_effective_links_count?: number;
+  inbound_weak_links_count?: number;
+  outbound_weak_links_count?: number;
   tags: string[];
 };
 
@@ -874,6 +889,8 @@ type PageLinkRow = {
   context?: string | null;
   link_source?: string | null;
   origin_field?: string | null;
+  weight?: string | number | null;
+  is_effective?: boolean | string | number | null;
 };
 
 type AggregatedPageLink = {
@@ -884,6 +901,10 @@ type AggregatedPageLink = {
   link_type: string | null;
   context: string | null;
   provenance: string[];
+  occurrences: number;
+  effectiveCount: number;
+  weakCount: number;
+  maxWeight: number;
 };
 
 function renderPageMetadataCard(
@@ -928,10 +949,11 @@ function renderPageMetadataCard(
       </span>
     </summary>
     <div class="meta-stats">
-      <div><strong>${escape(String(page.inbound_links_count))}</strong><span>Inbound</span></div>
-      <div><strong>${escape(String(page.outbound_links_count))}</strong><span>Outbound</span></div>
+      <div><strong>${escape(String(page.inbound_effective_links_count ?? page.inbound_links_count))}/${escape(String(page.inbound_links_count))}</strong><span>Effective / Inbound</span></div>
+      <div><strong>${escape(String(page.outbound_effective_links_count ?? page.outbound_links_count))}/${escape(String(page.outbound_links_count))}</strong><span>Effective / Outbound</span></div>
       <div><strong>${escape(page.confidence ?? "n/a")}</strong><span>Confidence</span></div>
     </div>
+    <p class="muted card-note">Effective links drive enrich/search ranking; weak markdown mentions remain visible but do not count as strong evidence. Weak inbound: ${escape(String(page.inbound_weak_links_count ?? 0))}; weak outbound: ${escape(String(page.outbound_weak_links_count ?? 0))}.</p>
     ${identityRows ? `<h4>Identity</h4><div class="kv kv-compact">${identityRows}</div>` : ""}
     ${sourceRows ? `<h4>Source Provenance</h4><div class="kv kv-compact">${sourceRows}</div>` : ""}
     <h4>System</h4>
@@ -958,7 +980,16 @@ function aggregatePageLinks(rows: PageLinkRow[]): AggregatedPageLink[] {
       link_type: row.link_type == null ? null : String(row.link_type),
       context: row.context == null ? null : String(row.context),
       provenance: [],
+      occurrences: 0,
+      effectiveCount: 0,
+      weakCount: 0,
+      maxWeight: 0,
     };
+    existing.occurrences += 1;
+    const weight = Number(row.weight ?? 0);
+    if (Number.isFinite(weight)) existing.maxWeight = Math.max(existing.maxWeight, weight);
+    if (isEffectiveLinkRow(row)) existing.effectiveCount += 1;
+    else existing.weakCount += 1;
     const provenance = provenanceLabel(row.link_source, row.origin_field);
     if (provenance && !existing.provenance.includes(provenance)) {
       existing.provenance.push(provenance);
@@ -966,6 +997,13 @@ function aggregatePageLinks(rows: PageLinkRow[]): AggregatedPageLink[] {
     grouped.set(key, existing);
   }
   return Array.from(grouped.values());
+}
+
+function isEffectiveLinkRow(row: PageLinkRow): boolean {
+  if (typeof row.is_effective === "boolean") return row.is_effective;
+  if (typeof row.is_effective === "number") return row.is_effective !== 0;
+  if (typeof row.is_effective === "string") return row.is_effective === "true" || row.is_effective === "t";
+  return false;
 }
 
 function provenanceLabel(
@@ -986,6 +1024,21 @@ function renderProvenanceBadges(provenance: string[]): string {
   return provenance
     .map((p) => `<span class="tag">${escape(p)}</span>`)
     .join(" ");
+}
+
+function renderLinkStrengthBadges(link: AggregatedPageLink): string {
+  const effective = link.effectiveCount > 0;
+  const labels = [
+    `<span class="tag ${effective ? "link-strength-effective" : "link-strength-weak"}">${effective ? "effective" : "weak mention"}</span>`,
+    `<span class="tag link-weight">w ${escape(link.maxWeight.toFixed(1))}</span>`,
+  ];
+  if (link.occurrences > 1) {
+    labels.push(`<span class="tag">x${escape(String(link.occurrences))}</span>`);
+  }
+  if (link.effectiveCount > 0 && link.weakCount > 0) {
+    labels.push(`<span class="tag">${escape(String(link.weakCount))} weak</span>`);
+  }
+  return labels.join(" ");
 }
 
 function renderSourceFactsCard(facts: SourceFactRow[]): string {
@@ -1304,6 +1357,18 @@ function renderEntityDashboard(
     | {
         inbound: Record<string, number>;
         outbound: Record<string, number>;
+        inbound_effective?: Record<string, number>;
+        outbound_effective?: Record<string, number>;
+        summary?: {
+          inbound_total: number;
+          inbound_effective: number;
+          inbound_weak: number;
+          inbound_weight_sum: number;
+          outbound_total: number;
+          outbound_effective: number;
+          outbound_weak: number;
+          outbound_weight_sum: number;
+        };
         consensus_strength: number | null;
       }
     | undefined;
@@ -1311,6 +1376,16 @@ function renderEntityDashboard(
 
   const inboundTotal = Object.values(lb.inbound).reduce((a, b) => a + b, 0);
   const outboundTotal = Object.values(lb.outbound).reduce((a, b) => a + b, 0);
+  const summary = lb.summary ?? {
+    inbound_total: inboundTotal,
+    inbound_effective: Object.values(lb.inbound_effective ?? {}).reduce((a, b) => a + b, 0),
+    inbound_weak: 0,
+    inbound_weight_sum: inboundTotal,
+    outbound_total: outboundTotal,
+    outbound_effective: Object.values(lb.outbound_effective ?? {}).reduce((a, b) => a + b, 0),
+    outbound_weak: 0,
+    outbound_weight_sum: outboundTotal,
+  };
 
   // typed-edge 颜色
   const typeColor = (t: string): string => {
@@ -1331,6 +1406,7 @@ function renderEntityDashboard(
 
   const renderTypeBar = (
     dist: Record<string, number>,
+    effectiveDist: Record<string, number> | undefined,
     total: number,
     label: string
   ): string => {
@@ -1357,7 +1433,7 @@ function renderEntityDashboard(
       .filter((t) => (dist[t] ?? 0) > 0)
       .map(
         (t) =>
-          `<span class="edge-legend"><span class="edge-dot" style="background:${typeColor(t)}"></span>${escape(t)} <strong>${dist[t]}</strong></span>`
+          `<span class="edge-legend"><span class="edge-dot" style="background:${typeColor(t)}"></span>${escape(t)} <strong>${dist[t]}</strong>${effectiveDist?.[t] !== undefined ? ` <span class="muted">(${effectiveDist[t]} eff)</span>` : ""}</span>`
       )
       .join(" ");
     return `
@@ -1402,15 +1478,24 @@ function renderEntityDashboard(
 .edge-legends { margin-top: 6px; font-size: 12px; line-height: 1.6; }
 .edge-legend { margin-right: 12px; white-space: nowrap; }
 .edge-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+.link-quality-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:8px; margin: 8px 0 12px; }
+.link-quality-grid > div { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--bg-soft); }
+.link-quality-grid strong { display:block; font-size: 16px; color: var(--fg); }
+.link-quality-grid span { display:block; font-size: 11px; color: var(--muted); }
 </style>
 <div class="grid">
   <div class="card">
     <h3>Typed-edge breakdown</h3>
-    ${renderTypeBar(lb.inbound, inboundTotal, "Inbound")}
-    ${renderTypeBar(lb.outbound, outboundTotal, "Outbound")}
+    <div class="link-quality-grid">
+      <div><strong>${summary.inbound_effective}/${summary.inbound_total}</strong><span>Effective / inbound</span></div>
+      <div><strong>${summary.outbound_effective}/${summary.outbound_total}</strong><span>Effective / outbound</span></div>
+    </div>
+    ${renderTypeBar(lb.inbound, lb.inbound_effective, inboundTotal, "Inbound")}
+    ${renderTypeBar(lb.outbound, lb.outbound_effective, outboundTotal, "Outbound")}
     <p class="muted" style="margin-top:8px;font-size:12px">
       consensus_strength = (confirms − contradicts) / (confirms + contradicts).
       区间 [-1, 1]：≥ 0.3 强共识；≤ -0.3 强争议；中间灰色。
+      Effective links exclude ordinary markdown mentions from enrich/search boost.
     </p>
   </div>
   <div class="card">
@@ -1999,8 +2084,8 @@ export async function viewEntities(
 ): Promise<string> {
   const SORT = pickSortField(
     pageReq,
-    ["title", "update_time", "create_time", "ticker", "sector", "confidence", "type"] as const,
-    "update_time"
+    ["title", "update_time", "create_time", "ticker", "sector", "confidence", "type", "effective_links", "weak_links", "total_links"] as const,
+    opts.confidence === "low" ? "effective_links" : "update_time"
   );
 
   const conds = [sql`p.deleted = 0`, sql`p.status != 'archived'`, sql`p.type IN ('company','industry','concept')`];
@@ -2027,13 +2112,28 @@ export async function viewEntities(
     SORT.field === "sector" ? sql`p.sector` :
     SORT.field === "confidence" ? sql`p.confidence` :
     SORT.field === "type" ? sql`p.type` :
+    SORT.field === "effective_links" ? sql`link_stats.effective_links` :
+    SORT.field === "weak_links" ? sql`link_stats.weak_links` :
+    SORT.field === "total_links" ? sql`link_stats.total_links` :
     sql`p.update_time`;
   const dir = SORT.order === "ASC" ? sql`ASC` : sql`DESC`;
 
   const rows = await db.execute(sql`
     SELECT p.id::text AS id, p.slug, p.type, p.title, p.display_name,
-           p.ticker, p.sector, p.confidence
+           p.ticker, p.sector, p.confidence,
+           COALESCE(link_stats.total_links, 0)::int AS total_links,
+           COALESCE(link_stats.effective_links, 0)::int AS effective_links,
+           COALESCE(link_stats.weak_links, 0)::int AS weak_links
     FROM pages p
+    LEFT JOIN LATERAL (
+      SELECT
+        COUNT(*)::int AS total_links,
+        (COUNT(*) FILTER (WHERE ${effectiveBacklinkPredicate("l")}))::int AS effective_links,
+        (COUNT(*) FILTER (WHERE NOT (${effectiveBacklinkPredicate("l")})))::int AS weak_links
+      FROM links l
+      WHERE l.deleted = 0
+        AND l.to_page_id = p.id
+    ) link_stats ON TRUE
     WHERE ${whereClause}
     ORDER BY ${orderByExpr} ${dir} NULLS LAST, p.id
     LIMIT ${pageReq.pageSize} OFFSET ${offsetOf(pageReq)}
@@ -2094,6 +2194,7 @@ ${rows.length === 0
         ${sortHeader("Ticker", "ticker")}
         ${sortHeader("Sector", "sector")}
         ${sortHeader("Confidence", "confidence")}
+        ${sortHeader("Links", "effective_links")}
       </tr></thead>
       <tbody>
       ${rows
@@ -2104,6 +2205,10 @@ ${rows.length === 0
             <td>${escape(String(r.ticker ?? ""))}</td>
             <td>${escape(String(r.sector ?? ""))}</td>
             <td>${confidenceTag(r.confidence as string | null)}</td>
+            <td>
+              <span class="link-count-main">${escape(String(r.effective_links ?? 0))}</span><span class="muted">/${escape(String(r.total_links ?? 0))}</span>
+              ${Number(r.weak_links ?? 0) > 0 ? `<div class="muted score">${escape(String(r.weak_links))} weak</div>` : ""}
+            </td>
           </tr>`
         )
         .join("")}

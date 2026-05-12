@@ -116,7 +116,7 @@ function entityRow(overrides: Partial<import("../src/skills/entity-refresh/index
 }
 
 describe("page review gate", () => {
-  test("source template can pass without timeline and only warns on missing facts block", async () => {
+  test("source template can pass without timeline and surfaces governance warnings", async () => {
     ensureTestEnv();
     const { buildReviewReport } = await import("../src/skills/review/index.ts");
 
@@ -135,8 +135,54 @@ describe("page review gate", () => {
     expect(report.status).toBe("pass");
     expect(report.issues.some((issue) => issue.code === "missing_facts_block")).toBe(true);
     expect(report.issues.some((issue) => issue.code === "relation_missing_specific_links")).toBe(true);
+    expect(report.issues.some((issue) => issue.code === "missing_entity_plan")).toBe(true);
+    expect(report.issues.some((issue) => issue.code === "primary_entities_soft_entity")).toBe(true);
     expect(report.issues.some((issue) => issue.code === "missing_timeline_marker")).toBe(false);
     expect(report.issues.some((issue) => issue.severity === "error")).toBe(false);
+  });
+
+  test("accepts a source entity plan when primary entities stay company-first", async () => {
+    ensureTestEnv();
+    const { buildReviewReport } = await import("../src/skills/review/index.ts");
+
+    const narrative = sourceNarrative()
+      .replace("  - industries/Memory\n", "")
+      .replace(
+        "---\n\n## Source Overview",
+        [
+          "---",
+          "",
+          "<!-- entity_plan",
+          "existing:",
+          "  - slug: companies/Micron",
+          "    role: primary_company",
+          "    evidence: existing wiki page reused",
+          "new_company_candidates: []",
+          "soft_candidates:",
+          "  - type: industry",
+          "    label: Memory",
+          "    reason: broad sector context; candidate review required before promotion",
+          "noise_mentions: []",
+          "-->",
+          "",
+          "## Source Overview",
+        ].join("\n")
+      );
+    const report = buildReviewReport(
+      {
+        id: 1n,
+        slug: "sources/test",
+        type: "source",
+        title: "Test Source",
+        contentHash: null,
+        frontmatter: {},
+      },
+      narrative
+    );
+
+    expect(report.status).toBe("pass");
+    expect(report.issues.some((issue) => issue.code === "missing_entity_plan")).toBe(false);
+    expect(report.issues.some((issue) => issue.code === "primary_entities_soft_entity")).toBe(false);
   });
 
   test("warns when timeline uses placeholder dates for forecast periods", async () => {
@@ -260,7 +306,97 @@ describe("stage 4 alias labels", () => {
   });
 });
 
+describe("entity candidate gate", () => {
+  test("auto-rejects generic placeholder entity slugs", async () => {
+    ensureTestEnv();
+    const { autoRejectReasonForCandidate } = await import("../src/skills/entity-candidates/index.ts");
+
+    expect(autoRejectReasonForCandidate("companies/unknown-cpo-test")).toBe("generic-placeholder");
+    expect(autoRejectReasonForCandidate("companies/domestic-coupling-supplier")).toBe("generic-descriptor");
+    expect(autoRejectReasonForCandidate("companies/globalfoundries")).toBeNull();
+  });
+
+  test("auto-creates only missing companies with strong evidence", async () => {
+    ensureTestEnv();
+    const { canAutoCreateMissingRef } = await import("../src/skills/ingest/stage-4-links.ts");
+
+    const strongRef = {
+      occurrences: [
+        {
+          start: 0,
+          end: 0,
+          source: "frontmatter" as const,
+          originField: "primary_entities",
+          linkType: "mention",
+        },
+      ],
+    };
+    const weakRef = {
+      occurrences: [
+        {
+          start: 10,
+          end: 20,
+          source: "markdown" as const,
+          originField: null,
+          linkType: "mention",
+        },
+      ],
+    };
+
+    expect(canAutoCreateMissingRef("company", strongRef)).toBe(true);
+    expect(canAutoCreateMissingRef("company", weakRef)).toBe(false);
+    expect(canAutoCreateMissingRef("industry", strongRef)).toBe(false);
+    expect(canAutoCreateMissingRef("concept", strongRef)).toBe(false);
+    expect(canAutoCreateMissingRef("company", strongRef, "generic-placeholder")).toBe(false);
+  });
+});
+
+describe("link weight policy", () => {
+  test("scores primary entities and structured evidence as strong backlinks", async () => {
+    ensureTestEnv();
+    const { isStrongLinkOccurrenceSet, linkWeightForOccurrences } = await import("../src/core/links/policy.ts");
+
+    expect(
+      linkWeightForOccurrences([
+        { source: "frontmatter", originField: "primary_entities", linkType: "mention" },
+      ])
+    ).toBe(1.0);
+    expect(
+      linkWeightForOccurrences([
+        { source: "extracted", originField: "facts_block", linkType: "mention" },
+      ])
+    ).toBe(1.2);
+    expect(
+      isStrongLinkOccurrenceSet([
+        { source: "frontmatter", originField: "primary_entities", linkType: "mention" },
+      ])
+    ).toBe(true);
+  });
+
+  test("keeps ordinary markdown mentions weak even when they are valid links", async () => {
+    ensureTestEnv();
+    const { isStrongLinkOccurrenceSet, linkWeightForOccurrences } = await import("../src/core/links/policy.ts");
+
+    const mentions = [
+      { source: "markdown" as const, originField: null, linkType: "mention" },
+      { source: "markdown" as const, originField: null, linkType: "mention" },
+    ];
+
+    expect(linkWeightForOccurrences(mentions)).toBe(0.3);
+    expect(isStrongLinkOccurrenceSet(mentions)).toBe(false);
+  });
+});
+
 describe("ingest slug naming", () => {
+  test("normalizes entity slugs for lookup without changing canonical storage", async () => {
+    ensureTestEnv();
+    const { normalizeSlugForLookup } = await import("../src/skills/ingest/_helpers.ts");
+
+    expect(normalizeSlugForLookup("industries/Precious Metals")).toBe("industries/precious-metals");
+    expect(normalizeSlugForLookup("concepts/New_Market Regime")).toBe("concepts/new-market-regime");
+    expect(normalizeSlugForLookup("companies/600519.SH")).toBe("companies/600519.sh");
+  });
+
   test("source slug uses research type plus full research id without date", async () => {
     ensureTestEnv();
     const { buildRawFilePageSlug } = await import("../src/skills/ingest/stage-1-skeleton.ts");

@@ -25,7 +25,7 @@ import {
   normalizeFactUnit,
   type FactsExtractorSpec,
 } from "~/core/extractors/facts.ts";
-import { resolveOrCreatePage } from "./_helpers.ts";
+import { resolveOrCreatePage, slugToType } from "./_helpers.ts";
 import type { IngestContext } from "~/core/types.ts";
 import { extractTierA } from "./stage-5-tier-a.ts";
 import { extractTierBFromTables } from "./stage-5-tier-b.ts";
@@ -282,7 +282,7 @@ async function normalize(
 
   const entityPageId = await resolveOrCreatePage(f.entity, {
     actor: ctx.actor,
-    autoCreate: true,
+    autoCreate: slugToType(f.entity) === "company",
     sourcePageId: ctx.pageId,
   });
   if (!entityPageId) return null;

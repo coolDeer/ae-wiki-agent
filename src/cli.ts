@@ -134,6 +134,14 @@ function printHelp(): void {
                                                 # 为所有待 refresh entity 创建 entity-refresh LLM jobs；批量 ingest 结束后显式执行
   ae-wiki entity:refresh <slug|id> [--dry-run] [--source-limit N]
                                                 # 保守追加 entity update block，只消费 high-value evidence 写进 ## Updates
+  ae-wiki entity:candidates [--status pending|rejected|merged|promoted] [--type T] [--limit N] [--json]
+                                                # Stage 4 未解析实体候选池；普通 mention 不再直接建 page
+  ae-wiki entity:candidate:promote <candidate_id|slug> [--dry-run] [--actor X]
+                                                # 将 pending candidate 提升为 low-confidence entity page，并回填 source links
+  ae-wiki entity:candidate:merge <candidate_id|slug> --target <slug|id> [--dry-run] [--actor X]
+                                                # 将 candidate 合并到已有 page alias，并回填 source links
+  ae-wiki entity:candidate:reject <candidate_id|slug> --reason "..." [--dry-run] [--actor X]
+                                                # 标记候选为噪声；后续同 slug 继续记证据但不进入主图谱
 
   ae-wiki facts:re-extract <page_id>      # 重跑 Stage 5（针对单页）
   ae-wiki facts:coverage [--type source|brief|all] [--limit N] [--json]
@@ -841,6 +849,76 @@ async function main(): Promise<void> {
         sourceLimit: sourceLimitStr ? parseInt(sourceLimitStr, 10) : undefined,
       });
       console.log(jsonStringify(report));
+      break;
+    }
+
+    case "entity:candidates": {
+      const {
+        formatEntityCandidates,
+        listEntityCandidates,
+      } = await import("./skills/entity-candidates/index.ts");
+      const limitStr = getArg("--limit");
+      const report = await listEntityCandidates({
+        status: getArg("--status"),
+        type: getArg("--type"),
+        limit: limitStr ? parseInt(limitStr, 10) : undefined,
+      });
+      if (getFlag("--json")) console.log(jsonStringify(report));
+      else console.log(formatEntityCandidates(report));
+      break;
+    }
+
+    case "entity:candidate:promote": {
+      const ident = args[0];
+      if (!ident) {
+        console.error("entity:candidate:promote 需要 candidate id 或 proposed_slug");
+        process.exit(1);
+      }
+      const { promoteEntityCandidate } = await import(
+        "./skills/entity-candidates/index.ts"
+      );
+      const result = await promoteEntityCandidate(ident, {
+        actor: getArg("--actor") ?? "agent:entity-candidates",
+        dryRun: getFlag("--dry-run"),
+      });
+      console.log(jsonStringify(result));
+      break;
+    }
+
+    case "entity:candidate:merge": {
+      const ident = args[0];
+      const target = getArg("--target");
+      if (!ident || !target) {
+        console.error("entity:candidate:merge 需要 candidate id/slug 和 --target <slug|id>");
+        process.exit(1);
+      }
+      const { mergeEntityCandidate } = await import(
+        "./skills/entity-candidates/index.ts"
+      );
+      const result = await mergeEntityCandidate(ident, target, {
+        actor: getArg("--actor") ?? "agent:entity-candidates",
+        dryRun: getFlag("--dry-run"),
+      });
+      console.log(jsonStringify(result));
+      break;
+    }
+
+    case "entity:candidate:reject": {
+      const ident = args[0];
+      const reason = getArg("--reason");
+      if (!ident || !reason) {
+        console.error("entity:candidate:reject 需要 candidate id/slug 和 --reason");
+        process.exit(1);
+      }
+      const { rejectEntityCandidate } = await import(
+        "./skills/entity-candidates/index.ts"
+      );
+      const result = await rejectEntityCandidate(ident, {
+        reason,
+        actor: getArg("--actor") ?? "agent:entity-candidates",
+        dryRun: getFlag("--dry-run"),
+      });
+      console.log(jsonStringify(result));
       break;
     }
 

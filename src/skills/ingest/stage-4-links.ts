@@ -14,10 +14,19 @@ import {
   type HarvestedLinkOccurrence,
 } from "~/core/extractors/links.ts";
 import {
+  isStrongLinkOccurrenceSet,
+  linkWeightForOccurrences,
+} from "~/core/links/policy.ts";
+import {
   maybeEnqueueEnrichForBacklinkGrowth,
   resolveOrCreatePage,
   slugToType,
 } from "./_helpers.ts";
+import {
+  autoRejectReasonForCandidate,
+  upsertEntityCandidate,
+  type EntityCandidateSuggestion,
+} from "../entity-candidates/index.ts";
 import type { IngestContext } from "~/core/types.ts";
 import type { PageType } from "~/core/schema/pages.ts";
 
@@ -32,7 +41,7 @@ export const VALID_LINK_TYPES = new Set([
   "tracks",
 ]);
 
-const AUTO_CREATE_TYPES: ReadonlySet<PageType> = new Set([
+const CANDIDATE_ENTITY_TYPES: ReadonlySet<PageType> = new Set([
   "company",
   "industry",
   "concept",
@@ -71,6 +80,7 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
   const [page] = await db
     .select({
       content: schema.pages.content,
+      sourceId: schema.pages.sourceId,
       slug: schema.pages.slug,
       type: schema.pages.type,
       frontmatter: schema.pages.frontmatter,
@@ -104,39 +114,76 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
     if (!inferredType) continue;
 
     let targetId: bigint | null = null;
-    if (AUTO_CREATE_TYPES.has(inferredType)) {
+    targetId = await resolveOrCreatePage(slug, {
+      actor: ctx.actor,
+      autoCreate: false,
+      initialAliases: ref.aliases,
+    });
+
+    const autoRejectReason = targetId ? null : autoRejectReasonForCandidate(slug);
+    const canAutoCreate =
+      !targetId &&
+      canAutoCreateMissingRef(inferredType, ref, autoRejectReason);
+
+    if (!targetId && canAutoCreate) {
       targetId = await resolveOrCreatePage(slug, {
         actor: ctx.actor,
         autoCreate: true,
         sourcePageId: ctx.pageId,
         initialAliases: ref.aliases,
       });
-    } else {
-      targetId = await resolveOrCreatePage(slug, {
+    }
+
+    if (!targetId) {
+      const suggestions = await fetchSuggestions(slug, inferredType);
+      const candidate =
+        CANDIDATE_ENTITY_TYPES.has(inferredType)
+          ? await upsertEntityCandidate({
+              sourceId: page.sourceId,
+              proposedSlug: slug,
+              proposedType: inferredType,
+              displayName: candidateDisplayName(slug, ref),
+              aliases: ref.aliases,
+              sourcePageId: ctx.pageId,
+              suggestions,
+              actor: ctx.actor,
+              initialStatus: autoRejectReason ? "rejected" : "pending",
+              rejectReason: autoRejectReason,
+              metadata: {
+                stage: "ingest.stage4",
+                pageSlug: page.slug,
+                occurrenceSources: summarizeOccurrences(ref.occurrences),
+                autoCreatePolicy: autoCreatePolicyForMissingRef(
+                  inferredType,
+                  ref,
+                  autoRejectReason
+                ),
+              },
+            })
+          : null;
+      await logUnresolvedWikilink({
+        slug,
+        inferredType,
+        suggestions,
+        fromPageId: ctx.pageId,
         actor: ctx.actor,
-        autoCreate: false,
+        candidateId: candidate?.id,
+        candidateStatus: candidate?.status,
+        rejectReason: autoRejectReason,
       });
-      if (!targetId) {
-        const suggestions = await fetchSuggestions(slug, inferredType);
-        await logUnresolvedWikilink({
-          slug,
-          inferredType,
-          suggestions,
-          fromPageId: ctx.pageId,
-          actor: ctx.actor,
-        });
-        unresolved.push({ slug, inferredType, suggestions });
-        continue;
-      }
+      unresolved.push({ slug, inferredType, suggestions });
+      continue;
     }
     if (!targetId) continue;
 
     const occByKey = groupOccurrencesByLinkKey(ref.occurrences);
-    let firstWrite = true;
+    let firstStrongWrite = true;
     for (const [key, occs] of occByKey) {
       const [linkType, linkSource, originField] = splitLinkKey(key);
       const safeType = VALID_LINK_TYPES.has(linkType) ? linkType : "mention";
       const ctxText = buildContext(page.content, occs[0]);
+      const linkWeight = linkWeightForOccurrences(occs);
+      const isStrongLink = isStrongLinkOccurrenceSet(occs);
       const inserted = await db
         .insert(schema.links)
         .values(
@@ -149,7 +196,7 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
               linkSource,
               originPageId: ctx.pageId,
               originField: originField ?? null,
-              weight: "1.0",
+              weight: linkWeight.toFixed(2),
             },
             ctx.actor
           )
@@ -158,14 +205,14 @@ export async function stage4Links(ctx: IngestContext): Promise<Stage4Result> {
         .returning({ id: schema.links.id });
       if (inserted.length > 0) {
         linksWritten++;
-        if (firstWrite) {
+        if (isStrongLink && firstStrongWrite) {
           await maybeEnqueueEnrichForBacklinkGrowth({
             pageId: targetId,
             slug,
             sourcePageId: ctx.pageId,
             actor: ctx.actor,
           });
-          firstWrite = false;
+          firstStrongWrite = false;
         }
       }
     }
@@ -218,6 +265,86 @@ function splitLinkKey(
   ];
 }
 
+export function canAutoCreateMissingRef(
+  inferredType: PageType,
+  ref: { occurrences: HarvestedLinkOccurrence[] },
+  autoRejectReason: string | null = null
+): boolean {
+  return (
+    inferredType === "company" &&
+    !autoRejectReason &&
+    shouldAutoCreateMissingRef(ref)
+  );
+}
+
+function autoCreatePolicyForMissingRef(
+  inferredType: PageType,
+  ref: { occurrences: HarvestedLinkOccurrence[] },
+  autoRejectReason: string | null
+): string {
+  if (autoRejectReason) return "auto-rejected";
+  if (inferredType === "company") {
+    return shouldAutoCreateMissingRef(ref)
+      ? "company-strong-evidence-auto-create"
+      : "company-strong-evidence-required";
+  }
+  if (inferredType === "industry" || inferredType === "concept") {
+    return "candidate-gated-non-company";
+  }
+  return "no-auto-create-for-page-type";
+}
+
+function shouldAutoCreateMissingRef(ref: {
+  occurrences: HarvestedLinkOccurrence[];
+}): boolean {
+  return ref.occurrences.some((occ) =>
+    (occ.source === "frontmatter" && occ.originField === "primary_entities") ||
+    (occ.source === "extracted" &&
+      (occ.originField === "facts_block" || occ.originField === "timeline_block"))
+  );
+}
+
+function candidateDisplayName(
+  slug: string,
+  ref: { aliases: string[] }
+): string | null {
+  const cleanAlias = ref.aliases
+    .map((a) => a.replace(/\s+/g, " ").trim())
+    .find((a) => a.length > 0 && a.length <= 80);
+  if (cleanAlias) return cleanAlias;
+  const namePart = slug.split("/").slice(1).join("/").trim();
+  return namePart || null;
+}
+
+function summarizeOccurrences(occurrences: HarvestedLinkOccurrence[]): Array<{
+  source: HarvestedLinkOccurrence["source"];
+  originField: string | null;
+  linkType: string;
+  count: number;
+}> {
+  const map = new Map<string, {
+    source: HarvestedLinkOccurrence["source"];
+    originField: string | null;
+    linkType: string;
+    count: number;
+  }>();
+  for (const occ of occurrences) {
+    const key = `${occ.source}|${occ.originField ?? ""}|${occ.linkType}`;
+    const existing = map.get(key);
+    if (existing) {
+      existing.count++;
+    } else {
+      map.set(key, {
+        source: occ.source,
+        originField: occ.originField,
+        linkType: occ.linkType,
+        count: 1,
+      });
+    }
+  }
+  return [...map.values()];
+}
+
 async function countActivePages(): Promise<number> {
   const [r] = (await db.execute(
     drizzleSql`SELECT COUNT(*)::int AS n FROM pages WHERE deleted = 0`
@@ -239,7 +366,7 @@ function buildContext(
 async function fetchSuggestions(
   slug: string,
   inferredType: PageType
-): Promise<UnresolvedWikilink["suggestions"]> {
+): Promise<EntityCandidateSuggestion[]> {
   const rows = await db.execute(drizzleSql`
     SELECT slug, type, title,
            GREATEST(similarity(slug, ${slug}),
@@ -270,6 +397,9 @@ async function logUnresolvedWikilink(opts: {
   suggestions: UnresolvedWikilink["suggestions"];
   fromPageId: bigint;
   actor: string;
+  candidateId?: string;
+  candidateStatus?: string;
+  rejectReason?: string | null;
 }): Promise<void> {
   await db.insert(schema.events).values(
     withCreateAudit(
@@ -283,6 +413,9 @@ async function logUnresolvedWikilink(opts: {
           inferredType: opts.inferredType,
           fromPageId: opts.fromPageId.toString(),
           suggestions: opts.suggestions,
+          candidateId: opts.candidateId,
+          candidateStatus: opts.candidateStatus,
+          rejectReason: opts.rejectReason,
         },
       },
       opts.actor
@@ -291,5 +424,11 @@ async function logUnresolvedWikilink(opts: {
   const hint = opts.suggestions.length
     ? ` (closest: ${opts.suggestions[0]!.slug} sim=${opts.suggestions[0]!.similarity.toFixed(2)})`
     : "";
-  console.log(`  [stage4] 跳过红链 ${opts.slug} —— ${opts.inferredType} 必须显式创建${hint}`);
+  const candidateHint = opts.candidateStatus
+    ? `, candidate=${opts.candidateStatus}${opts.candidateId ? `#${opts.candidateId}` : ""}`
+    : "";
+  const mode = opts.candidateStatus ? "候选化" : "未解析";
+  console.log(
+    `  [stage4] 跳过红链 ${opts.slug} —— ${opts.inferredType} ${mode}${candidateHint}${hint}`
+  );
 }

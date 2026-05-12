@@ -787,6 +787,7 @@ const rows = await sql`SELECT * FROM pages WHERE id = ${1}`;
 | Stage 5 Tier C LLM 兜底未实现 | 决策已固化（跳过 B，直接 C，见 `stage-5-facts.ts` 头注）；LLM 调用代码待写 | ⭐⭐ |
 | `enrich_entity` worker 未实现 | 红链补全靠 agent 手动跑 enrich:save | ⭐⭐ |
 | `entity:refresh` 尚未接入批量/夜间维护流程 | 已有 `entity:stale` / `entity:update-candidates` / `entity:refresh`，但仍需补 `entity:refresh-batch` 或 minion/nightly 自动消费低风险候选 | ⭐⭐ |
+| Concept / industry candidate review 尚未自动化 | ingest 已改为 concept / industry candidate-first，避免自动建页膨胀；仍需 nightly 任务按 evidence_count / 来源数 / 相似候选聚类生成 promote / merge / reject 建议 | ⭐⭐ |
 | chunker 是段级 | 长 markdown 切分质量差 | ⭐ |
 | MCP server 5 工具尚未全实现 | search 已有，list_entities/recent_activity 待补 | ⭐ |
 | Embedding 默认关 | 搜索是纯 keyword，召回受限 | ⭐ |

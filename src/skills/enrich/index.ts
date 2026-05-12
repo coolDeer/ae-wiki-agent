@@ -14,6 +14,7 @@
 import { eq, and, count, desc, ne, sql as drizzleSql } from "drizzle-orm";
 import { db, schema } from "~/core/db.ts";
 import { withAudit, withCreateAudit, Actor } from "~/core/audit.ts";
+import { effectiveBacklinkPredicate } from "~/core/links/policy.ts";
 import type { PageType } from "~/core/schema/pages.ts";
 
 /**
@@ -150,7 +151,11 @@ async function loadRedlinkContextByPageId(
         eq(schema.pages.deleted, 0)
       )
     )
-    .orderBy(desc(schema.pages.createTime));
+    .orderBy(
+      desc(drizzleSql`CASE WHEN ${effectiveBacklinkPredicate("links")} THEN 1 ELSE 0 END`),
+      desc(schema.links.weight),
+      desc(schema.pages.createTime)
+    );
 
   return {
     pageId: target.id,
@@ -227,7 +232,8 @@ export async function enrichPrepareNext(opts: {
       schema.links,
       and(
         eq(schema.links.toPageId, schema.pages.id),
-        eq(schema.links.deleted, 0)
+        eq(schema.links.deleted, 0),
+        drizzleSql`${effectiveBacklinkPredicate("links")}`
       )
     )
     .where(
@@ -809,7 +815,8 @@ export async function enrichList(opts: {
       schema.links,
       and(
         eq(schema.links.toPageId, schema.pages.id),
-        eq(schema.links.deleted, 0)
+        eq(schema.links.deleted, 0),
+        drizzleSql`${effectiveBacklinkPredicate("links")}`
       )
     )
     .where(
